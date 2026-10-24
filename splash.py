@@ -464,8 +464,8 @@ class Splash(QWidget):
     def _run_installer(self, path):
         import os
         import subprocess
-        self.status.setText("Устанавливаю обновление — программа перезапустится сама")
-        subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+        self.status.setText("Устанавливаю обновление — через несколько секунд SenioreM откроется снова")
+        subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                           "/CLOSEAPPLICATIONS"])
         QTimer.singleShot(600, lambda: os._exit(0))
 
