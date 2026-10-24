@@ -20,7 +20,8 @@ import config
 import sites
 from auth import AuthError, AuthStore, Mailer
 from splash import Splash
-from settings import WAKE_REPLY_PRESETS, Settings, greeting, personalize, set_autostart
+from settings import (NAME_PRESETS, WAKE_REPLY_PRESETS, Settings, greeting, personalize,
+                      set_autostart)
 from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, Clickable, ConfirmDialog,
                    LogoMark, PlayButton, Toggle,
                    apply_app_theme, button, card, field, font, hline, label, set_role,
@@ -594,8 +595,9 @@ class HomeScreen(Backdrop):
         right.setFixedWidth(340)
         rl.addWidget(label("ЧТО МОЖНО СКАЗАТЬ", 11, QFont.DemiBold, "accent", spacing=1.8))
         rl.addSpacing(6)
-        rl.addWidget(label("Начинайте с «Сеньор». Нажмите на пример, чтобы выполнить.",
-                           12, role="muted", wrap=True))
+        self.tips_hint = label("Начинайте с «Сеньор». Нажмите на пример, чтобы выполнить.",
+                               12, role="muted", wrap=True)
+        rl.addWidget(self.tips_hint)
         rl.addSpacing(16)
         for title, examples in TIPS:
             rl.addWidget(label(title, 13, QFont.DemiBold))
@@ -618,6 +620,8 @@ class HomeScreen(Backdrop):
     def start(self, email, settings):
         self.settings = settings
         sites.warm()   # список установленных программ — заранее, в фоне
+        self.tips_hint.setText(f"Начинайте с «{settings.name}». Нажмите на пример, "
+                               "чтобы выполнить.")
         name = settings["name"] or ""
         self.avatar.setText((name or email or "?")[:1].upper())
         self.history.set_items(settings["history"])
@@ -630,7 +634,6 @@ class HomeScreen(Backdrop):
             self.listener.level.connect(self.orb.push_level)
             self.listener.partial.connect(self._on_partial)
             self.listener.final.connect(self._on_final)
-            self.listener.wake.connect(self._on_wake)
             self.listener.sensitivity = settings["mic_sensitivity"] or "high"
             self.listener.failed.connect(self._on_failed)
             self.listener.ready.connect(self._on_ready)
@@ -689,7 +692,8 @@ class HomeScreen(Backdrop):
         elif self.armed:
             self._set_state("armed")
         elif self.mic == "ok":
-            self._set_state("idle")
+            name = self.settings.name if self.settings else "Сеньор"
+            self._set_state("idle", f"СКАЖИТЕ «{name.upper()}»")
         elif self.mic == "loading":
             self._set_state("loading")
         else:
@@ -730,13 +734,11 @@ class HomeScreen(Backdrop):
         if self.orb.state in ("idle", "armed") and text:
             self._show_heard(text, True)
 
-    def _on_wake(self):
-        if not self.armed and not self.speaking:
-            self._arm()
-
-    def _on_final(self, text):
+    def _on_final(self, text, confs=None):
         words = commands.tokens(text)
-        i = commands.find_wake(words, self.settings.wake_words if self.settings else [])
+        if confs is not None and len(confs) != len(words):
+            confs = None
+        i = commands.find_wake(words, self.settings.wake_words if self.settings else None, confs)
         if i >= 0:
             rest = words[i + 1:]
             if rest:
@@ -822,6 +824,7 @@ class ProfileScreen(Backdrop):
     logout_requested = Signal()
 
     SECTIONS = [
+        ("name", "Имя помощника"),
         ("address", "Обращение"),
         ("voice", "Голос"),
         ("wake", "Активация"),
@@ -960,6 +963,65 @@ class ProfileScreen(Backdrop):
     _loading = False
 
     # ---------- разделы ----------
+    def _build_name(self, lay):
+        self._title(lay, "Имя помощника", "Как вы будете к нему обращаться. Он реагирует только "
+                                          "когда фраза начинается с его имени — на разговоры "
+                                          "вокруг и фильмы он не отвечает.")
+        self._caption(lay, "Выберите имя")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        group = QButtonGroup(self)
+        self.name_buttons = {}
+        for nm in NAME_PRESETS:
+            b = button(nm, "ghost", 15, QFont.Normal)
+            b.setCheckable(True)
+            b.setMinimumWidth(110)
+            b.clicked.connect(lambda _=False, n=nm: self._pick_name(n))
+            group.addButton(b)
+            row.addWidget(b)
+            self.name_buttons[nm] = b
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addSpacing(26)
+        self._caption(lay, "…или своё имя")
+        self.f_ai_name = field("например: Командир")
+        self.f_ai_name.textEdited.connect(self._typed_name)
+        lay.addWidget(self.f_ai_name)
+        lay.addSpacing(8)
+        lay.addWidget(label("Лучше выбрать обычное русское слово — так помощник узнаёт его "
+                            "надёжнее. Иностранные имена он может не расслышать.", 12,
+                            role="faint", wrap=True))
+        lay.addSpacing(26)
+        ex, el = card((20, 16, 20, 16), 6)
+        ex.setProperty("role", "chip")
+        el.addWidget(label("КАК ЗВАТЬ", 11, QFont.DemiBold, "accent", spacing=1.6))
+        self.name_example = label("", 15, wrap=True)
+        el.addWidget(self.name_example)
+        lay.addWidget(ex)
+        lay.addStretch(1)
+
+    def _pick_name(self, name):
+        self.f_ai_name.setText("")
+        self._set("assistant_name", name)
+        self._refresh_name()
+
+    def _typed_name(self, text):
+        text = text.strip()
+        for b in self.name_buttons.values():
+            b.setChecked(False)
+        if text:
+            self._set("assistant_name", text)
+            self._refresh_name()
+
+    def _refresh_name(self):
+        if self.settings is None:
+            return
+        n = self.settings.name
+        for nm, b in self.name_buttons.items():
+            b.setChecked(nm.lower() == n.lower())
+        self.name_example.setText(f"«{n}, громкость десять»\n«{n}, открой телеграм»\n"
+                                  f"«{n}» — и дождитесь ответа, потом скажите команду")
+
     def _build_address(self, lay):
         self._title(lay, "Обращение", "Как помощник будет к вам обращаться и что отвечать, "
                                       "когда вы скажете «Сеньор».")
@@ -1095,8 +1157,8 @@ class ProfileScreen(Backdrop):
     def _build_wake(self, lay):
         self._title(lay, "Активация", "Как вы обращаетесь к помощнику и как он даёт понять, "
                                       "что слушает.")
-        self._caption(lay, "Слова-обращения (через запятую)")
-        self.f_words = field("сеньор, сеньер, синьор")
+        self._caption(lay, "Дополнительные слова-обращения (через запятую, необязательно)")
+        self.f_words = field("например: эй, слушай")
         self.f_words.textEdited.connect(lambda v: self._set("wake_words", v))
         lay.addWidget(self.f_words)
         lay.addSpacing(28)
@@ -1252,7 +1314,11 @@ class ProfileScreen(Backdrop):
         self.f_name.setText(name)
         self.f_address.setText(settings["address"])
         self.f_wake.setText(settings["wake_reply"])
-        self.f_words.setText(settings["wake_words"])
+        ww = settings["wake_words"] or ""
+        self.f_words.setText("" if ww.replace(" ", "") == "сеньор,сеньер,синьор" else ww)
+        custom = settings.name not in NAME_PRESETS
+        self.f_ai_name.setText(settings.name if custom else "")
+        self._refresh_name()
         for k, b in self.speed_buttons.items():
             b.setChecked(k == (settings["voice_speed"] or "normal"))
         for k, b in self.sens_buttons.items():
@@ -1353,7 +1419,7 @@ class MainWindow(QWidget):
             who = s["name"] or s["address"]
             hello = greeting(datetime.datetime.now().hour)
             self.speaker.say(f"{hello}{', ' + who if who else ''}. Я на связи — "
-                             f"скажите «Сеньор» и команду.")
+                             f"скажите «{s.name}» и команду.")
 
     def open_profile(self, section="address"):
         if self.settings is None:

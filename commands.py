@@ -74,15 +74,26 @@ def parse_number(words):
     return total
 
 
-def find_wake(words, extra=()) -> int:
-    """Индекс слова-обращения («сеньор») или -1."""
-    targets = set(WAKE_DEFAULT) | {normalize(w) for w in extra if w}
-    for i, w in enumerate(words):
-        if w in targets:
+def _same_start(a, b):
+    group = ("сш", "еэ")
+    return a[0] == b[0] or any(a[0] in g and b[0] in g for g in group)
+
+
+def find_wake(words, names=None, confs=None, max_pos=1) -> int:
+    """Индекс слова-обращения или -1. Чтобы помощник не срабатывал «просто так»:
+    обращение должно стоять в начале фразы (первым или вторым словом), быть
+    уверенно распознано, а слишком длинные фразы (разговор, фильм) игнорируются."""
+    targets = [normalize(w) for w in (names or WAKE_DEFAULT) if normalize(w)]
+    if not words or len(words) > 14:
+        return -1
+    for i, w in enumerate(words[: max_pos + 1]):
+        conf = confs[i] if confs and i < len(confs) else 1.0
+        if w in targets and conf >= 0.5:
             return i
-        if (len(w) >= 5 and w[0] in "сш"
-                and SequenceMatcher(None, w, "сеньор").ratio() >= 0.75):
-            return i
+        for t in targets:
+            if (len(t) >= 4 and len(w) >= 4 and _same_start(w, t) and conf >= 0.65
+                    and SequenceMatcher(None, w, t).ratio() >= 0.86):
+                return i
     return -1
 
 

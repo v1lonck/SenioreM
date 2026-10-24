@@ -25,14 +25,12 @@ def _co_init():
 
 
 GAINS = {"normal": 3.0, "high": 6.0, "whisper": 14.0}   # максимальное усиление микрофона
-WAKE_GRAMMAR = ["сеньор", "сеньер", "синьор", "сеньора", "[unk]"]
 
 
 class Listener(QThread):
     level = Signal(float)
     partial = Signal(str)
-    final = Signal(str)
-    wake = Signal()          # отдельный чуткий детектор слова «Сеньор»
+    final = Signal(str, object)   # текст и уверенность в каждом слове
     failed = Signal(str)
     ready = Signal()
 
@@ -64,10 +62,9 @@ class Listener(QThread):
             from vosk import KaldiRecognizer
             rec = KaldiRecognizer(self.model, 16000)
             try:
-                wake_rec = KaldiRecognizer(self.model, 16000, json.dumps(WAKE_GRAMMAR,
-                                                                         ensure_ascii=False))
-            except Exception:  # noqa: BLE001 — модель без поддержки грамматик
-                wake_rec = None
+                rec.SetWords(True)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"Не удалось запустить распознавание: {e}")
             return
@@ -103,8 +100,6 @@ class Listener(QThread):
                     continue
                 if self._reset:
                     rec.Reset()
-                    if wake_rec is not None:
-                        wake_rec.Reset()
                     self._reset = False
                     last_partial = ""
                     while not q.empty():
@@ -134,16 +129,13 @@ class Listener(QThread):
                     rms *= g
                 self.level.emit(min(1.0, rms * 7))
 
-                if wake_rec is not None and wake_rec.AcceptWaveform(data):
-                    words = json.loads(wake_rec.Result()).get("text", "").split()
-                    if words and all(w != "[unk]" for w in words):
-                        self.wake.emit()
-
                 if rec.AcceptWaveform(data):
-                    text = json.loads(rec.Result()).get("text", "").strip()
+                    res = json.loads(rec.Result())
+                    text = res.get("text", "").strip()
+                    confs = [float(w.get("conf", 1.0)) for w in res.get("result", [])]
                     last_partial = ""
                     if text:
-                        self.final.emit(text)
+                        self.final.emit(text, confs)
                 else:
                     p = json.loads(rec.PartialResult()).get("partial", "").strip()
                     if p != last_partial:
