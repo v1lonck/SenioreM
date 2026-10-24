@@ -11,17 +11,18 @@ if os.path.exists(os.path.join(ROOT, "config.json")):      # почта, вши�
     datas.append((os.path.join(ROOT, "config.json"), "."))
 
 binaries = []
-hiddenimports = ["pyttsx3.drivers", "pyttsx3.drivers.sapi5"]
-d, b, h = collect_all("vosk")
-datas += d
-binaries += b
-hiddenimports += h
-for pkg in ("comtypes", "pycaw", "edge_tts"):
+hiddenimports = []
+for pkg in ("vosk", "piper", "onnxruntime"):
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
+for pkg in ("comtypes", "pycaw"):
     hiddenimports += collect_submodules(pkg, filter=lambda n: ".test" not in n)
 
 # Всё, что программе не нужно, — не тащим (меньше размер, быстрее скачивание).
 excludes = [
-    "tkinter", "unittest", "pydoc", "doctest", "lib2to3", "numpy",
+    "tkinter", "pydoc", "doctest", "lib2to3", "edge_tts", "pyttsx3",
     "PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf",
     "PySide6.QtSvg", "PySide6.QtOpenGL", "PySide6.QtMultimedia", "PySide6.QtSql",
     "PySide6.QtWebEngineCore", "PySide6.QtDBus", "PySide6.QtConcurrent",

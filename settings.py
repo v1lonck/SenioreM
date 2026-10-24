@@ -13,7 +13,8 @@ DEFAULTS = {
     "wake_reply": "Слушаю вас",     # что сказать на «Сеньор»
     "speak_wake_reply": True,
     "chime": True,
-    "voice_id": "dmitry",
+    "voice_speed": "normal",
+    "mic_sensitivity": "high",
     "speak_replies": True,
     "listen_seconds": 8,
     "wake_words": "сеньор, сеньер, синьор",

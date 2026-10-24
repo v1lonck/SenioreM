@@ -176,7 +176,7 @@ def window_controls(win):
     box.setSpacing(4)
     mn = button("—", "chrome", 14, QFont.Normal)
     mn.setToolTip("Свернуть")
-    mn.clicked.connect(win.showMinimized)
+    mn.clicked.connect(getattr(win, "smooth_minimize", win.showMinimized))
     cl = button("✕", "chrome", 14, QFont.Normal)
     cl.setToolTip("Закрыть")
     cl.clicked.connect(getattr(win, "request_close", win.close))
@@ -444,3 +444,27 @@ class ConfirmDialog(QDialog):
             self.reject()
         else:
             super().keyPressEvent(e)
+
+
+def fade_in(widget, ms=220):
+    """Мягкое появление виджета (страницы, раздела)."""
+    from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+    from PySide6.QtWidgets import QGraphicsOpacityEffect
+    eff = QGraphicsOpacityEffect(widget)
+    eff.setOpacity(0.0)
+    widget.setGraphicsEffect(eff)
+    anim = QPropertyAnimation(eff, b"opacity", widget)
+    anim.setDuration(ms)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.OutCubic)
+    anim.finished.connect(lambda: widget.setGraphicsEffect(None))  # без эффекта — быстрее
+    widget._fade_anim = anim
+    anim.start()
+
+
+def switch_page(stack, widget, ms=220):
+    if stack.currentWidget() is widget:
+        return
+    stack.setCurrentWidget(widget)
+    fade_in(widget, ms)

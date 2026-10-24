@@ -10,21 +10,22 @@ import webbrowser
 from PySide6.QtCore import QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
                                QLineEdit, QMessageBox, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
 
 import actions
 import commands
 import config
+import sites
 from auth import AuthError, AuthStore, Mailer
 from splash import Splash
 from settings import WAKE_REPLY_PRESETS, Settings, greeting, personalize, set_autostart
 from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, Clickable, ConfirmDialog,
                    LogoMark, PlayButton, Toggle,
                    apply_app_theme, button, card, field, font, hline, label, set_role,
-                   window_controls)
-from voice import VOICES, Chime, Listener, Speaker
+                   switch_page, window_controls)
+from voice import Chime, Listener, Speaker
 
 
 class Bridge(QObject):
@@ -286,7 +287,7 @@ class AuthScreen(Backdrop):
         body.addLayout(right, 9)
 
     def show_form(self, form):
-        self.stack.setCurrentWidget(form)
+        switch_page(self.stack, form, 180)
         form.show_error("")
 
 
@@ -616,6 +617,7 @@ class HomeScreen(Backdrop):
     # ---------- жизненный цикл ----------
     def start(self, email, settings):
         self.settings = settings
+        sites.warm()   # список установленных программ — заранее, в фоне
         name = settings["name"] or ""
         self.avatar.setText((name or email or "?")[:1].upper())
         self.history.set_items(settings["history"])
@@ -628,6 +630,8 @@ class HomeScreen(Backdrop):
             self.listener.level.connect(self.orb.push_level)
             self.listener.partial.connect(self._on_partial)
             self.listener.final.connect(self._on_final)
+            self.listener.wake.connect(self._on_wake)
+            self.listener.sensitivity = settings["mic_sensitivity"] or "high"
             self.listener.failed.connect(self._on_failed)
             self.listener.ready.connect(self._on_ready)
             self.listener.start()
@@ -726,6 +730,10 @@ class HomeScreen(Backdrop):
         if self.orb.state in ("idle", "armed") and text:
             self._show_heard(text, True)
 
+    def _on_wake(self):
+        if not self.armed and not self.speaking:
+            self._arm()
+
     def _on_final(self, text):
         words = commands.tokens(text)
         i = commands.find_wake(words, self.settings.wake_words if self.settings else [])
@@ -734,7 +742,7 @@ class HomeScreen(Backdrop):
             if rest:
                 self._disarm(silent=True)
                 self.execute(" ".join(rest))
-            else:
+            elif not self.armed:
                 self._arm()
         elif self.armed:
             self._disarm(silent=True)
@@ -801,11 +809,9 @@ class HomeScreen(Backdrop):
                 or "громче" in self._last_cmd:
             QTimer.singleShot(300, self._poll_volume)
         if ui == "minimize":
-            QTimer.singleShot(300, self.win.showMinimized)
+            QTimer.singleShot(300, self.win.smooth_minimize)
         elif ui == "restore":
-            self.win.showFullScreen()
-            self.win.raise_()
-            self.win.activateWindow()
+            self.win.smooth_restore()
         elif ui == "quit":
             QTimer.singleShot(1800, self.win.force_close)
 
@@ -940,8 +946,10 @@ class ProfileScreen(Backdrop):
         if self.settings is None or self._loading:
             return
         self.settings.set(key, value)
-        if key in ("voice_id", "speak_replies"):
-            self.speaker.configure(self.settings["voice_id"], self.settings["speak_replies"])
+        if key in ("voice_speed", "speak_replies"):
+            self.speaker.configure(self.settings["voice_speed"], self.settings["speak_replies"])
+        if key == "mic_sensitivity" and self.win.home.listener is not None:
+            self.win.home.listener.sensitivity = value
         if key == "autostart":
             if not set_autostart(bool(value)):
                 self._flash("Автозапуск работает только в установленной программе")
@@ -1015,34 +1023,40 @@ class ProfileScreen(Backdrop):
             self.preview.setText(f"Вы: «Сеньор»  →  «{a}»\nВы: «Громкость десять»  →  «{b}»")
 
     def _build_voice(self, lay):
-        self._title(lay, "Голос", "Каким голосом отвечает помощник. Нейроголоса звучат "
-                                  "естественно и требуют интернета; без него включится голос Windows.")
-        self.voice_cards = {}
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
-        for i, (vid, (title, *_rest)) in enumerate(VOICES.items()):
-            name, _, desc = title.partition(" — ")
-            c = Clickable()
-            c.setProperty("role", "option")
-            c.setCursor(Qt.PointingHandCursor)
-            c.setMinimumHeight(76)
-            row = QHBoxLayout(c)
-            row.setContentsMargins(18, 14, 16, 14)
-            row.setSpacing(14)
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            col.addWidget(label(name, 16, QFont.DemiBold))
-            col.addWidget(label(desc.capitalize(), 13, role="muted"))
-            row.addLayout(col, 1)
-            play = PlayButton("", 36)
-            play.setToolTip("Послушать")
-            play.clicked.connect(lambda _=False, v=vid, b=play: self._demo_voice(v, b))
-            row.addWidget(play, 0, Qt.AlignVCenter)
-            c.clicked.connect(lambda v=vid: self._choose_voice(v))
-            grid.addWidget(c, i // 2, i % 2)
-            self.voice_cards[vid] = c
-        lay.addLayout(grid)
+        self._title(lay, "Голос", "Помощник говорит голосом «Руслан» — это бесплатный голос "
+                                  "Piper. Он работает прямо на компьютере, даже без интернета.")
+        c = QFrame()
+        c.setProperty("role", "option")
+        c.setProperty("selected", "true")
+        row = QHBoxLayout(c)
+        row.setContentsMargins(20, 18, 18, 18)
+        row.setSpacing(16)
+        row.addWidget(LogoMark(52, glow=False))
+        col = QVBoxLayout()
+        col.setSpacing(3)
+        col.addWidget(label("Руслан", 18, QFont.DemiBold))
+        col.addWidget(label("Мужской, спокойный · русский · офлайн", 13, role="muted"))
+        row.addLayout(col, 1)
+        self.voice_play = PlayButton("Послушать")
+        self.voice_play.clicked.connect(lambda: self._demo_voice(self.voice_play))
+        row.addWidget(self.voice_play, 0, Qt.AlignVCenter)
+        lay.addWidget(c)
+        lay.addSpacing(26)
+        self._caption(lay, "Скорость речи")
+        speeds = QHBoxLayout()
+        speeds.setSpacing(10)
+        group = QButtonGroup(self)
+        self.speed_buttons = {}
+        for key, title in (("slow", "Медленнее"), ("normal", "Обычно"), ("fast", "Быстрее")):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(140)
+            b.clicked.connect(lambda _=False, k=key: self._choose_speed(k))
+            group.addButton(b)
+            speeds.addWidget(b)
+            self.speed_buttons[key] = b
+        speeds.addStretch(1)
+        lay.addLayout(speeds)
         lay.addSpacing(14)
         self.voice_status = label("", 13, role="muted", wrap=True)
         lay.addWidget(self.voice_status)
@@ -1052,16 +1066,9 @@ class ProfileScreen(Backdrop):
                                         "speak_replies")
         lay.addStretch(1)
 
-    def _mark_voice(self, vid):
-        for v, c in self.voice_cards.items():
-            c.setProperty("selected", "true" if v == vid else "false")
-            c.style().unpolish(c)
-            c.style().polish(c)
-
-    def _choose_voice(self, vid):
-        self._set("voice_id", vid)
-        self._mark_voice(vid)
-        self._demo_voice(vid, None)
+    def _choose_speed(self, key):
+        self._set("voice_speed", key)
+        self._demo_voice(self.voice_play)
 
     def _playing(self, btn):
         """Отмечает кнопку, которая сейчас играет; остальные — в обычном виде."""
@@ -1076,13 +1083,14 @@ class ProfileScreen(Backdrop):
         if not flag:
             self._playing(None)
 
-    def _demo_voice(self, vid, btn=None):
+    def _demo_voice(self, btn=None):
         addr = self.settings["address"] if self.settings else ""
+        speed = self.settings["voice_speed"] if self.settings else "normal"
         self.voice_status.setText("")
         self.speaker.interrupt()
         self._playing(btn)
         self.speaker.say(personalize("Здравствуйте. Я SenioreM, ваш голосовой помощник.", addr),
-                         force=True, voice_id=vid)
+                         force=True, speed=speed)
 
     def _build_wake(self, lay):
         self._title(lay, "Активация", "Как вы обращаетесь к помощнику и как он даёт понять, "
@@ -1097,6 +1105,26 @@ class ProfileScreen(Backdrop):
         self.t_wake_reply = self._toggle_row(lay, "Отвечать голосом на обращение",
                                              "Например: «Слушаю вас» — текст задаётся в разделе "
                                              "«Обращение».", "speak_wake_reply")
+        self._caption(lay, "Чувствительность микрофона")
+        sens = QHBoxLayout()
+        sens.setSpacing(10)
+        sgroup = QButtonGroup(self)
+        self.sens_buttons = {}
+        for key, title in (("normal", "Обычная"), ("high", "Высокая"), ("whisper", "Слышит шёпот")):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(160)
+            b.clicked.connect(lambda _=False, k=key: self._set("mic_sensitivity", k))
+            sgroup.addButton(b)
+            sens.addWidget(b)
+            self.sens_buttons[key] = b
+        sens.addStretch(1)
+        lay.addLayout(sens)
+        lay.addSpacing(6)
+        lay.addWidget(label("«Слышит шёпот» сильнее усиливает тихую речь — удобно ночью, "
+                            "но в шумной комнате возможны ложные срабатывания.", 12,
+                            role="faint", wrap=True))
+        lay.addSpacing(26)
         self._caption(lay, "Сколько секунд ждать команду после обращения")
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -1225,7 +1253,10 @@ class ProfileScreen(Backdrop):
         self.f_address.setText(settings["address"])
         self.f_wake.setText(settings["wake_reply"])
         self.f_words.setText(settings["wake_words"])
-        self._mark_voice(settings["voice_id"])
+        for k, b in self.speed_buttons.items():
+            b.setChecked(k == (settings["voice_speed"] or "normal"))
+        for k, b in self.sens_buttons.items():
+            b.setChecked(k == (settings["mic_sensitivity"] or "high"))
         self.voice_status.setText("")
         self.t_speak.setChecked(bool(settings["speak_replies"]))
         self.t_chime.setChecked(bool(settings["chime"]))
@@ -1240,14 +1271,16 @@ class ProfileScreen(Backdrop):
 
     def show_section(self, key):
         self.nav_buttons[key].setChecked(True)
-        self.pages.setCurrentWidget(self.page_widgets[key])
+        switch_page(self.pages, self.page_widgets[key], 180)
         if key == "history" and self.settings is not None:
             self.full_history.set_items(self.settings["history"])
 
 
 # ================================================================== окно
 class MainWindow(QWidget):
-    def __init__(self, cfg, model=None):
+    def __init__(self, cfg, models=None):
+        models = models or {}
+        model = models.get("model")
         super().__init__()
         self.cfg = cfg
         self.setObjectName("root")
@@ -1259,7 +1292,7 @@ class MainWindow(QWidget):
 
         self.store = AuthStore(config.data_dir())
         self.mailer = Mailer(cfg)
-        self.speaker = Speaker(cfg.get("voice", {}))
+        self.speaker = Speaker(models.get("voice"))
         self.speaker.start()
         self.bridge = Bridge()
         self.bridge.mail_done.connect(self._mail_done)
@@ -1302,7 +1335,7 @@ class MainWindow(QWidget):
 
     # ---------- навигация ----------
     def _go_auth(self, form):
-        self.stack.setCurrentWidget(self.auth)
+        switch_page(self.stack, self.auth)
         self.auth.show_form(form)
         QTimer.singleShot(0, lambda: (form.email.setFocus() if hasattr(form, "email")
                                       else form.code.focus(0)))
@@ -1311,9 +1344,9 @@ class MainWindow(QWidget):
         self.email = email
         self.settings = Settings(config.data_dir(), email)
         s = self.settings
-        self.speaker.configure(s["voice_id"], s["speak_replies"])
+        self.speaker.configure(s["voice_speed"], s["speak_replies"])
         self.speaker.prefetch([s["wake_reply"]] if s["wake_reply"] else [])
-        self.stack.setCurrentWidget(self.home)
+        switch_page(self.stack, self.home)
         self.home.start(email, s)
         if not self.greeted:
             self.greeted = True
@@ -1327,10 +1360,10 @@ class MainWindow(QWidget):
             return
         self.profile.load(self.email, self.settings)
         self.profile.show_section(section)
-        self.stack.setCurrentWidget(self.profile)
+        switch_page(self.stack, self.profile)
 
     def _back_home(self):
-        self.stack.setCurrentWidget(self.home)
+        switch_page(self.stack, self.home)
         self.home.start(self.email, self.settings)
 
     def _logout(self):
@@ -1456,6 +1489,42 @@ class MainWindow(QWidget):
         f.pw.clear()
         self._enter(email)
 
+    # ---------- плавные появление и сворачивание ----------
+    def _animate_opacity(self, start, end, ms, then=None):
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(ms)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if then:
+            anim.finished.connect(then)
+        self._win_anim = anim
+        anim.start()
+
+    def appear(self):
+        self.setWindowOpacity(0.0)
+        self.showFullScreen()
+        self._animate_opacity(0.0, 1.0, 320)
+
+    def smooth_minimize(self):
+        self._animate_opacity(self.windowOpacity(), 0.0, 180, self.showMinimized)
+
+    def smooth_restore(self):
+        self.setWindowOpacity(0.0)
+        self.showFullScreen()
+        self.raise_()
+        self.activateWindow()
+        self._animate_opacity(0.0, 1.0, 260)
+
+    def changeEvent(self, e):
+        from PySide6.QtCore import QEvent
+        if e.type() == QEvent.WindowStateChange and not self.isMinimized() \
+                and e.oldState() & Qt.WindowMinimized:
+            self.setWindowOpacity(0.0)
+            QTimer.singleShot(0, lambda: self._animate_opacity(0.0, 1.0, 260))
+        super().changeEvent(e)
+
     def request_close(self):
         dlg = ConfirmDialog(self, "Закрыть SenioreM?",
                             "Помощник перестанет слушать команды, пока вы снова его не откроете.",
@@ -1487,7 +1556,74 @@ def _install_error_log():
     sys.excepthook = hook
 
 
+def run_selftest(out_path):
+    """Проверка сборки без окна: модели, распознавание, голос. Используется в GitHub Actions."""
+    import json
+    import wave
+    lines, ok = [], True
+
+    def log(msg):
+        lines.append(msg)
+
+    try:
+        import tts
+        for mod in ("vosk", "sounddevice", "piper", "onnxruntime", "comtypes", "pycaw.pycaw",
+                    "psutil", "PySide6.QtWidgets"):
+            try:
+                __import__(mod)
+                log(f"OK import {mod}")
+            except Exception as e:  # noqa: BLE001
+                ok = False
+                log(f"FAIL import {mod}: {e!r}")
+        path = config.model_dir()
+        if not config.model_ready(path):
+            from splash import Loader
+            Loader()._download_model()
+            path = config.model_dir()
+        from splash import load_model
+        model = load_model(path)
+        log(f"OK vosk model: {path}")
+        if not tts.voice_ready():
+            tts.download_voice()
+        voice = tts.load_voice()
+        log("OK piper voice loaded")
+        wav = str(config.local_dir() / "selftest.wav")
+        tts.synth_wav(voice, "Сеньор, громкость десять процентов.", wav)
+        secs = tts.wav_seconds(wav)
+        log(f"OK synth {secs:.2f}s")
+        if secs < 0.5:
+            ok = False
+            log("FAIL synth too short")
+        from vosk import KaldiRecognizer
+        with wave.open(wav, "rb") as w:
+            rec = KaldiRecognizer(model, w.getframerate())
+            while True:
+                data = w.readframes(4000)
+                if not data:
+                    break
+                rec.AcceptWaveform(data)
+        heard = json.loads(rec.FinalResult()).get("text", "")
+        log(f"heard: {heard!r}")
+        words = commands.tokens(heard)
+        i = commands.find_wake(words)
+        intent = commands.parse(" ".join(words[i + 1:]) if i >= 0 else heard)
+        log(f"intent: {intent}")
+        for speed in ("slow", "fast"):
+            tts.synth_wav(voice, "Проверка скорости.", wav, speed)
+        log("OK speeds")
+    except Exception:  # noqa: BLE001
+        ok = False
+        log("FAIL " + traceback.format_exc())
+    log("RESULT " + ("PASS" if ok else "FAIL"))
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    os._exit(0 if ok else 1)
+
+
 def main():
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        run_selftest(sys.argv[i + 1] if len(sys.argv) > i + 1 else "selftest.txt")
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
@@ -1512,10 +1648,10 @@ def main():
     cfg = config.load_config()
     holder = {}
 
-    def open_main(model):
-        win = MainWindow(cfg, model)
+    def open_main(models):
+        win = MainWindow(cfg, models)
         holder["win"] = win
-        win.showFullScreen()
+        win.appear()
 
     splash = Splash()
     splash.done.connect(open_main)

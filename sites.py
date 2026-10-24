@@ -83,13 +83,15 @@ ALIASES = {
     "файрфокс": "firefox", "фаерфокс": "firefox", "опера": "opera", "стим": "steam",
     "зум": "zoom", "вайбер": "viber", "скайп": "skype", "фотошоп": "photoshop",
     "яндекс": "yandex", "яндекс браузер": "yandex", "вк": "vk", "вконтакте": "vk",
-    "обс": "obs", "майнкрафт": "minecraft", "кс": "cs2", "дота": "dota", "аюграм": "ayugram",
+    "обс": "obs", "майнкрафт": "minecraft", "кс": "counter strike", "контра": "counter strike", "дота": "dota", "аюграм": "ayugram",
     "пауэрпоинт": "powerpoint", "повер поинт": "powerpoint", "аутлук": "outlook",
     "вижуал студио": "visual studio", "вс код": "visual studio code", "эпик": "epic games",
     "эпик геймс": "epic games", "юнити": "unity", "блендер": "blender", "торрент": "torrent",
     "утоппент": "utorrent", "ватсапп": "whatsapp", "лаунчер": "launcher", "роблокс": "roblox",
     "фортнайт": "fortnite", "валорант": "valorant", "батл нет": "battle.net",
     "тим спик": "teamspeak", "энидеск": "anydesk", "тимвьюер": "teamviewer",
+    "осу": "osu", "оса": "osu", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
+    "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
 }
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n",
@@ -135,7 +137,24 @@ def find_site(name: str):
     return None
 
 
-# ---------------- программы из меню «Пуск» ----------------
+# ---------------- установленные программы ----------------
+import threading
+import time
+from difflib import SequenceMatcher
+
+_apps = []            # [(нормализованное имя, исходное имя, ("lnk", путь) | ("app", AppID))]
+_apps_time = 0.0
+_apps_lock = threading.Lock()
+SKIP = ("uninstall", "удал", "readme", "help", "справк", "website", "веб-сайт", "seniorem",
+        "documentation", "release notes", "changelog", "license", "лиценз")
+
+
+def _norm(name: str) -> str:
+    name = name.lower().replace("ё", "е")
+    name = re.sub(r"\(.*?\)", " ", name)
+    return " ".join(re.sub(r"[^a-zа-я0-9]+", " ", name).split())
+
+
 def _shortcut_dirs():
     env = os.environ
     dirs = []
@@ -151,17 +170,51 @@ def _shortcut_dirs():
     return dirs
 
 
-def installed_shortcuts():
+def _scan_shortcuts():
     out = []
     for d in _shortcut_dirs():
         for p in d.rglob("*"):
             if p.suffix.lower() in (".lnk", ".url", ".appref-ms"):
-                n = p.stem.lower()
-                if any(x in n for x in ("uninstall", "удал", "readme", "help", "справк",
-                                        "website", "веб-сайт", "senioremm", "seniorem")):
-                    continue
-                out.append((n, p))
+                out.append((p.stem, ("lnk", str(p))))
     return out
+
+
+def _scan_start_apps():
+    """Все приложения меню «Пуск», включая приложения из Microsoft Store."""
+    import json
+    import subprocess
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+                            "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress"],
+                           capture_output=True, timeout=20, creationflags=0x08000000)
+        data = json.loads(r.stdout.decode("utf-8", "ignore") or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        return [(d["Name"], ("app", d["AppID"])) for d in data if d.get("Name") and d.get("AppID")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def refresh_apps(force=False):
+    global _apps, _apps_time
+    with _apps_lock:
+        if not force and _apps and time.time() - _apps_time < 600:
+            return _apps
+        items = {}
+        for name, target in _scan_start_apps() + _scan_shortcuts():
+            n = _norm(name)
+            if not n or any(k in n for k in SKIP):
+                continue
+            items.setdefault(n, (n, name, target))
+        _apps = list(items.values())
+        _apps_time = time.time()
+        return _apps
+
+
+def warm():
+    """Заранее собирает список программ в фоне, чтобы «открой …» срабатывало мгновенно."""
+    threading.Thread(target=refresh_apps, daemon=True).start()
 
 
 def keys_for(name: str):
@@ -171,17 +224,43 @@ def keys_for(name: str):
         keys |= {ALIASES.get(w, ""), ALIASES.get(_base(w), "")}
         if len(w) >= 4:
             keys |= {_base(w), translit(_base(w))}
-    return {k for k in keys if len(k) >= 3}
+    return {_norm(k) for k in keys if len(_norm(k)) >= 2}
+
+
+def _score(key: str, app: str) -> float:
+    if key == app:
+        return 1.0
+    flat_k, flat_a = key.replace(" ", ""), app.replace(" ", "")
+    if flat_k == flat_a:
+        return 0.98
+    words = app.split()
+    if key in words or (len(flat_k) >= 3 and flat_a.startswith(flat_k)):
+        return 0.92 - 0.01 * max(0, len(words) - 1)
+    if len(flat_k) >= 4 and flat_k in flat_a:
+        return 0.85 - 0.01 * max(0, len(words) - 1)
+    best = SequenceMatcher(None, flat_k, flat_a).ratio()
+    for w in words:
+        if len(w) >= 3:
+            best = max(best, SequenceMatcher(None, flat_k, w).ratio() - 0.04)
+    return best
 
 
 def find_program(name: str):
+    """-> (исходное имя, ("lnk", путь) | ("app", AppID)) или None."""
     keys = keys_for(name)
     if not keys:
         return None
-    best = None
-    for n, path in installed_shortcuts():
-        flat = n.replace(" ", "")
-        if any(k.replace(" ", "") in flat for k in keys):
-            if best is None or len(n) < len(best[0]):
-                best = (n, path)
-    return best[1] if best else None
+    best, best_score = None, 0.0
+    for n, orig, target in refresh_apps():
+        sc = max(_score(k, n) for k in keys)
+        if sc > best_score:
+            best, best_score = (orig, target), sc
+    return best if best_score >= 0.8 else None
+
+
+def launch(target):
+    kind, value = target
+    if kind == "app":
+        os.startfile("shell:AppsFolder\\" + value)  # type: ignore[attr-defined]
+    else:
+        os.startfile(value)  # type: ignore[attr-defined]

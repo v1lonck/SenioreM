@@ -11,7 +11,8 @@ AppName=SenioreM
 AppVersion={#AppVersion}
 AppVerName=SenioreM {#AppVersion}
 AppPublisher=SenioreM
-DefaultDirName={localappdata}\Programs\SenioreM
+DefaultDirName={code:InstallDir}
+UsePreviousAppDir=no
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
@@ -48,9 +49,13 @@ ru.FinishedLabel=SenioreM установлен, ярлык — на рабоче
 Source: "install_logo.bmp"; Flags: dontcopy
 Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; старая папка с русскими буквами в пути (если программа переехала в C:\SenioreM)
+Type: filesandordirs; Name: "{localappdata}\Programs\SenioreM"; Check: OldDirDiffers
+
 [Icons]
-Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"
-Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"
+Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
+Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
 
 [Run]
 ; сразу после установки запускаем программу
@@ -81,14 +86,41 @@ begin
   Result.Caption := Text;
 end;
 
-{ Своё тёмное окно «Устанавливаю…» вместо мастера установки }
+{ Путь установки без русских букв: голосовые библиотеки не понимают кириллицу в пути }
+function IsAscii(S: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := True;
+  for I := 1 to Length(S) do
+    if Ord(S[I]) > 127 then
+    begin
+      Result := False;
+      Exit;
+    end;
+end;
+
+function InstallDir(Param: String): String;
+begin
+  Result := ExpandConstant('{localappdata}\Programs\SenioreM');
+  if not IsAscii(Result) then
+    Result := ExpandConstant('{sd}\SenioreM');
+end;
+
+function OldDirDiffers: Boolean;
+begin
+  Result := CompareText(ExpandConstant('{app}'),
+                        ExpandConstant('{localappdata}\Programs\SenioreM')) <> 0;
+end;
+
+{ Окно установки в том же дизайне, что и окно загрузки программы }
 procedure ShowInstallSplash;
 var
   Logo, Track: TBitmapImage;
-  W, H: Integer;
+  W, H, Y: Integer;
 begin
-  W := ScaleX(560);
-  H := ScaleY(280);
+  W := ScaleX(860);
+  H := ScaleY(500);
 #if Ver >= 0x06040000
   Splash := CreateCustomForm(W, H, False, False);
 #else
@@ -104,36 +136,51 @@ begin
   ExtractTemporaryFile('install_logo.bmp');
   Logo := TBitmapImage.Create(Splash);
   Logo.Parent := Splash;
-  Logo.Left := ScaleX(40);
-  Logo.Top := ScaleY(40);
-  Logo.Width := ScaleX(72);
-  Logo.Height := ScaleY(72);
+  Logo.Left := W - ScaleX(190);
+  Logo.Top := ScaleY(70);
+  Logo.Width := ScaleX(128);
+  Logo.Height := ScaleY(128);
   Logo.Stretch := True;
   Logo.Bitmap.LoadFromFile(ExpandConstant('{tmp}\install_logo.bmp'));
 
-  MakeText(Splash, ScaleX(132), ScaleY(42), 'SenioreM', 24, $F5EFEC, False);
-  MakeText(Splash, ScaleX(135), ScaleY(88), 'ГОЛОСОВОЙ ПОМОЩНИК', 8, $FF8C5B, True);
-  MakeText(Splash, ScaleX(40), ScaleY(170), 'Устанавливаю SenioreM…', 11, $F5EFEC, False);
+  MakeText(Splash, ScaleX(56), ScaleY(64), 'ГОЛОСОВОЙ ПОМОЩНИК ДЛЯ WINDOWS', 8, $FF8C5B, True);
+  with MakeText(Splash, ScaleX(52), ScaleY(84), 'SenioreM', 44, $F5EFEC, False) do
+    Font.Name := 'Segoe UI Light';
+  MakeText(Splash, ScaleX(56), ScaleY(170), 'Скажите «Сеньор» — остальное он сделает сам.', 13, $A6938A, False);
 
-  BarW := W - ScaleX(80);
+  Y := ScaleY(232);
+  MakeText(Splash, ScaleX(56), Y, '01', 9, $FF8C5B, True);
+  MakeText(Splash, ScaleX(84), Y - ScaleY(2), 'Звук и громкость', 11, $F5EFEC, True);
+  MakeText(Splash, ScaleX(84), Y + ScaleY(22), '«Сеньор, громкость десять»', 9, $6E5C53, False);
+  MakeText(Splash, ScaleX(460), Y, '02', 9, $FF8C5B, True);
+  MakeText(Splash, ScaleX(488), Y - ScaleY(2), 'Открыть и закрыть программы', 11, $F5EFEC, True);
+  MakeText(Splash, ScaleX(488), Y + ScaleY(22), '«Сеньор, открой осу»', 9, $6E5C53, False);
+  Y := ScaleY(294);
+  MakeText(Splash, ScaleX(56), Y, '03', 9, $FF8C5B, True);
+  MakeText(Splash, ScaleX(84), Y - ScaleY(2), 'Сайты и поиск', 11, $F5EFEC, True);
+  MakeText(Splash, ScaleX(84), Y + ScaleY(22), '«Сеньор, открой яндекс музыку»', 9, $6E5C53, False);
+  MakeText(Splash, ScaleX(460), Y, '04', 9, $FF8C5B, True);
+  MakeText(Splash, ScaleX(488), Y - ScaleY(2), 'Музыка, время, скриншоты', 11, $F5EFEC, True);
+  MakeText(Splash, ScaleX(488), Y + ScaleY(22), '«Сеньор, который час»', 9, $6E5C53, False);
+
+  MakeText(Splash, ScaleX(56), H - ScaleY(88), 'Устанавливаю — через несколько секунд программа откроется сама', 10, $A6938A, False);
+  BarW := W - ScaleX(112);
   Track := TBitmapImage.Create(Splash);
   Track.Parent := Splash;
-  Track.Left := ScaleX(40);
-  Track.Top := ScaleY(206);
+  Track.Left := ScaleX(56);
+  Track.Top := H - ScaleY(56);
   Track.Width := BarW;
-  Track.Height := ScaleY(4);
+  Track.Height := ScaleY(3);
   Track.BackColor := $382B25;
 
   BarFill := TBitmapImage.Create(Splash);
   BarFill.Parent := Splash;
-  BarFill.Left := ScaleX(40);
-  BarFill.Top := ScaleY(206);
+  BarFill.Left := ScaleX(56);
+  BarFill.Top := H - ScaleY(56);
   BarFill.Width := ScaleX(8);
-  BarFill.Height := ScaleY(4);
+  BarFill.Height := ScaleY(3);
   BarFill.BackColor := $FF8C5B;
 
-  MakeText(Splash, ScaleX(40), ScaleY(228),
-    'Через несколько секунд программа откроется сама', 9, $A6938A, False);
   Splash.Show;
   Splash.Repaint;
 end;

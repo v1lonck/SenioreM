@@ -18,11 +18,6 @@ DEFAULTS = {
     "email_verification": False,
     # Если почта не настроена или здесь true — код показывается прямо в окне.
     "test_mode_show_code": False,
-    "voice": {
-        # Нейроголос (нужен интернет). Без интернета — встроенный голос Windows.
-        "edge_voice": "ru-RU-DmitryNeural",
-        "rate": "+0%",
-    },
     "wake_words": ["сеньор", "сеньер", "синьор"],
     "search_url": "https://www.google.com/search?q=",
     "home_url": "https://www.google.com",
@@ -52,6 +47,13 @@ def data_dir() -> Path:
 
 MODEL_NAME = "vosk-model-small-ru-0.22"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
+
+
+def model_urls():
+    """Зеркало в релизах GitHub (быстрее и доступнее), затем официальный сайт Vosk."""
+    repo = load_config().get("update_repo") or ""
+    urls = [f"https://github.com/{repo}/releases/download/models/{MODEL_NAME}.zip"] if repo else []
+    return urls + [MODEL_URL]
 
 
 def _ascii(p) -> bool:

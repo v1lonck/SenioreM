@@ -146,26 +146,25 @@ def open_app(app, cfg):
 
 
 def open_by_name(name, cfg):
-    """«яндекс музыку» -> сайт, «телеграм» -> программа (или веб-версия), иначе — сразу
-    первый результат поиска."""
+    """Сначала ищем приложение на компьютере («осу» -> osu!), если его нет — сайт
+    («яндекс музыку» -> music.yandex.ru), иначе — сразу первый результат поиска.
+    Если сказано «сайт …» — открываем именно сайт."""
     import sites
     name = (name or "").strip()
     if not name:
         return "Что открыть?"
+    want_site = "сайт" in name
+    if not want_site:
+        prog = sites.find_program(name)
+        if prog:
+            sites.launch(prog[1])
+            return f"Запускаю {prog[0]}."
     site = sites.find_site(name)
-    if site and (not site[1] or "сайт" in name):
-        webbrowser.open(site[0])
-        return f"Открываю {name}."
-    prog = sites.find_program(name)
-    if prog:
-        _open(str(prog))
-        return f"Запускаю {name}."
     if site:
         webbrowser.open(site[0])
-        return f"Открываю {name}."
-    # «Мне повезёт»: сразу первый сайт из поиска
-    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + name))
-    return f"Открываю {name}."
+        return f"Открываю {sites.clean(name)}."
+    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + sites.clean(name)))
+    return f"Открываю {sites.clean(name)}."
 
 
 # ---------------- закрытие программ ----------------
