@@ -188,6 +188,95 @@ class AuthStore:
         return bool(self.users)
 
 
+def _code_html(code: str, logo_cid: str) -> str:
+    cells = "".join(
+        '<td style="width:52px;height:64px;background:#F2F5FF;border:1px solid #DCE4FF;'
+        'border-radius:12px;text-align:center;vertical-align:middle;font-family:\'Segoe UI\','
+        'Arial,sans-serif;font-size:30px;font-weight:700;color:#0B1A4A">' + d + "</td>"
+        '<td style="width:8px"></td>' for d in code)
+    logo = (f'<img src="cid:{logo_cid}" width="56" height="56" alt="S" '
+            f'style="display:block;border:0;border-radius:14px">') if logo_cid else (
+        '<div style="width:56px;height:56px;border-radius:14px;background:#2E6BFF;color:#fff;'
+        'font:700 30px Arial;line-height:56px;text-align:center">S</div>')
+    return f"""\
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Код подтверждения SenioreM</title></head>
+<body style="margin:0;padding:0;background:#EEF1F7">
+<div style="display:none;max-height:0;overflow:hidden;color:transparent">
+Ваш код для входа в SenioreM: {code}. Он действует 10 минут.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F7">
+<tr><td align="center" style="padding:40px 16px">
+<table role="presentation" width="480" cellpadding="0" cellspacing="0"
+ style="max-width:480px;width:100%;background:#FFFFFF;border-radius:20px;overflow:hidden;
+ box-shadow:0 10px 40px rgba(20,40,110,0.10)">
+  <tr><td style="background:#0B1230;background-image:linear-gradient(135deg,#0E1E5A 0%,#2E6BFF 100%);
+   padding:36px 40px 32px 40px">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+      <td style="vertical-align:middle">{logo}</td>
+      <td style="padding-left:16px;vertical-align:middle;font-family:'Segoe UI',Arial,sans-serif">
+        <div style="font-size:22px;font-weight:600;color:#FFFFFF;letter-spacing:.3px">SenioreM</div>
+        <div style="font-size:12px;color:#BFD0FF;letter-spacing:1.6px;text-transform:uppercase;
+         padding-top:2px">голосовой помощник</div>
+      </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:38px 40px 8px 40px;font-family:'Segoe UI',Arial,sans-serif;color:#141A2E">
+    <div style="font-size:26px;font-weight:300;line-height:1.3">Подтвердите почту</div>
+    <div style="font-size:15px;line-height:1.6;color:#5A6378;padding-top:12px">
+      Здравствуйте! Вы создаёте аккаунт в SenioreM. Чтобы закончить регистрацию,
+      введите этот код в окне программы:</div>
+  </td></tr>
+  <tr><td align="center" style="padding:26px 40px 10px 40px">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr>{cells}</tr></table>
+  </td></tr>
+  <tr><td align="center" style="padding:6px 40px 30px 40px;font-family:'Segoe UI',Arial,sans-serif;
+   font-size:13px;color:#8A93A6">Код действует 10 минут</td></tr>
+  <tr><td style="padding:0 40px"><div style="height:1px;background:#E8ECF4"></div></td></tr>
+  <tr><td style="padding:26px 40px 34px 40px;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;
+   line-height:1.6;color:#5A6378">
+    После входа просто скажите <b style="color:#141A2E">«Сеньор»</b> — и он сделает остальное:
+    поменяет громкость, откроет сайт или программу, найдёт нужное в интернете.
+    <div style="padding-top:18px;font-size:12px;color:#9AA2B4">
+      Если вы не регистрировались в SenioreM, просто удалите это письмо — без кода
+      никто не сможет войти с вашей почтой.</div>
+  </td></tr>
+</table>
+<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#9AA2B4;padding-top:18px">
+  © SenioreM · письмо отправлено автоматически, отвечать на него не нужно</div>
+</td></tr></table>
+</body></html>"""
+
+
+def build_code_email(from_name: str, sender: str, to: str, code: str) -> EmailMessage:
+    """Красивое письмо с кодом: синяя шапка с логотипом S, код в отдельных ячейках."""
+    from email.utils import make_msgid
+    msg = EmailMessage()
+    msg["Subject"] = f"{code} — ваш код для SenioreM"
+    msg["From"] = formataddr((from_name, sender))
+    msg["To"] = to
+    msg.set_content(
+        "Здравствуйте!\n\n"
+        f"Ваш код подтверждения SenioreM: {code}\n"
+        "Введите его в окне программы. Код действует 10 минут.\n\n"
+        "Если вы не регистрировались в SenioreM, просто удалите это письмо.\n"
+    )
+    logo_bytes = None
+    try:
+        import config
+        p = config.resource_path("assets/icon_mail.png")
+        if not p.exists():
+            p = config.resource_path("assets/icon.png")
+        logo_bytes = p.read_bytes()
+    except Exception:  # noqa: BLE001
+        pass
+    cid = make_msgid(domain="seniorem.app")[1:-1] if logo_bytes else ""
+    msg.add_alternative(_code_html(code, cid), subtype="html")
+    if logo_bytes:
+        msg.get_payload()[1].add_related(logo_bytes, maintype="image", subtype="png",
+                                         cid=f"<{cid}>", filename="seniorem.png")
+    return msg
+
+
 class Mailer:
     def __init__(self, cfg: dict):
         smtp = cfg.get("smtp") or {}
@@ -202,29 +291,7 @@ class Mailer:
         return bool(self.host and self.user and self.password)
 
     def send_code(self, to: str, code: str):
-        msg = EmailMessage()
-        msg["Subject"] = f"{code} — код подтверждения SenioreM"
-        msg["From"] = formataddr((self.from_name, self.user))
-        msg["To"] = to
-        msg.set_content(
-            f"Ваш код подтверждения: {code}\n\n"
-            "Код действует 10 минут. Если вы не регистрировались в SenioreM — "
-            "просто удалите это письмо."
-        )
-        spaced = "&nbsp;".join(code)
-        msg.add_alternative(f"""\
-<!doctype html><html><body style="margin:0;background:#f4f2ee;padding:40px 0;
-font-family:'Segoe UI',Arial,sans-serif;color:#1a1918">
-<table role="presentation" width="100%"><tr><td align="center">
-<table role="presentation" width="440" style="background:#ffffff;border-radius:14px;padding:40px">
-<tr><td style="font-size:15px;font-weight:600;letter-spacing:.5px">SenioreM</td></tr>
-<tr><td style="padding-top:28px;font-size:22px;font-weight:300">Код подтверждения</td></tr>
-<tr><td style="padding-top:8px;font-size:14px;color:#77726b">Введите его в окне программы.</td></tr>
-<tr><td style="padding:28px 0;font-size:38px;font-weight:600;letter-spacing:6px">{spaced}</td></tr>
-<tr><td style="font-size:13px;color:#77726b;border-top:1px solid #ece9e4;padding-top:20px">
-Код действует 10 минут. Если вы не регистрировались — просто удалите письмо.</td></tr>
-</table></td></tr></table></body></html>""", subtype="html")
-
+        msg = build_code_email(self.from_name, self.user, to, code)
         ctx = ssl.create_default_context()
         try:
             if self.port == 465:
