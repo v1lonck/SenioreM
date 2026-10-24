@@ -137,13 +137,35 @@ def open_app(app, cfg):
         "documents": (lambda: _open(str(home / "Documents")), "Открываю документы."),
         "settings": (lambda: _open("ms-settings:"), "Открываю параметры."),
         "taskmgr": (lambda: _open("taskmgr.exe"), "Открываю диспетчер задач."),
-        "youtube": (lambda: webbrowser.open("https://www.youtube.com"), "Открываю ютуб."),
         "paint": (lambda: _open("mspaint.exe"), "Открываю пейнт."),
     }
     fn, reply = table[app]
     fn()
     return reply
 
+
+
+def open_by_name(name, cfg):
+    """«яндекс музыку» -> сайт, «телеграм» -> программа (или веб-версия), иначе — сразу
+    первый результат поиска."""
+    import sites
+    name = (name or "").strip()
+    if not name:
+        return "Что открыть?"
+    site = sites.find_site(name)
+    if site and (not site[1] or "сайт" in name):
+        webbrowser.open(site[0])
+        return f"Открываю {name}."
+    prog = sites.find_program(name)
+    if prog:
+        _open(str(prog))
+        return f"Запускаю {name}."
+    if site:
+        webbrowser.open(site[0])
+        return f"Открываю {name}."
+    # «Мне повезёт»: сразу первый сайт из поиска
+    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + name))
+    return f"Открываю {name}."
 
 
 # ---------------- закрытие программ ----------------
@@ -254,7 +276,8 @@ def close_app(intent):
                 return f"Закрыл окно «{title[:40]}»."
         return "Открытых окон нет."
 
-    keys = {name, _translit(name), ALIASES.get(name, "")}
+    import sites
+    keys = sites.keys_for(name) | {name, _translit(name), ALIASES.get(name, "")}
     if app == "youtube":
         keys = {"youtube"}
     if "word" in keys:
@@ -311,12 +334,7 @@ def run(intent: dict, cfg: dict):
         if a == "open":
             if intent.get("app"):
                 return open_app(intent["app"], cfg), ""
-            name = intent.get("name") or ""
-            if name:
-                webbrowser.open(cfg.get("search_url", "https://www.google.com/search?q=")
-                                + urllib.parse.quote(name))
-                return f"Не знаю такой программы, ищу «{name}» в интернете.", ""
-            return "Что открыть?", ""
+            return open_by_name(intent.get("name") or "", cfg), ""
         if a == "close":
             return close_app(intent), ""
         if a == "search":

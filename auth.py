@@ -152,6 +152,23 @@ class AuthStore:
         self.set_session(email)
         return email
 
+    def change_password(self, email: str, old: str, new: str, new2: str):
+        user = self.users.get(self.normalize_email(email))
+        if not user:
+            raise AuthError("Аккаунт не найден.")
+        if not hmac.compare_digest(user["hash"], _hash_password(old, user["salt"])):
+            raise AuthError("Текущий пароль указан неверно.")
+        if len(new) < 6:
+            raise AuthError("Новый пароль — минимум 6 символов.")
+        if new != new2:
+            raise AuthError("Новые пароли не совпадают.")
+        salt = secrets.token_hex(16)
+        user.update(salt=salt, hash=_hash_password(new, salt))
+        self._save(self.users_path, self.users)
+
+    def created(self, email: str) -> int:
+        return int((self.users.get(self.normalize_email(email)) or {}).get("created", 0))
+
     def set_session(self, email: str):
         self._save(self.session_path, {"email": email, "since": int(time.time())})
 

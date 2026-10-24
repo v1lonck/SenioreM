@@ -33,7 +33,7 @@ WizardStyle=modern
 WizardSizePercent=110
 WizardImageFile=wizard_164.bmp,wizard_410.bmp
 WizardSmallImageFile=small_55.bmp,small_138.bmp
-CloseApplications=yes
+CloseApplications=force
 
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -69,6 +69,20 @@ var
 begin
   Desk := AddBackslash(Lowercase(ExpandConstant('{userdesktop}')));
   Result := Pos(Desk, Lowercase(ExpandConstant('{srcexe}'))) = 1;
+end;
+
+{ Окна мастера установки не показываем: установщик перезапускает себя в тихом
+  режиме, а по окончании сразу открывается SenioreM со своим окном загрузки. }
+function InitializeSetup: Boolean;
+var
+  Code: Integer;
+begin
+  Result := True;
+  if not WizardSilent then
+    if Exec(ExpandConstant('{srcexe}'),
+            '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS',
+            '', SW_SHOWNORMAL, ewNoWait, Code) then
+      Result := False;
 end;
 
 { Тёмное оформление установщика в цветах программы }
