@@ -14,6 +14,8 @@ DEFAULTS = {
         "password": "",
         "from_name": "SenioreM",
     },
+    # Подтверждение почты кодом. Пока выключено: регистрация по логину и паролю.
+    "email_verification": False,
     # Если почта не настроена или здесь true — код показывается прямо в окне.
     "test_mode_show_code": False,
     "voice": {

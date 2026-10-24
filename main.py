@@ -70,15 +70,20 @@ class FormBase(QWidget):
 
 
 class RegisterForm(FormBase):
-    def __init__(self):
+    def __init__(self, by_email=False):
         super().__init__()
-        self.head("РЕГИСТРАЦИЯ", "Создать аккаунт",
-                  "Подтвердим почту одноразовым кодом — это займёт минуту.")
-        self.email = self.add_field("Почта", field("you@mail.ru"))
+        if by_email:
+            self.head("РЕГИСТРАЦИЯ", "Создать аккаунт",
+                      "Подтвердим почту одноразовым кодом — это займёт минуту.")
+            self.email = self.add_field("Почта", field("you@mail.ru"))
+        else:
+            self.head("РЕГИСТРАЦИЯ", "Создать аккаунт",
+                      "Придумайте логин и пароль — это займёт несколько секунд.")
+            self.email = self.add_field("Логин", field("например: kirill"))
         self.pw = self.add_field("Пароль", field("минимум 6 символов", True))
         self.pw2 = self.add_field("Повторите пароль", field("", True))
         self.add_error()
-        self.submit = button("Получить код")
+        self.submit = button("Получить код" if by_email else "Создать аккаунт")
         self.col.addWidget(self.submit)
         self.col.addSpacing(18)
         self.to_login = button("Уже есть аккаунт?  Войти", "link", 14, QFont.Normal)
@@ -89,10 +94,11 @@ class RegisterForm(FormBase):
 
 
 class LoginForm(FormBase):
-    def __init__(self):
+    def __init__(self, by_email=False):
         super().__init__()
         self.head("ВХОД", "С возвращением", "Войдите в свой аккаунт SenioreM.")
-        self.email = self.add_field("Почта", field("you@mail.ru"))
+        self.email = self.add_field("Почта" if by_email else "Логин",
+                                    field("you@mail.ru" if by_email else "ваш логин"))
         self.pw = self.add_field("Пароль", field("", True))
         self.add_error()
         self.submit = button("Войти")
@@ -209,7 +215,7 @@ class VerifyForm(FormBase):
 class AuthScreen(Backdrop):
     """Слева — логотип, название и возможности; справа — форма в карточке."""
 
-    def __init__(self, win):
+    def __init__(self, win, by_email=False):
         super().__init__(glows=((0.25, 0.42, 0.55), (0.80, 0.80, 0.40)))
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 24, 24, 40)
@@ -268,8 +274,8 @@ class AuthScreen(Backdrop):
         self.form_card, fl = card((44, 40, 44, 36))
         self.form_card.setFixedWidth(520)
         self.stack = QStackedWidget()
-        self.register = RegisterForm()
-        self.login = LoginForm()
+        self.register = RegisterForm(by_email)
+        self.login = LoginForm(by_email)
         self.verify = VerifyForm()
         for f in (self.register, self.login, self.verify):
             self.stack.addWidget(f)
@@ -1095,8 +1101,8 @@ class ProfileScreen(Backdrop):
         lay.addStretch(1)
 
     def _build_account(self, lay):
-        self._title(lay, "Аккаунт", "Почта, пароль и выход.")
-        self._caption(lay, "Почта")
+        self._title(lay, "Аккаунт", "Логин, пароль и выход.")
+        self._caption(lay, "Логин")
         self.acc_email = label("", 17)
         lay.addWidget(self.acc_email)
         lay.addSpacing(30)
@@ -1225,7 +1231,8 @@ class MainWindow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
         lay.addWidget(self.stack)
-        self.auth = AuthScreen(self)
+        self.by_email = bool(cfg.get("email_verification"))
+        self.auth = AuthScreen(self, self.by_email)
         self.home = HomeScreen(self, cfg, self.speaker, model)
         self.profile = ProfileScreen(self, cfg, self.store, self.speaker)
         for w in (self.auth, self.home, self.profile):
@@ -1297,6 +1304,16 @@ class MainWindow(QWidget):
     # ---------- регистрация ----------
     def _register(self):
         f = self.auth.register
+        if not self.by_email:
+            try:
+                name = self.store.register(f.email.text(), f.pw.text(), f.pw2.text())
+            except AuthError as e:
+                f.show_error(str(e))
+                return
+            f.pw.clear()
+            f.pw2.clear()
+            self._enter(name)
+            return
         try:
             code = self.store.start_registration(f.email.text(), f.pw.text(), f.pw2.text())
         except AuthError as e:
