@@ -14,12 +14,20 @@ DEFAULTS = {
     "speak_wake_reply": True,
     "chime": True,
     "voice_speed": "normal",
-    "mic_sensitivity": "high",
+    "mic_sensitivity": "normal",
+    "assistant_name": "Сеньор",
     "speak_replies": True,
     "listen_seconds": 8,
-    "wake_words": "сеньор, сеньер, синьор",
+    "wake_words": "",               # дополнительные слова-обращения
     "autostart": False,
     "history": [],
+}
+
+NAME_PRESETS = ["Сеньор", "Компьютер", "Помощник", "Макс", "Шеф", "Друг"]
+NAME_VARIANTS = {
+    "сеньор": ["сеньор", "сеньер", "синьор", "сеньора"],
+    "компьютер": ["компьютер", "компьютера"],
+    "помощник": ["помощник", "помощника"],
 }
 
 WAKE_REPLY_PRESETS = ["Слушаю вас", "Да, господин", "Чем могу помочь?", "На связи", "Да?"]
@@ -64,7 +72,17 @@ class Settings:
 
     @property
     def wake_words(self):
-        return [w.strip() for w in re.split(r"[,;\n]", self["wake_words"] or "") if w.strip()]
+        name = (self["assistant_name"] or "Сеньор").strip().lower().replace("ё", "е")
+        words = list(NAME_VARIANTS.get(name, [name]))
+        extra = self["wake_words"] or ""
+        if extra.strip().lower().replace(" ", "") == "сеньор,сеньер,синьор":
+            extra = ""   # старое значение по умолчанию
+        words += [w.strip().lower() for w in re.split(r"[,;\n]", extra) if w.strip()]
+        return words
+
+    @property
+    def name(self):
+        return (self["assistant_name"] or "Сеньор").strip() or "Сеньор"
 
 
 def personalize(reply: str, address: str) -> str:
