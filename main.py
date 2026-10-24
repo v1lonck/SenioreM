@@ -287,9 +287,9 @@ class Orb(QWidget):
         R = min(self.width(), self.height()) / 2 - 6
         breathe = (math.sin(self._t * 2.4) + 1) / 2
 
-        colors = {"idle": "#3B3936", "armed": ACCENT, "busy": ACCENT,
-                  "speaking": TEXT, "error": ERROR, "loading": "#3B3936"}
-        col = QColor(colors.get(self.state, "#3B3936"))
+        colors = {"idle": "#323A4B", "armed": ACCENT, "busy": ACCENT,
+                  "speaking": TEXT, "error": ERROR, "loading": "#323A4B"}
+        col = QColor(colors.get(self.state, "#323A4B"))
 
         ring = QColor(ACCENT if self.state == "armed" else LINE)
         if self.state == "armed":

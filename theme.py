@@ -4,13 +4,13 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton
 
 # ------------------------------------------------------------------ тема
-BG = "#0F0F0E"
-SURFACE = "#1A1918"
-LINE = "#2C2A28"
-TEXT = "#EEEBE5"
-MUTED = "#8E8981"
-FAINT = "#57534E"
-ACCENT = "#E2A857"
+BG = "#0B0D12"
+SURFACE = "#161A23"
+LINE = "#252B38"
+TEXT = "#ECEFF5"
+MUTED = "#8A93A6"
+FAINT = "#535C6E"
+ACCENT = "#5B8CFF"
 ERROR = "#E58A7A"
 
 FAMILY = "Segoe UI"
@@ -59,7 +59,7 @@ QPushButton[role="primary"] {{
     padding: 0 22px; min-height: 50px;
 }}
 QPushButton[role="primary"]:hover {{ background: #FFFFFF; }}
-QPushButton[role="primary"]:pressed {{ background: #D6D2CB; }}
+QPushButton[role="primary"]:pressed {{ background: #D3D8E3; }}
 QPushButton[role="primary"]:disabled {{ background: {LINE}; color: {FAINT}; }}
 QPushButton[role="link"] {{
     background: transparent; border: none; color: {MUTED};
