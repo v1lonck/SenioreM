@@ -1,0 +1,7 @@
+__pycache__/
+dist/
+Output/
+build/SenioreM/
+config.json
+model/
+.venv/
