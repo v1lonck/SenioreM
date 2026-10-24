@@ -1,7 +1,5 @@
 """Распознавание речи (Vosk, офлайн) и озвучка (нейроголос / голос Windows)."""
 import array
-import asyncio
-import ctypes
 import json
 import math
 import os
@@ -11,7 +9,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 import wave
 
 from PySide6.QtCore import QThread, Signal
@@ -27,10 +24,15 @@ def _co_init():
         pass
 
 
+GAINS = {"normal": 3.0, "high": 6.0, "whisper": 14.0}   # максимальное усиление микрофона
+WAKE_GRAMMAR = ["сеньор", "сеньер", "синьор", "сеньора", "[unk]"]
+
+
 class Listener(QThread):
     level = Signal(float)
     partial = Signal(str)
     final = Signal(str)
+    wake = Signal()          # отдельный чуткий детектор слова «Сеньор»
     failed = Signal(str)
     ready = Signal()
 
@@ -41,6 +43,7 @@ class Listener(QThread):
         self._running = True
         self._paused = False
         self._reset = False
+        self.sensitivity = "high"
 
     def set_paused(self, flag: bool):
         self._paused = flag
@@ -60,6 +63,11 @@ class Listener(QThread):
             import sounddevice as sd
             from vosk import KaldiRecognizer
             rec = KaldiRecognizer(self.model, 16000)
+            try:
+                wake_rec = KaldiRecognizer(self.model, 16000, json.dumps(WAKE_GRAMMAR,
+                                                                         ensure_ascii=False))
+            except Exception:  # noqa: BLE001 — модель без поддержки грамматик
+                wake_rec = None
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"Не удалось запустить распознавание: {e}")
             return
@@ -82,6 +90,8 @@ class Listener(QThread):
             return
 
         last_partial = ""
+        gain = 1.0
+        floor = 0.004            # оценка уровня тишины/шума
         with stream:
             self.ready.emit()
             while self._running:
@@ -93,6 +103,8 @@ class Listener(QThread):
                     continue
                 if self._reset:
                     rec.Reset()
+                    if wake_rec is not None:
+                        wake_rec.Reset()
                     self._reset = False
                     last_partial = ""
                     while not q.empty():
@@ -102,10 +114,30 @@ class Listener(QThread):
                             break
                     continue
 
+                # ---- автоусиление: тихая речь и шёпот подтягиваются до нормальной громкости
                 samples = array.array("h", data)
-                if samples:
-                    rms = math.sqrt(sum(s * s for s in samples) / len(samples)) / 32768.0
-                    self.level.emit(min(1.0, rms * 7))
+                if not samples:
+                    continue
+                rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768.0
+                floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
+                floor = max(0.0005, min(floor, 0.05))
+                max_gain = GAINS.get(self.sensitivity, 6.0)
+                if rms > floor * 1.6:                      # похоже на голос, а не тишину
+                    want = max(1.0, min(max_gain, 0.08 / max(rms, 1e-5)))
+                else:
+                    want = max(1.0, gain * 0.98)           # в тишине шум не раздуваем
+                gain += (want - gain) * (0.5 if want < gain else 0.12)
+                if gain > 1.05:
+                    g = gain
+                    samples = array.array("h", (max(-32768, min(32767, int(x * g))) for x in samples))
+                    data = samples.tobytes()
+                    rms *= g
+                self.level.emit(min(1.0, rms * 7))
+
+                if wake_rec is not None and wake_rec.AcceptWaveform(data):
+                    words = json.loads(wake_rec.Result()).get("text", "").split()
+                    if words and all(w != "[unk]" for w in words):
+                        self.wake.emit()
 
                 if rec.AcceptWaveform(data):
                     text = json.loads(rec.Result()).get("text", "").strip()
@@ -119,14 +151,6 @@ class Listener(QThread):
                         self.partial.emit(p)
 
 
-VOICES = {
-    "dmitry": ("Дмитрий — мужской, спокойный", "ru-RU-DmitryNeural", "-6%", "-3Hz"),
-    "dmitry_fast": ("Дмитрий — мужской, бодрый", "ru-RU-DmitryNeural", "+6%", "+0Hz"),
-    "svetlana": ("Светлана — женский", "ru-RU-SvetlanaNeural", "-2%", "+0Hz"),
-    "dariya": ("Дария — женский, мягкий", "ru-RU-DariyaNeural", "-2%", "+0Hz"),
-}
-
-
 def _log(text):
     try:
         import config
@@ -137,40 +161,38 @@ def _log(text):
 
 
 class Speaker(QThread):
+    """Озвучка фраз голосом Piper «Руслан» (офлайн). Запасной вариант — голос Windows."""
     speaking = Signal(bool)
     problem = Signal(str)
 
-    def __init__(self, voice_cfg: dict, parent=None):
+    def __init__(self, voice=None, parent=None):
         super().__init__(parent)
         self.q = queue.Queue()
         self._stop_now = threading.Event()
-        self._edge_off_until = 0.0
         self._engine = None
-        self._logged = False
+        self._piper = voice
+        self._lock = threading.Lock()
         self.enabled = True
-        self.configure(voice_cfg.get("voice_id", "dmitry"))
-        try:
-            import config
-            self.cache = config.local_dir() / "voice_cache"
-            self.cache.mkdir(parents=True, exist_ok=True)
-        except Exception:  # noqa: BLE001
-            self.cache = None
+        self.speed = "normal"
+        self._warned = False
 
-    def configure(self, voice_id="dmitry", enabled=True):
-        self.voice_id = voice_id if voice_id in VOICES else "dmitry"
+    def set_voice(self, voice):
+        self._piper = voice
+
+    def configure(self, speed="normal", enabled=True):
+        self.speed = speed if speed in ("slow", "normal", "fast") else "normal"
         self.enabled = enabled
 
-    def say(self, text: str, force=False, voice_id=None):
-        """voice_id — разово другим голосом (например, «Послушать» в настройках)."""
+    def say(self, text: str, force=False, speed=None):
         if text and (self.enabled or force):
-            self.q.put((text, voice_id or self.voice_id))
+            self.q.put((text, speed or self.speed))
 
     def prefetch(self, texts):
         """Заранее готовит частые фразы, чтобы они звучали мгновенно."""
         def work():
             for t in texts:
                 try:
-                    self._edge_file(t, self.voice_id)
+                    self._wav(t, self.speed)
                 except Exception:  # noqa: BLE001
                     return
         threading.Thread(target=work, daemon=True).start()
@@ -195,95 +217,61 @@ class Speaker(QThread):
             item = self.q.get()
             if item is None:
                 break
-            text, voice_id = item
+            text, speed = item
             self._stop_now.clear()
             self.speaking.emit(True)
             try:
-                self._speak(text, voice_id)
+                self._speak(text, speed)
             except Exception:  # noqa: BLE001
-                pass
+                import traceback
+                _log("Ошибка озвучки:\n" + traceback.format_exc())
             time.sleep(0.15)  # чтобы микрофон не поймал «хвост» речи
             if self.q.empty():
                 self.speaking.emit(False)
 
     # ---------- озвучка ----------
-    def _speak(self, text, voice_id="dmitry"):
-        import traceback
-        path = None
-        if time.time() > self._edge_off_until:
+    def _wav(self, text, speed):
+        import tts
+        path = tts.cache_path(text, speed)
+        if not os.path.exists(path):
+            with self._lock:   # синтез одной модели — по очереди
+                if not os.path.exists(path):
+                    tts.synth_wav(self._piper, text, path, speed)
+        return path
+
+    def _speak(self, text, speed):
+        if self._piper is not None:
             try:
-                path = self._edge_file(text, voice_id)
-            except Exception:  # noqa: BLE001 — нет интернета / сервис недоступен
-                if not self._logged:
-                    _log("Нейроголос недоступен, использую голос Windows:\n" + traceback.format_exc())
-                    self._logged = True
-                self._edge_off_until = time.time() + 120
-                self.problem.emit("Нейроголос сейчас недоступен (нет интернета?) — "
-                                  "говорит встроенный голос Windows.")
-        if path:
-            try:
-                self._play_mp3(path)
+                self._play_wav(self._wav(text, speed))
                 return
             except Exception:  # noqa: BLE001
-                _log("Не удалось воспроизвести звук:\n" + traceback.format_exc())
-                self.problem.emit("Не получилось воспроизвести нейроголос — "
-                                  "говорит встроенный голос Windows.")
+                import traceback
+                _log("Голос Piper не сработал:\n" + traceback.format_exc())
+                self.problem.emit("Основной голос не сработал — говорит голос Windows.")
+        elif not self._warned:
+            self._warned = True
+            self.problem.emit("Голос ещё не скачан — пока говорит голос Windows. "
+                              "Перезапустите программу при подключённом интернете.")
         if not self._stop_now.is_set():
             self._speak_sapi(text)
 
-    def _edge_file(self, text, voice_id="dmitry"):
-        """mp3 с фразой: из кэша или свежесинтезированный нейроголосом."""
-        import hashlib
-        _, voice, rate, pitch = VOICES.get(voice_id, VOICES["dmitry"])
-        key = hashlib.sha1(f"{voice}|{rate}|{pitch}|{text}".encode()).hexdigest()
-        folder = self.cache or tempfile.gettempdir()
-        path = os.path.join(str(folder), f"{key}.mp3")
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            return path
-        import edge_tts
-        tmp = path + f".{uuid.uuid4().hex[:6]}.part"
-
-        async def gen():
-            await edge_tts.Communicate(text, voice, rate=rate, pitch=pitch).save(tmp)
-
-        asyncio.run(asyncio.wait_for(gen(), timeout=8))
-        os.replace(tmp, path)
-        return path
-
-    def _play_mp3(self, path):
-        """Воспроизведение через MCI Windows. «play … wait» надёжно ждёт конца фразы,
-        а interrupt() останавливает её командой stop из другого потока."""
-        winmm = ctypes.windll.winmm
-        alias = "s" + uuid.uuid4().hex[:8]
-        buf = ctypes.create_unicode_buffer(256)
-
-        def mci(cmd):
-            err = winmm.mciSendStringW(cmd, buf, 255, 0)
-            if err:
-                msg = ctypes.create_unicode_buffer(256)
-                winmm.mciGetErrorStringW(err, msg, 255)
-                return f"{cmd.split()[0]}: {msg.value or err}"
-            return ""
-
-        err = mci(f'open "{path}" type mpegvideo alias {alias}')
-        if err:
-            raise PlaybackError(err)
-        self._alias = alias
-        try:
+    def _play_wav(self, path):
+        import tts
+        import winsound
+        dur = tts.wav_seconds(path)
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        end = time.monotonic() + dur + 0.05
+        while time.monotonic() < end:
             if self._stop_now.is_set():
+                winsound.PlaySound(None, 0)
                 return
-            err = mci(f"play {alias} wait")
-            if err and not self._stop_now.is_set():
-                raise PlaybackError(err)
-        finally:
-            self._alias = None
-            mci(f"close {alias}")
+            time.sleep(0.03)
 
     def _stop_playback(self):
-        alias = getattr(self, "_alias", None)
-        if alias and IS_WIN:
+        if IS_WIN:
             try:
-                ctypes.windll.winmm.mciSendStringW(f"stop {alias}", None, 0, 0)
+                import winsound
+                winsound.PlaySound(None, 0)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -308,7 +296,6 @@ class Speaker(QThread):
             import traceback
             _log("Голос Windows (SAPI) не сработал:\n" + traceback.format_exc())
             self._engine = None
-        # последний вариант — PowerShell System.Speech
         import subprocess
         safe = text.replace("'", "''")
         subprocess.run(["powershell", "-NoProfile", "-Command",

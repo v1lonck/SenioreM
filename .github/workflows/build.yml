@@ -41,6 +41,43 @@ jobs:
           pyinstaller build/SenioreM.spec --noconfirm --clean
           python build/slim.py dist/SenioreM
 
+      - name: Зеркало моделей (голос и распознавание) в релизе «models»
+        id: mirror
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $r = Invoke-WebRequest -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/models" -Headers @{Authorization="Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
+          if ($r.StatusCode -eq 200) { "exists=true" >> $env:GITHUB_OUTPUT; exit 0 }
+          New-Item -ItemType Directory -Force models | Out-Null
+          Invoke-WebRequest "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" -OutFile models/vosk-model-small-ru-0.22.zip
+          $hf = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium"
+          Invoke-WebRequest "$hf/ru_RU-ruslan-medium.onnx" -OutFile models/ru_RU-ruslan-medium.onnx
+          Invoke-WebRequest "$hf/ru_RU-ruslan-medium.onnx.json" -OutFile models/ru_RU-ruslan-medium.onnx.json
+          "exists=false" >> $env:GITHUB_OUTPUT
+
+      - name: Опубликовать зеркало моделей
+        if: steps.mirror.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: models
+          name: Модели для SenioreM (зеркало)
+          body: Речевая модель Vosk и голос Piper «Руслан». Программа скачивает их отсюда при первом запуске.
+          prerelease: true
+          make_latest: false
+          files: |
+            models/vosk-model-small-ru-0.22.zip
+            models/ru_RU-ruslan-medium.onnx
+            models/ru_RU-ruslan-medium.onnx.json
+
+      - name: Самопроверка программы (голос и распознавание)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt | ForEach-Object { "$_" }
+          Get-Content selftest.txt | Select-Object -Last 6 | ForEach-Object { Write-Output "::notice::$_" }
+          if ($p.ExitCode -ne 0) { Write-Output "::error::Самопроверка не прошла"; exit 1 }
+
       - name: Inno Setup
         run: choco install innosetup -y --no-progress
 

@@ -67,66 +67,74 @@ def _log(text):
 
 
 class Loader(QThread):
+    """Готовит всё, что нужно для работы: распознавание речи и голос."""
     progress = Signal(float, str)
-    loaded = Signal(object)
+    loaded = Signal(object)      # {"model": vosk.Model | None, "voice": PiperVoice | None}
     failed = Signal(str)
 
     redownload = False   # после неудачной загрузки модель скачивается заново
 
     def run(self):
         import traceback
+
+        import tts
+        result = {"model": None, "voice": None}
+        # ---- 1. распознавание речи
         try:
             path = config.model_dir()
             if Loader.redownload and path.parent == config.local_dir():
                 shutil.rmtree(path, ignore_errors=True)
                 Loader.redownload = False
             if not config.model_ready(path):
-                self._download()
+                self._download_model()
                 path = config.model_dir()
-            self.progress.emit(0.86, "Загружаю распознавание речи")
+        except Exception:  # noqa: BLE001
+            _log(traceback.format_exc())
+            self.failed.emit("Не удалось скачать распознавание речи. Проверьте интернет и нажмите "
+                             "«Повторить».")
+            return
+        # ---- 2. голос (если не скачается — будет голос Windows)
+        if not tts.voice_ready():
             try:
-                model = load_model(path)
-            except Exception:
-                _log(f"model path: {path}\n" + traceback.format_exc())
-                Loader.redownload = True
-                self.failed.emit("Не удалось загрузить речевую модель. Нажмите «Повторить» — "
-                                 "она скачается заново.")
-                return
-            self.progress.emit(0.95, "Готовлю голос")
-            try:
-                import edge_tts  # noqa: F401  — прогрев импорта
-                import sounddevice  # noqa: F401
+                self.progress.emit(0.46, "Первый запуск — скачиваю голос помощника")
+                tts.download_voice(lambda d, t: self.progress.emit(
+                    0.46 + 0.34 * min(1.0, d / max(t, 1)),
+                    f"Первый запуск — скачиваю голос помощника · {d / 1e6:.0f} из {t / 1e6:.0f} МБ"))
             except Exception:  # noqa: BLE001
-                pass
-            self.progress.emit(1.0, "Готово")
-            self.loaded.emit(model)
-        except OSError:
-            _log(traceback.format_exc())
-            self.failed.emit("Не удалось скачать речевую модель. Проверьте интернет и нажмите «Повторить».")
-        except Exception as e:  # noqa: BLE001
-            _log(traceback.format_exc())
-            self.failed.emit(f"Ошибка загрузки: {e}")
+                _log("Голос не скачался:\n" + traceback.format_exc())
+        # ---- 3. загрузка в память
+        self.progress.emit(0.84, "Загружаю распознавание речи")
+        try:
+            result["model"] = load_model(path)
+        except Exception:  # noqa: BLE001
+            _log(f"model path: {path}\n" + traceback.format_exc())
+            Loader.redownload = True
+            self.failed.emit("Не удалось загрузить речевую модель. Нажмите «Повторить» — "
+                             "она скачается заново.")
+            return
+        self.progress.emit(0.93, "Готовлю голос")
+        if tts.voice_ready():
+            try:
+                result["voice"] = tts.load_voice()
+            except Exception:  # noqa: BLE001
+                _log("Голос не загрузился:\n" + traceback.format_exc())
+        try:
+            import sounddevice  # noqa: F401  — прогрев импорта
+        except Exception:  # noqa: BLE001
+            pass
+        self.progress.emit(1.0, "Готово")
+        self.loaded.emit(result)
 
-    def _download(self):
+    def _download_model(self):
+        import tts
         root = config.local_dir()
-        zpath = root / "model.zip.part"
-        self.progress.emit(0.02, "Первый запуск — скачиваю речевую модель")
-        req = urllib.request.Request(config.MODEL_URL, headers={"User-Agent": "SenioreM"})
-        with urllib.request.urlopen(req, timeout=30) as r, open(zpath, "wb") as f:
-            total = int(r.headers.get("Content-Length") or 0) or 45_000_000
-            done = 0
-            while True:
-                chunk = r.read(256 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                frac = min(1.0, done / total)
-                self.progress.emit(0.02 + 0.76 * frac,
-                                   f"Первый запуск — скачиваю речевую модель · "
-                                   f"{done / 1e6:.0f} из {total / 1e6:.0f} МБ")
-
-        self.progress.emit(0.80, "Распаковываю")
+        zpath = root / "model.zip"
+        self.progress.emit(0.02, "Первый запуск — скачиваю распознавание речи")
+        tts.download(config.model_urls(), zpath, lambda d, t: self.progress.emit(
+            0.02 + 0.38 * min(1.0, d / max(t, 1)),
+            f"Первый запуск — скачиваю распознавание речи · {d / 1e6:.0f} из {t / 1e6:.0f} МБ"),
+            expect=45_000_000)
+        self.progress.emit(0.42, "Распаковываю")
         tmp = root / "_unpack"
         shutil.rmtree(tmp, ignore_errors=True)
         with zipfile.ZipFile(zpath) as z:
@@ -272,7 +280,7 @@ class ProgressLine(QWidget):
 
 
 class Splash(QWidget):
-    done = Signal(object)      # загруженная модель или None
+    done = Signal(object)      # {"model": ..., "voice": ...}
     cancelled = Signal()
 
     def __init__(self):
@@ -374,7 +382,7 @@ class Splash(QWidget):
         retry.setFixedWidth(160)
         retry.clicked.connect(self.start)
         skip = button("Продолжить без голоса", "link", 14, QFont.Normal)
-        skip.clicked.connect(lambda: self._finish(None, force=True))
+        skip.clicked.connect(lambda: self._finish({"model": None, "voice": None}, force=True))
         act.addWidget(retry)
         act.addWidget(skip)
         act.addStretch(1)
