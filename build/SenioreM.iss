@@ -171,6 +171,14 @@ begin
   WizardForm.PageDescriptionLabel.Font.Color := Muted;
   WizardForm.StatusLabel.Font.Color := TextC;
   WizardForm.FilenameLabel.Font.Color := Muted;
+  WizardForm.ReadyLabel.Font.Color := TextC;
+end;
+
+{ Если мастер всё-таки открылся — не ждём нажатия «Установить», ставим сразу }
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpReady then
+    WizardForm.NextButton.OnClick(WizardForm.NextButton);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
