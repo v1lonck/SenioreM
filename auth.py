@@ -12,6 +12,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from pathlib import Path
 
+LOGIN_RE = re.compile(r"^[a-zа-я0-9._-]{3,24}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 CODE_TTL = 10 * 60          # код действует 10 минут
 RESEND_COOLDOWN = 60        # повторная отправка не чаще раза в минуту
@@ -139,9 +140,37 @@ class AuthStore:
         self.set_session(email)
         return email
 
+    # ---------- регистрация по логину (без почты) ----------
+    def _check_login(self, name: str) -> str:
+        name = self.normalize_email(name).replace("ё", "е")
+        if not name:
+            raise AuthError("Введите логин.")
+        if "@" in name:
+            return self._check_email(name)
+        if len(name) < 3:
+            raise AuthError("Логин — минимум 3 символа.")
+        if not LOGIN_RE.match(name):
+            raise AuthError("В логине можно использовать буквы, цифры, точку, дефис и _.")
+        return name
+
+    def register(self, name: str, password: str, password2: str) -> str:
+        name = self._check_login(name)
+        if name in self.users:
+            raise AuthError("Такой логин уже занят — выберите другой или нажмите «Войти».")
+        if len(password) < 6:
+            raise AuthError("Пароль — минимум 6 символов.")
+        if password != password2:
+            raise AuthError("Пароли не совпадают.")
+        salt = secrets.token_hex(16)
+        self.users[name] = {"salt": salt, "hash": _hash_password(password, salt),
+                            "verified": False, "created": int(time.time())}
+        self._save(self.users_path, self.users)
+        self.set_session(name)
+        return name
+
     # ---------- вход / выход ----------
     def login(self, email: str, password: str) -> str:
-        email = self._check_email(email)
+        email = self._check_login(email)
         if not password:
             raise AuthError("Введите пароль.")
         user = self.users.get(email)
