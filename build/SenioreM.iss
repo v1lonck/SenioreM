@@ -89,7 +89,11 @@ var
 begin
   W := ScaleX(560);
   H := ScaleY(280);
-  Splash := TSetupForm.CreateNew(nil);
+#if Ver >= 0x06040000
+  Splash := CreateCustomForm(W, H, False, False);
+#else
+  Splash := CreateCustomForm;
+#endif
   Splash.BorderStyle := bsNone;
   Splash.ClientWidth := W;
   Splash.ClientHeight := H;
