@@ -51,8 +51,7 @@ jobs:
           $code = $LASTEXITCODE
           $out | ForEach-Object { "$_" }
           if ($code -ne 0) {
-            $out | Select-String -Pattern 'Error|Line \d+|Unknown|expected' |
-              ForEach-Object { Write-Output "::error::$($_.Line)" }
+            $out | Select-Object -Last 8 | ForEach-Object { Write-Output "::error::$_" }
             exit 1
           }
           Get-Item Output\SenioreM-Setup.exe | ForEach-Object { "Размер установщика: {0:N1} МБ" -f ($_.Length / 1MB) }
