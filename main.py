@@ -406,7 +406,7 @@ STATE_TEXT = {
 TIPS = [
     ("Звук", ["громкость 30", "громче / тише", "выключи звук"]),
     ("Сайты", ["открой яндекс музыку", "открой ютуб", "открой госуслуги"]),
-    ("Программы", ["открой телеграм", "закрой браузер", "закрой окно"]),
+    ("Программы", ["открой телеграм", "вруби запрет", "закрой браузер"]),
     ("Поиск", ["найди погоду в Москве", "который час", "какое сегодня число"]),
     ("Музыка", ["пауза", "следующий трек", "предыдущий трек"]),
     ("Система", ["сделай скриншот", "яркость 70", "заблокируй компьютер"]),
@@ -604,7 +604,7 @@ class HomeScreen(Backdrop):
             rl.addSpacing(6)
             for ex in examples:
                 b = button(f"«{ex}»", "link", 13, QFont.Normal)
-                b.clicked.connect(lambda _=False, e=ex: self.execute(e))
+                b.clicked.connect(lambda _=False, e=ex: self.execute(e, typed=True))
                 rl.addWidget(b, 0, Qt.AlignLeft)
             rl.addSpacing(12)
         rl.addStretch(1)
@@ -776,11 +776,12 @@ class HomeScreen(Backdrop):
         text = self.input.text().strip()
         self.input.clear()
         if text:
-            self.execute(text)
+            self.execute(text, typed=True)
 
     # ---------- выполнение ----------
-    def execute(self, text):
+    def execute(self, text, typed=False):
         intent = commands.parse(text)
+        intent["typed"] = typed
         shown = commands.normalize(text)
         self._last_cmd = shown
         self._show_heard(shown[:1].upper() + shown[1:], False)
@@ -793,17 +794,22 @@ class HomeScreen(Backdrop):
 
         def work():
             reply, ui = actions.run(intent, self.cfg)
+            if intent["action"] != "mute" and actions.is_muted():
+                ui += "|muted"
             self.bridge.action_done.emit(reply, ui)
 
         threading.Thread(target=work, daemon=True).start()
 
     def _on_action_done(self, reply, ui):
+        muted = ui.endswith("|muted")
+        ui = ui.replace("|muted", "")
         if self.settings is not None:
             reply = personalize(reply, self.settings["address"])
             if self._last_cmd:
                 self.settings.add_history(self._last_cmd, reply)
                 self.history.set_items(self.settings["history"])
-        self.reply.setText(reply)
+        self.reply.setText(reply + ("\nЗвук на компьютере выключен — скажите или напишите "
+                                    "«включи звук»." if muted and reply else ""))
         self._rest_state()
         if reply:
             self.speaker.say(reply)
