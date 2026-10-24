@@ -28,4 +28,8 @@ if user and password:
 else:
     print("Секреты SMTP_USER / SMTP_PASSWORD не заданы — сборка в тестовом режиме.")
 
+cfg["version"] = os.environ.get("APP_VERSION", "").strip() or "0.0.0"
+cfg["update_repo"] = os.environ.get("GITHUB_REPOSITORY", "").strip()
+print(f"Версия {cfg['version']}, обновления из {cfg['update_repo'] or '—'}")
+
 (root / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")

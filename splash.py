@@ -8,7 +8,7 @@ import zipfile
 
 from PySide6.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt,
                             QThread, QTimer, Signal)
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 import config
@@ -18,10 +18,44 @@ MIN_SHOW_SECONDS = 2.6
 
 FEATURES = [
     ("01", "Звук и громкость", "«Сеньор, громкость десять»"),
-    ("02", "Программы и сайты", "«Сеньор, открой браузер»"),
+    ("02", "Открыть и закрыть программы", "«Сеньор, закрой телеграм»"),
     ("03", "Поиск в интернете", "«Сеньор, найди погоду»"),
     ("04", "Музыка, время, скриншоты", "«Сеньор, который час»"),
 ]
+
+
+def _is_ascii(p) -> bool:
+    try:
+        str(p).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def load_model(path):
+    """Движок распознавания не открывает пути с русскими буквами (например, если
+    имя пользователя Windows на кириллице). Поэтому грузим модель по относительному
+    пути, а если не вышло — копируем её в папку с латинским путём."""
+    import os
+    from vosk import Model, SetLogLevel
+    SetLogLevel(-1)
+    if _is_ascii(path):
+        return Model(str(path))
+    old = os.getcwd()
+    try:
+        os.chdir(path)
+        return Model(".")
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        os.chdir(old)
+    root = os.environ.get("ProgramData") or "C:\\ProgramData"
+    safe = config.Path(root) / "SenioreM" / "model"
+    if not config.model_ready(safe):
+        shutil.rmtree(safe, ignore_errors=True)
+        safe.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(path, safe)
+    return Model(str(safe))
 
 
 class Loader(QThread):
@@ -36,9 +70,7 @@ class Loader(QThread):
                 self._download()
                 path = config.model_dir()
             self.progress.emit(0.86, "Загружаю распознавание речи")
-            from vosk import Model, SetLogLevel
-            SetLogLevel(-1)
-            model = Model(str(path))
+            model = load_model(path)
             self.progress.emit(0.95, "Готовлю голос")
             try:
                 import edge_tts  # noqa: F401  — прогрев импорта
@@ -86,13 +118,82 @@ class Loader(QThread):
             raise RuntimeError("архив модели повреждён")
 
 
+def _version_tuple(v):
+    out = []
+    for part in str(v).lstrip("vV").split("."):
+        out.append(int(part) if part.isdigit() else 0)
+    return tuple(out)
+
+
+class UpdateChecker(QThread):
+    """Проверяет на GitHub, нет ли версии новее установленной."""
+    found = Signal(str, str)  # версия, ссылка на установщик
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.repo = cfg.get("update_repo") or ""
+        self.version = cfg.get("version") or "0.0.0"
+
+    def run(self):
+        if not self.repo or self.version == "0.0.0":
+            return
+        try:
+            import json
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{self.repo}/releases/latest",
+                headers={"User-Agent": "SenioreM", "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.load(r)
+            latest = data.get("tag_name", "")
+            if _version_tuple(latest) <= _version_tuple(self.version):
+                return
+            for asset in data.get("assets", []):
+                if asset.get("name", "").lower().endswith("setup.exe"):
+                    self.found.emit(latest.lstrip("vV"), asset["browser_download_url"])
+                    return
+        except Exception:  # noqa: BLE001 — нет интернета и т.п.: просто запускаемся
+            pass
+
+
+class Updater(QThread):
+    progress = Signal(float, str)
+    ready = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, url, version):
+        super().__init__()
+        self.url, self.version = url, version
+
+    def run(self):
+        import tempfile
+        path = f"{tempfile.gettempdir()}\\SenioreM-Setup-{self.version}.exe"
+        try:
+            req = urllib.request.Request(self.url, headers={"User-Agent": "SenioreM"})
+            with urllib.request.urlopen(req, timeout=30) as r, open(path, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0) or 35_000_000
+                done = 0
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    self.progress.emit(min(1.0, done / total),
+                                       f"Скачиваю обновление · {done / 1e6:.0f} из {total / 1e6:.0f} МБ")
+            self.ready.emit(path)
+        except Exception:  # noqa: BLE001
+            self.failed.emit("Не удалось скачать обновление. Попробуйте позже.")
+
+
 class Mark(QWidget):
-    """Знак программы: кольцо и «дышащая» точка."""
+    """Иконка программы с мягко «дышащим» свечением."""
 
     def __init__(self, size=150):
         super().__init__()
         self.setFixedSize(size, size)
         self._t = 0.0
+        path = config.resource_path("assets/icon.png")
+        self._pix = QPixmap(str(path)) if path.exists() else QPixmap()
         t = QTimer(self)
         t.timeout.connect(self._tick)
         t.start(16)
@@ -104,20 +205,21 @@ class Mark(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         c = QPointF(self.width() / 2, self.height() / 2)
-        R = self.width() / 2 - 4
         b = (math.sin(self._t * 2.2) + 1) / 2
-        p.setPen(QPen(QColor(ACCENT), 2.0))
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(c, R * 0.82, R * 0.82)
-        halo = QColor(TEXT)
-        halo.setAlphaF(0.06 + 0.08 * b)
+        glow = QColor(ACCENT)
+        glow.setAlphaF(0.05 + 0.07 * b)
         p.setPen(Qt.NoPen)
-        p.setBrush(halo)
-        r = R * (0.30 + 0.04 * b)
-        p.drawEllipse(c, r * 1.6, r * 1.6)
-        p.setBrush(QColor(TEXT))
-        p.drawEllipse(c, r, r)
+        p.setBrush(glow)
+        p.drawEllipse(c, self.width() * 0.5, self.width() * 0.5)
+        if not self._pix.isNull():
+            side = self.width() * 0.84
+            p.drawPixmap(QRectF(c.x() - side / 2, c.y() - side / 2, side, side), self._pix,
+                         QRectF(self._pix.rect()))
+        else:
+            p.setBrush(QColor(TEXT))
+            p.drawEllipse(c, self.width() * 0.2, self.width() * 0.2)
 
 
 class ProgressLine(QWidget):
@@ -158,6 +260,11 @@ class Splash(QWidget):
         self.setFixedSize(860, 520)
         self._started = time.monotonic()
         self._loader = None
+        self._hold = False          # ждём решения про обновление
+        self._updating = False
+        self._pending = ("none", None)
+        self._checker = UpdateChecker(config.load_config())
+        self._checker.found.connect(self._on_update_found)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(56, 40, 32, 44)
@@ -203,6 +310,21 @@ class Splash(QWidget):
         root.addLayout(grid)
 
         root.addStretch(1)
+        self.update_row = QWidget()
+        ur = QHBoxLayout(self.update_row)
+        ur.setContentsMargins(0, 0, 24, 16)
+        ur.setSpacing(20)
+        self.update_lbl = label("", 14, QFont.DemiBold, "accent")
+        ur.addWidget(self.update_lbl, 1)
+        self.update_btn = button("Обновить", "primary", 14)
+        self.update_btn.setFixedWidth(150)
+        self.update_btn.clicked.connect(self._do_update)
+        later = button("Позже", "link", 14, QFont.Normal)
+        later.clicked.connect(self._skip_update)
+        ur.addWidget(later)
+        ur.addWidget(self.update_btn)
+        self.update_row.hide()
+        root.addWidget(self.update_row)
         status_row = QHBoxLayout()
         self.status = label("Запускаю", 13, role="muted")
         self.pct = label("0 %", 13, role="faint")
@@ -225,7 +347,7 @@ class Splash(QWidget):
         retry.setFixedWidth(160)
         retry.clicked.connect(self.start)
         skip = button("Продолжить без голоса", "link", 14, QFont.Normal)
-        skip.clicked.connect(lambda: self._finish(None))
+        skip.clicked.connect(lambda: self._finish(None, force=True))
         act.addWidget(retry)
         act.addWidget(skip)
         act.addStretch(1)
@@ -275,22 +397,86 @@ class Splash(QWidget):
         self._loader.loaded.connect(self._on_loaded)
         self._loader.failed.connect(self._on_failed)
         self._loader.start()
+        if not self._checker.isRunning() and not self._checker.isFinished():
+            self._checker.start()
+
+    # ---------- обновление ----------
+    def _on_update_found(self, version, url):
+        if not self.isVisible():
+            return
+        self._update = (version, url)
+        self._hold = True
+        self.update_lbl.setText(f"Доступна новая версия {version}")
+        self.update_row.show()
+
+    def _skip_update(self):
+        self.update_row.hide()
+        self._hold = False
+        kind, model = self._pending
+        if kind == "loaded":
+            self._on_loaded(model)
+
+    def _do_update(self):
+        version, url = self._update
+        self._updating = True
+        self.update_row.hide()
+        self.actions.hide()
+        set_role(self.status, "muted")
+        self.bar.color = ACCENT
+        self.bar.value = self.bar.target = 0.0
+        self._updater = Updater(url, version)
+        self._updater.progress.connect(self._on_progress_update)
+        self._updater.ready.connect(self._run_installer)
+        self._updater.failed.connect(self._update_failed)
+        self._updater.start()
+
+    def _on_progress_update(self, frac, text):
+        self.bar.target = frac
+        self.status.setText(text)
+
+    def _run_installer(self, path):
+        import os
+        import subprocess
+        self.status.setText("Устанавливаю обновление — программа перезапустится сама")
+        subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                          "/CLOSEAPPLICATIONS"])
+        QTimer.singleShot(600, lambda: os._exit(0))
+
+    def _update_failed(self, msg):
+        self._updating = False
+        self._hold = False
+        self.status.setText(msg)
+        kind, model = self._pending
+        if kind == "loaded":
+            QTimer.singleShot(1500, lambda: self._on_loaded(model))
 
     def _on_progress(self, frac, text):
+        if self._updating:
+            return
         self.bar.target = frac
         self.status.setText(text)
 
     def _on_failed(self, msg):
+        if self._updating:
+            return
         self.status.setText(msg)
         set_role(self.status, "error")
         self.bar.color = ERROR
         self.actions.show()
 
     def _on_loaded(self, model):
+        self._pending = ("loaded", model)
+        if self._hold or self._updating:
+            return
         wait = max(0.0, MIN_SHOW_SECONDS - (time.monotonic() - self._started))
         QTimer.singleShot(int(wait * 1000), lambda: self._finish(model))
 
-    def _finish(self, model):
+    def _finish(self, model, force=False):
+        if getattr(self, "_finished", False):
+            return
+        if not force and (self._hold or self._updating):
+            return
+        self._finished = True
         self.bar.target = 1.0
         self.done.emit(model)
         self._fade(0.0, 260, self.close)

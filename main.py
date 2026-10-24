@@ -378,7 +378,7 @@ class HomeScreen(QWidget):
         root.addWidget(self.reply)
         root.addStretch(4)
 
-        hints = label("громкость 30   ·   громче   ·   выключи звук   ·   открой браузер   ·   "
+        hints = label("громкость 30   ·   громче   ·   выключи звук   ·   открой браузер   ·   закрой телеграм   ·   "
                       "найди погоду   ·   который час   ·   пауза   ·   сверни",
                       13, role="faint")
         hints.setAlignment(Qt.AlignCenter)

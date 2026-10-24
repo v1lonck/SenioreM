@@ -17,7 +17,7 @@ WEEKDAYS = ["понедельник", "вторник", "среда", "четв�
             "суббота", "воскресенье"]
 
 HELP_TEXT = ("Я умею менять громкость и яркость, включать и выключать звук, "
-             "открывать программы и сайты, искать в интернете, управлять музыкой, "
+             "открывать и закрывать программы и сайты, искать в интернете, управлять музыкой, "
              "говорить время и дату, делать скриншот и блокировать компьютер.")
 
 
@@ -145,6 +145,135 @@ def open_app(app, cfg):
     return reply
 
 
+
+# ---------------- закрытие программ ----------------
+CLOSE_TARGETS = {
+    "browser": (["chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "browser.exe",
+                 "brave.exe", "vivaldi.exe"], "браузер"),
+    "notepad": (["notepad.exe"], "блокнот"),
+    "calc": (["calculatorapp.exe", "calculator.exe", "calc.exe"], "калькулятор"),
+    "settings": (["systemsettings.exe"], "параметры"),
+    "taskmgr": (["taskmgr.exe"], "диспетчер задач"),
+    "paint": (["mspaint.exe"], "пейнт"),
+}
+# Эти программы при закрытии прячутся в трей — их завершаем принудительно.
+TRAY_APPS = {"telegram.exe", "discord.exe", "steam.exe", "spotify.exe", "viber.exe",
+             "skype.exe", "whatsapp.exe", "zoom.exe", "ayugram.exe"}
+# Системные процессы трогать нельзя.
+PROTECTED = {"explorer.exe", "svchost.exe", "csrss.exe", "winlogon.exe", "dwm.exe",
+             "system", "smss.exe", "lsass.exe", "services.exe", "wininit.exe",
+             "senioreM.exe".lower(), "python.exe", "pythonw.exe", "searchhost.exe",
+             "startmenuexperiencehost.exe", "shellexperiencehost.exe", "textinputhost.exe",
+             "runtimebroker.exe", "applicationframehost.exe", "sihost.exe", "ctfmon.exe"}
+ALIASES = {
+    "телеграм": "telegram", "телеграмм": "telegram", "дискорд": "discord", "ютуб": "youtube",
+    "спотифай": "spotify", "вотсап": "whatsapp", "ватсап": "whatsapp", "ворд": "word",
+    "эксель": "excel", "хром": "chrome", "гугл хром": "chrome", "эдж": "edge",
+    "файрфокс": "firefox", "фаерфокс": "firefox", "опера": "opera", "стим": "steam",
+    "зум": "zoom", "вайбер": "viber", "скайп": "skype", "фотошоп": "photoshop",
+    "яндекс": "yandex", "вк": "vk", "вконтакте": "vk", "обс": "obs", "майнкрафт": "minecraft",
+    "кс": "cs2", "дота": "dota", "аюграм": "ayugram", "пауэрпоинт": "powerpnt",
+    "повер поинт": "powerpnt",
+}
+TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                    ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n",
+                     "o", "p", "r", "s", "t", "u", "f", "h", "ts", "ch", "sh", "sch", "", "y",
+                     "", "e", "yu", "ya"]))
+
+
+def _translit(text):
+    return "".join(TRANSLIT.get(c, c) for c in text)
+
+
+def _windows():
+    """Видимые окна верхнего уровня в порядке «сверху вниз»: (hwnd, pid, заголовок)."""
+    u = ctypes.windll.user32
+    out = []
+    hwnd = u.GetTopWindow(None)
+    while hwnd:
+        if u.IsWindowVisible(hwnd) and not u.GetWindow(hwnd, 4):  # GW_OWNER: только главные
+            n = u.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, buf, n + 1)
+                pid = ctypes.c_ulong()
+                u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                out.append((hwnd, pid.value, buf.value))
+        hwnd = u.GetWindow(hwnd, 2)  # GW_HWNDNEXT
+    return out
+
+
+def _proc_names():
+    import psutil
+    names = {}
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            names[p.info["pid"]] = (p.info["name"] or "").lower()
+        except Exception:  # noqa: BLE001
+            pass
+    return names
+
+
+def _taskkill(args):
+    subprocess.run(["taskkill", *args], capture_output=True, creationflags=NO_WINDOW, timeout=10)
+
+
+def _close_pids(pids, names):
+    done = set()
+    for pid in pids:
+        exe = names.get(pid, "")
+        if not exe or exe in PROTECTED or pid == os.getpid() or exe in done:
+            continue
+        done.add(exe)
+        _taskkill(["/IM", exe, "/T", "/F"] if exe in TRAY_APPS else ["/IM", exe])
+    return done
+
+
+def close_app(intent):
+    me = os.getpid()
+    names = _proc_names()
+    app, name = intent.get("app"), (intent.get("name") or "").strip()
+
+    if app in ("explorer", "downloads", "documents"):
+        _ps("$s = New-Object -ComObject Shell.Application; "
+            "@($s.Windows()) | ForEach-Object { try { $_.Quit() } catch {} }")
+        return "Закрыл окна проводника."
+
+    if app in CLOSE_TARGETS:
+        exes, title = CLOSE_TARGETS[app]
+        pids = [pid for pid, exe in names.items() if exe in exes]
+        if not pids:
+            return f"{title.capitalize()} сейчас не открыт."
+        _close_pids(pids, names)
+        return f"Закрыл {title}."
+
+    if name in ("окно", "это окно", "текущее окно", "активное окно"):
+        for hwnd, pid, title in _windows():
+            if pid != me and names.get(pid, "") not in PROTECTED:
+                ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                return f"Закрыл окно «{title[:40]}»."
+        return "Открытых окон нет."
+
+    keys = {name, _translit(name), ALIASES.get(name, "")}
+    if app == "youtube":
+        keys = {"youtube"}
+    if "word" in keys:
+        keys.add("winword")
+    keys = {k.replace(" ", "") for k in keys if len(k.replace(" ", "")) >= 2}
+    found = False
+    # 1) окна, в заголовке которых есть название (закрываем мягко)
+    for hwnd, pid, title in _windows():
+        t = title.lower().replace(" ", "")
+        if pid != me and names.get(pid, "") not in PROTECTED and any(k in t for k in keys):
+            ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+            found = True
+    # 2) процессы с таким именем (на случай программ в трее)
+    pids = [pid for pid, exe in names.items()
+            if any(exe.replace(".exe", "").startswith(k) for k in keys)]
+    if pids:
+        found = bool(_close_pids(pids, names)) or found
+    return f"Закрыл {name}." if found else f"Не нашёл открытую программу «{name}»."
+
 # ---------------- главный вход ----------------
 def run(intent: dict, cfg: dict):
     """-> (reply_text, ui_action) ; ui_action: '', 'minimize', 'restore', 'quit'."""
@@ -188,6 +317,8 @@ def run(intent: dict, cfg: dict):
                                 + urllib.parse.quote(name))
                 return f"Не знаю такой программы, ищу «{name}» в интернете.", ""
             return "Что открыть?", ""
+        if a == "close":
+            return close_app(intent), ""
         if a == "search":
             q = intent.get("query") or ""
             if not q:

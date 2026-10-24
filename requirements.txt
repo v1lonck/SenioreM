@@ -5,3 +5,4 @@ pycaw>=20240316
 comtypes>=1.4
 pyttsx3>=2.90
 edge-tts>=6.1.10
+psutil>=5.9

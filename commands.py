@@ -36,6 +36,10 @@ APPS = [
 ]
 
 
+SELF_WORDS = {"себя", "программу", "приложение", "сеньор", "сеньора", "сеньора",
+              "работу", "эту программу", "помощника"}
+
+
 def normalize(text: str) -> str:
     text = (text or "").lower().replace("ё", "е")
     text = re.sub(r"[^\w\s%]", " ", text)
@@ -108,9 +112,19 @@ def parse(text: str) -> dict:
     if _has(t, "стоп", "хватит", "замолчи", "помолчи", "отмена"):
         return {"action": "stop"}
 
-    if _has(t, "закройся", "выключись", "заверши работу", "закрой программу",
-            "выход из программы") or t == "выход":
+    if _has(t, "закройся", "выключись", "выход из программы") or t == "выход":
         return {"action": "quit"}
+
+    verb_close = ("закрой", "закрыть", "закрою", "заверши", "завершить")
+    if any(x in verb_close for x in w):
+        rest = [x for x in _after(w, verb_close) if x not in ("пожалуйста", "мне", "ка")]
+        if not rest or " ".join(rest) in SELF_WORDS:
+            return {"action": "quit"}
+        name = " ".join(rest)
+        for keys, app in APPS:
+            if _has(name, *keys):
+                return {"action": "close", "app": app, "name": name}
+        return {"action": "close", "app": None, "name": name}
 
     verb_search = ("найди", "найти", "поищи", "загугли", "погугли", "ищи")
     if any(x in verb_search for x in w):

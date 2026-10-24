@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 DEFAULTS = {
+    "version": "0.0.0",        # подставляется при сборке
+    "update_repo": "",         # owner/repo на GitHub, откуда брать обновления
     "smtp": {
         "host": "",
         "port": 465,
