@@ -58,19 +58,40 @@ def load_model(path):
     return Model(str(safe))
 
 
+def _log(text):
+    try:
+        with open(config.data_dir() / "error.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
+    except OSError:
+        pass
+
+
 class Loader(QThread):
     progress = Signal(float, str)
     loaded = Signal(object)
     failed = Signal(str)
 
+    redownload = False   # после неудачной загрузки модель скачивается заново
+
     def run(self):
+        import traceback
         try:
             path = config.model_dir()
+            if Loader.redownload and path.parent == config.local_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                Loader.redownload = False
             if not config.model_ready(path):
                 self._download()
                 path = config.model_dir()
             self.progress.emit(0.86, "Загружаю распознавание речи")
-            model = load_model(path)
+            try:
+                model = load_model(path)
+            except Exception:
+                _log(f"model path: {path}\n" + traceback.format_exc())
+                Loader.redownload = True
+                self.failed.emit("Не удалось загрузить речевую модель. Нажмите «Повторить» — "
+                                 "она скачается заново.")
+                return
             self.progress.emit(0.95, "Готовлю голос")
             try:
                 import edge_tts  # noqa: F401  — прогрев импорта
@@ -80,8 +101,10 @@ class Loader(QThread):
             self.progress.emit(1.0, "Готово")
             self.loaded.emit(model)
         except OSError:
+            _log(traceback.format_exc())
             self.failed.emit("Не удалось скачать речевую модель. Проверьте интернет и нажмите «Повторить».")
         except Exception as e:  # noqa: BLE001
+            _log(traceback.format_exc())
             self.failed.emit(f"Ошибка загрузки: {e}")
 
     def _download(self):
@@ -329,6 +352,10 @@ class Splash(QWidget):
         self.status = label("Запускаю", 13, role="muted")
         self.pct = label("0 %", 13, role="faint")
         status_row.addWidget(self.status, 1)
+        ver = config.load_config().get("version", "")
+        if ver and ver != "0.0.0":
+            status_row.addWidget(label(f"версия {ver}", 12, role="faint"))
+            status_row.addSpacing(16)
         status_row.addWidget(self.pct)
         status_row.addSpacing(24)
         root.addLayout(status_row)

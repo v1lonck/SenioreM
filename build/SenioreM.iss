@@ -15,6 +15,8 @@ DefaultDirName={localappdata}\Programs\SenioreM
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
+DisableWelcomePage=yes
+DisableFinishedPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -50,12 +52,12 @@ Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"
 Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"
 
 [Run]
-Filename: "{app}\SenioreM.exe"; Description: "Запустить SenioreM"; Flags: nowait postinstall skipifsilent
-; при автообновлении (тихая установка) — сразу запускаем новую версию
-Filename: "{app}\SenioreM.exe"; Flags: nowait; Check: WizardSilent
+; сразу после установки запускаем программу
+Filename: "{app}\SenioreM.exe"; Flags: nowait
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\SenioreM"
+Type: filesandordirs; Name: "{commonappdata}\SenioreM"
 
 [Code]
 var
@@ -67,6 +69,27 @@ var
 begin
   Desk := AddBackslash(Lowercase(ExpandConstant('{userdesktop}')));
   Result := Pos(Desk, Lowercase(ExpandConstant('{srcexe}'))) = 1;
+end;
+
+{ Тёмное оформление установщика в цветах программы }
+procedure InitializeWizard;
+var
+  Dark, Panel, TextC, Muted: TColor;
+begin
+  Dark := $120D0B;   { #0B0D12 }
+  Panel := $231A16;  { #161A23 }
+  TextC := $F5EFEC;  { #ECEFF5 }
+  Muted := $A6938A;  { #8A93A6 }
+  WizardForm.Color := Dark;
+  WizardForm.InnerPage.Color := Dark;
+  WizardForm.InstallingPage.Color := Dark;
+  WizardForm.MainPanel.Color := Panel;
+  WizardForm.Bevel.Visible := False;
+  WizardForm.Bevel1.Visible := False;
+  WizardForm.PageNameLabel.Font.Color := TextC;
+  WizardForm.PageDescriptionLabel.Font.Color := Muted;
+  WizardForm.StatusLabel.Font.Color := TextC;
+  WizardForm.FilenameLabel.Font.Color := Muted;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

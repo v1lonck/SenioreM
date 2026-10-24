@@ -1,11 +1,15 @@
-# SenioreM
+<p align="center"><img src="assets/icon.png" width="128" alt="SenioreM"></p>
+
+<h1 align="center">SenioreM</h1>
+
+<p align="center"><a href="https://github.com/v1lonck/SenioreM/releases/latest/download/SenioreM-Setup.exe"><b>⬇ Скачать SenioreM для Windows</b></a></p>
 
 Голосовой помощник для Windows. Скажите «Сеньор, громкость десять» — громкость станет 10 %,
 и он скажет вслух, что сделал.
 
 ## Для пользователя
 
-1. Скачайте **SenioreM-Setup.exe** (≈ 30 МБ) со страницы Releases.
+1. Скачайте **[SenioreM-Setup.exe](https://github.com/v1lonck/SenioreM/releases/latest/download/SenioreM-Setup.exe)** (≈ 30 МБ).
 2. Запустите его. Права администратора и Python не нужны.
 3. На рабочем столе появится ярлык **SenioreM**.
 

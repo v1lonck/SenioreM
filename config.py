@@ -52,10 +52,39 @@ MODEL_NAME = "vosk-model-small-ru-0.22"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
 
 
+def _ascii(p) -> bool:
+    try:
+        str(p).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _writable(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / ".write_test"
+        t.write_text("ok")
+        t.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def local_dir() -> Path:
-    """Большие файлы (речевая модель) — в %LOCALAPPDATA%, не синхронизируются."""
-    root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-    d = Path(root) / "SenioreM"
+    """Папка для речевой модели. Движок распознавания не понимает русские буквы
+    в пути (например, имя пользователя Windows на кириллице), поэтому выбираем
+    первую подходящую папку с латинским путём."""
+    candidates = []
+    for env in ("LOCALAPPDATA", "ProgramData", "PUBLIC"):
+        v = os.environ.get(env)
+        if v:
+            candidates.append(Path(v) / "SenioreM")
+    candidates.append(Path(os.environ.get("SystemDrive", "C:") + "\\") / "SenioreM")
+    for d in candidates:
+        if _ascii(d) and _writable(d):
+            return d
+    d = candidates[0] if candidates else Path.home() / "SenioreM"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
