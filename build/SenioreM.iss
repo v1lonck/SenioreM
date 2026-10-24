@@ -20,7 +20,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\Output
 OutputBaseFilename=SenioreM-Setup
-SetupIconFile=..\assets\icon.ico
+SetupIconFile=setup.ico
+ChangesAssociations=yes
 UninstallDisplayIcon={app}\SenioreM.exe
 UninstallDisplayName=SenioreM
 Compression=lzma2/ultra64
@@ -50,6 +51,38 @@ Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"
 
 [Run]
 Filename: "{app}\SenioreM.exe"; Description: "Запустить SenioreM"; Flags: nowait postinstall skipifsilent
+; при автообновлении (тихая установка) — сразу запускаем новую версию
+Filename: "{app}\SenioreM.exe"; Flags: nowait; Check: WizardSilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\SenioreM"
+
+[Code]
+var
+  Installed: Boolean;
+
+function SetupOnDesktop: Boolean;
+var
+  Desk: String;
+begin
+  Desk := AddBackslash(Lowercase(ExpandConstant('{userdesktop}')));
+  Result := Pos(Desk, Lowercase(ExpandConstant('{srcexe}'))) = 1;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    Installed := True;
+end;
+
+{ Установщик, скачанный на рабочий стол, убираем после установки,
+  чтобы на рабочем столе остался только ярлык SenioreM. }
+procedure DeinitializeSetup;
+var
+  Code: Integer;
+begin
+  if Installed and SetupOnDesktop then
+    Exec(ExpandConstant('{cmd}'),
+         '/c ping 127.0.0.1 -n 4 >nul & del /f /q "' + ExpandConstant('{srcexe}') + '"',
+         '', SW_HIDE, ewNoWait, Code);
+end;

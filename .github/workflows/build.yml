@@ -14,6 +14,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
+      APP_VERSION: 1.0.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +47,6 @@ jobs:
       - name: Установщик
         shell: pwsh
         run: |
-          $env:APP_VERSION = "1.0.${{ github.run_number }}"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" build\SenioreM.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Get-Item Output\SenioreM-Setup.exe | ForEach-Object { "Размер установщика: {0:N1} МБ" -f ($_.Length / 1MB) }
