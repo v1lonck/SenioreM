@@ -45,6 +45,7 @@ ru.FinishedHeadingLabel=Готово
 ru.FinishedLabel=SenioreM установлен, ярлык — на рабочем столе.%n%nПри первом запуске программа один раз докачает речевую модель (около 45 МБ).
 
 [Files]
+Source: "install_logo.bmp"; Flags: dontcopy
 Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -61,18 +62,80 @@ Type: filesandordirs; Name: "{commonappdata}\SenioreM"
 
 [Code]
 var
-  Installed: Boolean;
+  Splash: TSetupForm;
+  BarFill: TBitmapImage;
+  BarW: Integer;
 
-function SetupOnDesktop: Boolean;
-var
-  Desk: String;
+function MakeText(Form: TSetupForm; X, Y: Integer; Text: String; Size: Integer;
+  Color: TColor; Bold: Boolean): TNewStaticText;
 begin
-  Desk := AddBackslash(Lowercase(ExpandConstant('{userdesktop}')));
-  Result := Pos(Desk, Lowercase(ExpandConstant('{srcexe}'))) = 1;
+  Result := TNewStaticText.Create(Form);
+  Result.Parent := Form;
+  Result.Left := X;
+  Result.Top := Y;
+  Result.Font.Name := 'Segoe UI';
+  Result.Font.Size := Size;
+  Result.Font.Color := Color;
+  if Bold then
+    Result.Font.Style := [fsBold];
+  Result.Caption := Text;
 end;
 
-{ Окна мастера установки не показываем: установщик перезапускает себя в тихом
-  режиме, а по окончании сразу открывается SenioreM со своим окном загрузки. }
+{ Своё тёмное окно «Устанавливаю…» вместо мастера установки }
+procedure ShowInstallSplash;
+var
+  Logo, Track: TBitmapImage;
+  W, H: Integer;
+begin
+  W := ScaleX(560);
+  H := ScaleY(280);
+  Splash := TSetupForm.CreateNew(nil);
+  Splash.BorderStyle := bsNone;
+  Splash.ClientWidth := W;
+  Splash.ClientHeight := H;
+  Splash.Color := $120D0B;
+  Splash.Position := poScreenCenter;
+  Splash.Caption := 'SenioreM';
+
+  ExtractTemporaryFile('install_logo.bmp');
+  Logo := TBitmapImage.Create(Splash);
+  Logo.Parent := Splash;
+  Logo.Left := ScaleX(40);
+  Logo.Top := ScaleY(40);
+  Logo.Width := ScaleX(72);
+  Logo.Height := ScaleY(72);
+  Logo.Stretch := True;
+  Logo.Bitmap.LoadFromFile(ExpandConstant('{tmp}\install_logo.bmp'));
+
+  MakeText(Splash, ScaleX(132), ScaleY(42), 'SenioreM', 24, $F5EFEC, False);
+  MakeText(Splash, ScaleX(135), ScaleY(88), 'ГОЛОСОВОЙ ПОМОЩНИК', 8, $FF8C5B, True);
+  MakeText(Splash, ScaleX(40), ScaleY(170), 'Устанавливаю SenioreM…', 11, $F5EFEC, False);
+
+  BarW := W - ScaleX(80);
+  Track := TBitmapImage.Create(Splash);
+  Track.Parent := Splash;
+  Track.Left := ScaleX(40);
+  Track.Top := ScaleY(206);
+  Track.Width := BarW;
+  Track.Height := ScaleY(4);
+  Track.BackColor := $382B25;
+
+  BarFill := TBitmapImage.Create(Splash);
+  BarFill.Parent := Splash;
+  BarFill.Left := ScaleX(40);
+  BarFill.Top := ScaleY(206);
+  BarFill.Width := ScaleX(8);
+  BarFill.Height := ScaleY(4);
+  BarFill.BackColor := $FF8C5B;
+
+  MakeText(Splash, ScaleX(40), ScaleY(228),
+    'Через несколько секунд программа откроется сама', 9, $A6938A, False);
+  Splash.Show;
+  Splash.Repaint;
+end;
+
+{ Окна мастера не показываем: установщик перезапускает себя в тихом режиме
+  и показывает только своё тёмное окно с прогрессом. }
 function InitializeSetup: Boolean;
 var
   Code: Integer;
@@ -85,7 +148,7 @@ begin
       Result := False;
 end;
 
-{ Тёмное оформление установщика в цветах программы }
+{ Тёмное оформление мастера — на случай, если он всё же понадобится }
 procedure InitializeWizard;
 var
   Dark, Panel, TextC, Muted: TColor;
@@ -108,18 +171,35 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
-    Installed := True;
+  if (CurStep = ssInstall) and WizardSilent then
+    ShowInstallSplash;
+  if (CurStep = ssPostInstall) and (Splash <> nil) then
+  begin
+    BarFill.Width := BarW;
+    Splash.Repaint;
+  end;
 end;
 
-{ Установщик, скачанный на рабочий стол, убираем после установки,
-  чтобы на рабочем столе остался только ярлык SenioreM. }
-procedure DeinitializeSetup;
+procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
 var
-  Code: Integer;
+  NewW: Integer;
 begin
-  if Installed and SetupOnDesktop then
-    Exec(ExpandConstant('{cmd}'),
-         '/c ping 127.0.0.1 -n 4 >nul & del /f /q "' + ExpandConstant('{srcexe}') + '"',
-         '', SW_HIDE, ewNoWait, Code);
+  if (Splash <> nil) and (MaxProgress > 0) then
+  begin
+    NewW := Round(BarW * (CurProgress / MaxProgress));
+    if NewW < ScaleX(8) then
+      NewW := ScaleX(8);
+    BarFill.Width := NewW;
+    Splash.Repaint;
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  if Splash <> nil then
+  begin
+    Splash.Close;
+    Splash.Free;
+    Splash := nil;
+  end;
 end;

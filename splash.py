@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 import config
 from theme import ACCENT, BG, ERROR, LINE, TEXT, button, label, set_role
 
-MIN_SHOW_SECONDS = 2.6
+MIN_SHOW_SECONDS = 1.2
 
 FEATURES = [
     ("01", "Звук и громкость", "«Сеньор, громкость десять»"),
