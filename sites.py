@@ -34,6 +34,9 @@ SITES = [
     (("вк",), "https://vk.com", False),
     (("одноклассник",), "https://ok.ru", False),
     (("телеграм",), "https://web.telegram.org", True),
+    (("телег",), "https://web.telegram.org", True),
+    (("тг",), "https://web.telegram.org", True),
+    (("дс",), "https://discord.com/app", True),
     (("дискорд",), "https://discord.com/app", True),
     (("стим",), "https://store.steampowered.com", True),
     (("спотифай",), "https://open.spotify.com", True),
@@ -90,7 +93,12 @@ ALIASES = {
     "утоппент": "utorrent", "ватсапп": "whatsapp", "лаунчер": "launcher", "роблокс": "roblox",
     "фортнайт": "fortnite", "валорант": "valorant", "батл нет": "battle.net",
     "тим спик": "teamspeak", "энидеск": "anydesk", "тимвьюер": "teamviewer",
-    "осу": "osu", "оса": "osu", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
+    "осу": "osu", "оса": "osu", "запрет": "zapret", "запрета": "zapret",
+    "тг": "telegram", "телега": "telegram", "телегу": "telegram", "дс": "discord",
+    "дискордик": "discord", "ютубчик": "youtube", "хромчик": "chrome", "стимчик": "steam",
+    "вкшку": "vk", "вкшка": "vk", "ворлд оф танкс": "world of tanks", "танки": "world of tanks",
+    "доту": "dota", "кску": "counter strike", "контру": "counter strike", "впн": "vpn",
+    "блюстакс": "bluestacks", "амонг ас": "among us", "геншин": "genshin", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
     "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
 }
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
@@ -137,22 +145,86 @@ def find_site(name: str):
     return None
 
 
-# ---------------- установленные программы ----------------
+# ---------------- установленные и скачанные программы ----------------
+import subprocess
 import threading
 import time
 from difflib import SequenceMatcher
 
-_apps = []            # [(нормализованное имя, исходное имя, ("lnk", путь) | ("app", AppID))]
+_apps = []            # [(нормализованное имя, исходное имя, ("lnk"|"app"|"path", значение))]
 _apps_time = 0.0
 _apps_lock = threading.Lock()
-SKIP = ("uninstall", "удал", "readme", "help", "справк", "website", "веб-сайт", "seniorem",
-        "documentation", "release notes", "changelog", "license", "лиценз")
+_local = []           # папки и программы в Загрузках, на Рабочем столе, в Документах
+_local_time = 0.0
+SKIP = ("uninstall", "удал", "readme", "help", "справк", "website", "веб сайт", "seniorem",
+        "documentation", "release notes", "changelog", "license", "лиценз", "unins")
+NO_WINDOW = 0x08000000
+
+# Папки Windows, которые встречаются в AppID приложений меню «Пуск»
+KNOWN_FOLDERS = {
+    "{6D809377-6AF0-444B-8957-A3773F02200E}": "ProgramW6432",       # Program Files
+    "{905E63B6-C1BF-494E-B29C-65B732D3D21A}": "ProgramFiles",
+    "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}": "ProgramFiles(x86)",
+    "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}": "LOCALAPPDATA",
+    "{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}": "APPDATA",
+    "{5E6C858F-0E22-4760-9AFE-EA3317B67173}": "USERPROFILE",
+    "{F38BF404-1D43-42F2-9305-67DE0B28FC23}": "SystemRoot",
+    "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}": "SYSTEM32",
+    "{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}": "SYSWOW64",
+}
 
 
 def _norm(name: str) -> str:
     name = name.lower().replace("ё", "е")
     name = re.sub(r"\(.*?\)", " ", name)
     return " ".join(re.sub(r"[^a-zа-я0-9]+", " ", name).split())
+
+
+def _env_path(var):
+    if var == "SYSTEM32":
+        return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    if var == "SYSWOW64":
+        return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "SysWOW64")
+    return os.environ.get(var, "")
+
+
+def _appid_ok(appid: str) -> bool:
+    """AppID вида «{GUID}\\путь\\program.exe» или «C:\\…\\program.exe» — проверяем, что файл есть.
+    Битые записи (программу удалили) пропускаем — иначе Windows показывает ошибку."""
+    if "!" in appid:                      # приложение из Microsoft Store
+        return True
+    m = re.match(r"^(\{[0-9A-Fa-f-]{36}\})\\(.+)$", appid)
+    if m:
+        base = _env_path(KNOWN_FOLDERS.get(m.group(1).upper(), ""))
+        return bool(base) and os.path.exists(os.path.join(base, m.group(2)))
+    if re.match(r"^[A-Za-z]:\\", appid):
+        return os.path.exists(appid)
+    return True                           # обычный идентификатор приложения
+
+
+_shell = None
+
+
+def _lnk_target(path: str) -> str:
+    global _shell
+    try:
+        if _shell is None:
+            import comtypes.client
+            _shell = comtypes.client.CreateObject("WScript.Shell", dynamic=True)
+        return str(_shell.CreateShortcut(path).TargetPath or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _lnk_ok(path: str) -> bool:
+    if not path.lower().endswith(".lnk"):
+        return True
+    target = _lnk_target(path)
+    if not target:                        # «объявленные» ярлыки установщиков — цели не видно
+        return True
+    if target.lower().startswith(("http:", "https:", "steam:", "com.epicgames")):
+        return True
+    return os.path.exists(target)
 
 
 def _shortcut_dirs():
@@ -162,6 +234,7 @@ def _shortcut_dirs():
                       (env.get("ProgramData"), r"Microsoft\Windows\Start Menu\Programs"),
                       (env.get("USERPROFILE"), "Desktop"),
                       (env.get("USERPROFILE"), r"OneDrive\Desktop"),
+                      (env.get("OneDrive"), "Desktop"),
                       (env.get("PUBLIC"), "Desktop")):
         if root:
             d = Path(root) / sub
@@ -182,12 +255,11 @@ def _scan_shortcuts():
 def _scan_start_apps():
     """Все приложения меню «Пуск», включая приложения из Microsoft Store."""
     import json
-    import subprocess
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
                             "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress"],
-                           capture_output=True, timeout=20, creationflags=0x08000000)
+                           capture_output=True, timeout=20, creationflags=NO_WINDOW)
         data = json.loads(r.stdout.decode("utf-8", "ignore") or "[]")
         if isinstance(data, dict):
             data = [data]
@@ -202,29 +274,102 @@ def refresh_apps(force=False):
         if not force and _apps and time.time() - _apps_time < 600:
             return _apps
         items = {}
-        for name, target in _scan_start_apps() + _scan_shortcuts():
+        # ярлыки — первыми: их запуск самый надёжный
+        for name, target in _scan_shortcuts() + _scan_start_apps():
             n = _norm(name)
-            if not n or any(k in n for k in SKIP):
+            if not n or any(k in n for k in SKIP) or n in items:
                 continue
-            items.setdefault(n, (n, name, target))
+            ok = _lnk_ok(target[1]) if target[0] == "lnk" else _appid_ok(target[1])
+            if ok:
+                items[n] = (n, name, target)
         _apps = list(items.values())
         _apps_time = time.time()
         return _apps
 
 
+# ---- скачанные программы и папки (например, «запрет» — zapret-discord-youtube)
+LAUNCHER_HINTS = ("general", "start", "run", "launch", "запуск", "service")
+
+
+def _local_roots():
+    env = os.environ
+    home = env.get("USERPROFILE", "")
+    roots = []
+    for p in (os.path.join(home, "Desktop"), os.path.join(home, "OneDrive", "Desktop"),
+              os.path.join(env.get("OneDrive", ""), "Desktop") if env.get("OneDrive") else "",
+              os.path.join(home, "Downloads"), os.path.join(home, "Documents"),
+              os.path.join(home, "OneDrive", "Documents"), home,
+              os.environ.get("SystemDrive", "C:") + "\\",
+              os.path.join(os.environ.get("SystemDrive", "C:") + "\\", "Games")):
+        if p and os.path.isdir(p) and p not in roots:
+            roots.append(p)
+    return roots
+
+
+def _scan_local():
+    out, seen = [], set()
+    skip_dirs = {"windows", "program files", "program files (x86)", "programdata", "$recycle.bin",
+                 "appdata", "system volume information", "node_modules", ".git", "users"}
+    for root in _local_roots():
+        depth0 = root.rstrip("\\/").count(os.sep)
+        shallow = root in (os.environ.get("USERPROFILE", ""),
+                           os.environ.get("SystemDrive", "C:") + "\\")
+        max_depth = 1 if shallow else 3
+        for cur, dirs, files in os.walk(root):
+            depth = cur.rstrip("\\/").count(os.sep) - depth0
+            dirs[:] = [d for d in dirs if d.lower() not in skip_dirs and not d.startswith(".")]
+            if depth >= max_depth:
+                dirs[:] = []
+            for d in dirs:
+                p = os.path.join(cur, d)
+                if p not in seen:
+                    seen.add(p)
+                    out.append((d, ("path", p)))
+            for f in files:
+                if f.lower().endswith((".exe", ".bat", ".cmd", ".lnk")):
+                    p = os.path.join(cur, f)
+                    if p not in seen:
+                        seen.add(p)
+                        out.append((os.path.splitext(f)[0], ("path", p)))
+    return out
+
+
+def refresh_local(force=False):
+    global _local, _local_time
+    if not force and _local and time.time() - _local_time < 300:
+        return _local
+    items = []
+    for name, target in _scan_local():
+        n = _norm(name)
+        if n and not any(k in n for k in SKIP):
+            items.append((n, name, target))
+    _local, _local_time = items, time.time()
+    return _local
+
+
 def warm():
     """Заранее собирает список программ в фоне, чтобы «открой …» срабатывало мгновенно."""
-    threading.Thread(target=refresh_apps, daemon=True).start()
+    def work():
+        refresh_apps()
+        refresh_local()
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _keys(text: str):
+    n = clean(text)
+    keys = {n, translit(n), ALIASES.get(n, ""), ALIASES.get(_base(n), "")}
+    if " " not in n and len(n) >= 4:
+        keys |= {_base(n), translit(_base(n))}
+    return {_norm(k) for k in keys if len(_norm(k)) >= 2}
 
 
 def keys_for(name: str):
+    """Ключи для поиска: вся фраза, а также каждое слово (для закрытия окон)."""
     n = clean(name)
-    keys = {n, translit(n), ALIASES.get(n, ""), ALIASES.get(_base(n), "")}
+    keys = _keys(n)
     for w in n.split():
-        keys |= {ALIASES.get(w, ""), ALIASES.get(_base(w), "")}
-        if len(w) >= 4:
-            keys |= {_base(w), translit(_base(w))}
-    return {_norm(k) for k in keys if len(_norm(k)) >= 2}
+        keys |= _keys(w)
+    return keys
 
 
 def _score(key: str, app: str) -> float:
@@ -245,22 +390,88 @@ def _score(key: str, app: str) -> float:
     return best
 
 
-def find_program(name: str):
-    """-> (исходное имя, ("lnk", путь) | ("app", AppID)) или None."""
-    keys = keys_for(name)
-    if not keys:
-        return None
+def _best(keys, items, threshold=0.8):
     best, best_score = None, 0.0
-    for n, orig, target in refresh_apps():
+    for n, orig, target in items:
         sc = max(_score(k, n) for k in keys)
         if sc > best_score:
             best, best_score = (orig, target), sc
-    return best if best_score >= 0.8 else None
+    return best if best_score >= threshold else None
+
+
+def _phrases(name: str):
+    """Сначала вся фраза («яндекс музыку»), потом первое слово («запрет дискорд и ютуб» -> «запрет»)."""
+    n = clean(name)
+    out = [n]
+    words = n.split()
+    if len(words) > 1:
+        out.append(words[0])
+    return out
+
+
+def find_program(name: str):
+    """-> (имя, цель) из меню «Пуск» или None."""
+    for ph in _phrases(name):
+        keys = _keys(ph)
+        if keys:
+            hit = _best(keys, refresh_apps())
+            if hit:
+                return hit
+    return None
+
+
+def find_local(name: str):
+    """-> (имя, ("path", путь)) из Загрузок, Рабочего стола, Документов или None."""
+    for ph in _phrases(name):
+        keys = {k for k in _keys(ph) if len(k.replace(" ", "")) >= 3}
+        if keys:
+            hit = _best(keys, refresh_local(), threshold=0.84)
+            if hit:
+                return hit
+    return None
+
+
+def _pick_launcher(folder: str):
+    """В папке программы выбираем, что запускать: .exe с похожим именем или главный .bat."""
+    try:
+        files = os.listdir(folder)
+    except OSError:
+        return None
+    key = _norm(os.path.basename(folder)).split(" ")[0]
+    exes = [f for f in files if f.lower().endswith(".exe") and not f.lower().startswith("unins")]
+    for f in exes:
+        if key and key in _norm(f):
+            return os.path.join(folder, f)
+    bats = [f for f in files if f.lower().endswith((".bat", ".cmd"))]
+    for hint in LAUNCHER_HINTS:
+        for f in sorted(bats, key=len):
+            if _norm(f).startswith(hint):
+                return os.path.join(folder, f)
+    if len(exes) == 1:
+        return os.path.join(folder, exes[0])
+    return None
 
 
 def launch(target):
+    """Запуск без блокировки программы (ошибки Windows не «замораживают» помощника)."""
     kind, value = target
     if kind == "app":
-        os.startfile("shell:AppsFolder\\" + value)  # type: ignore[attr-defined]
-    else:
+        subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + value], creationflags=NO_WINDOW)
+        return "Запускаю"
+    if kind == "lnk":
         os.startfile(value)  # type: ignore[attr-defined]
+        return "Запускаю"
+    path = value
+    if os.path.isdir(path):
+        launcher = _pick_launcher(path)
+        if launcher is None:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return "Открываю папку"
+        path = launcher
+    if path.lower().endswith((".bat", ".cmd")):
+        # такие скрипты (например, запрет) обычно требуют прав администратора
+        import ctypes
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", path, None, os.path.dirname(path), 1)
+    else:
+        os.startfile(path)  # type: ignore[attr-defined]
+    return "Запускаю"

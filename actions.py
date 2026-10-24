@@ -92,10 +92,23 @@ def set_volume(n):
 
 
 def set_mute(on):
+    """Включить/выключить звук. Проверяем результат: если не сработало — мультимедийная клавиша."""
     try:
-        _endpoint().SetMute(1 if on else 0, None)
+        ev = _endpoint()
+        ev.SetMute(1 if on else 0, None)
+        if not on and ev.GetMasterVolumeLevelScalar() < 0.05:
+            ev.SetMasterVolumeLevelScalar(0.3, None)   # звук «включён», но на нуле
+        if bool(ev.GetMute()) != bool(on):
+            _tap(VK["mute"])
     except Exception:
         _tap(VK["mute"])
+
+
+def is_muted():
+    try:
+        return bool(_endpoint().GetMute())
+    except Exception:
+        return False
 
 
 # ---------------- яркость ----------------
@@ -146,25 +159,27 @@ def open_app(app, cfg):
 
 
 def open_by_name(name, cfg):
-    """Сначала ищем приложение на компьютере («осу» -> osu!), если его нет — сайт
-    («яндекс музыку» -> music.yandex.ru), иначе — сразу первый результат поиска.
+    """Порядок: приложение из меню «Пуск» -> скачанная программа или папка (Загрузки,
+    Рабочий стол, Документы) -> сайт -> первый результат поиска.
     Если сказано «сайт …» — открываем именно сайт."""
     import sites
     name = (name or "").strip()
     if not name:
         return "Что открыть?"
-    want_site = "сайт" in name
-    if not want_site:
+    pretty = sites.clean(name)
+    if "сайт" not in name:
         prog = sites.find_program(name)
         if prog:
-            sites.launch(prog[1])
-            return f"Запускаю {prog[0]}."
+            return f"{sites.launch(prog[1])} {prog[0]}."
+        local = sites.find_local(name)
+        if local:
+            return f"{sites.launch(local[1])} {local[0]}."
     site = sites.find_site(name)
     if site:
         webbrowser.open(site[0])
-        return f"Открываю {sites.clean(name)}."
-    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + sites.clean(name)))
-    return f"Открываю {sites.clean(name)}."
+        return f"Открываю {pretty}."
+    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + pretty))
+    return f"Открываю {pretty}."
 
 
 # ---------------- закрытие программ ----------------
@@ -374,8 +389,20 @@ def run(intent: dict, cfg: dict):
             return "Всегда пожалуйста.", ""
         if a == "quit":
             return "До встречи.", "quit"
+        if a == "chat":
+            return intent.get("reply", ""), ""
         if a == "empty":
             return "", ""
+        # Неизвестная короткая фраза — может, это название программы («запрет», «осу»)
+        text = intent.get("text", "")
+        if text and len(text.split()) <= 3:
+            import sites
+            hit = sites.find_program(text) or sites.find_local(text)
+            if hit:
+                return f"{sites.launch(hit[1])} {hit[0]}.", ""
+        if intent.get("typed"):
+            return ("Не понял команду. Попробуйте написать иначе — например, «открой телеграм» "
+                    "или «громкость 30»."), ""
         return "Не расслышал команду. Повторите, пожалуйста.", ""
     except Exception as e:  # noqa: BLE001
         return f"Не получилось выполнить команду. {e}", ""
