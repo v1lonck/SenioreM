@@ -20,7 +20,8 @@ import config
 from auth import AuthError, AuthStore, Mailer
 from splash import Splash
 from settings import WAKE_REPLY_PRESETS, Settings, greeting, personalize, set_autostart
-from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, LogoMark, Toggle,
+from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, Clickable, ConfirmDialog,
+                   LogoMark, PlayButton, Toggle,
                    apply_app_theme, button, card, field, font, hline, label, set_role,
                    window_controls)
 from voice import VOICES, Chime, Listener, Speaker
@@ -806,7 +807,7 @@ class HomeScreen(Backdrop):
             self.win.raise_()
             self.win.activateWindow()
         elif ui == "quit":
-            QTimer.singleShot(1800, self.win.close)
+            QTimer.singleShot(1800, self.win.force_close)
 
 
 # ================================================================== профиль
@@ -896,6 +897,9 @@ class ProfileScreen(Backdrop):
             self.pages.addWidget(page)
             self.page_widgets[key] = page
 
+        self.speaker.speaking.connect(self._on_speaking)
+        self.speaker.problem.connect(lambda m: self.voice_status.setText(m))
+
         self._saved_timer = QTimer(self)
         self._saved_timer.setSingleShot(True)
         self._saved_timer.timeout.connect(lambda: self.saved.setText(""))
@@ -982,12 +986,16 @@ class ProfileScreen(Backdrop):
         pl.addWidget(self.preview)
         lay.addWidget(prev)
         lay.addSpacing(16)
-        listen = button("Прослушать", "ghost", 14)
-        listen.setFixedWidth(170)
-        listen.clicked.connect(lambda: self.speaker.say(self._preview_lines()[0] + " " +
-                                                        self._preview_lines()[1], force=True))
+        listen = PlayButton("Прослушать")
+        listen.clicked.connect(lambda: self._listen_preview(listen))
         lay.addWidget(listen, 0, Qt.AlignLeft)
         lay.addStretch(1)
+
+    def _listen_preview(self, btn):
+        self.speaker.interrupt()
+        self._playing(btn)
+        a, b = self._preview_lines()
+        self.speaker.say(a + " " + b, force=True)
 
     def _pick_wake(self, text):
         self.f_wake.setText(text)
@@ -1009,37 +1017,70 @@ class ProfileScreen(Backdrop):
     def _build_voice(self, lay):
         self._title(lay, "Голос", "Каким голосом отвечает помощник. Нейроголоса звучат "
                                   "естественно и требуют интернета; без него включится голос Windows.")
-        self.voice_buttons = {}
-        group = QButtonGroup(self)
-        for vid, (title, *_rest) in VOICES.items():
-            row = QHBoxLayout()
-            b = button(title, "ghost", 15, QFont.Normal)
-            b.setCheckable(True)
-            b.setMinimumWidth(360)
-            b.clicked.connect(lambda _=False, v=vid: self._choose_voice(v))
-            group.addButton(b)
-            row.addWidget(b)
-            play = button("▶  Послушать", "link", 13, QFont.Normal)
-            play.clicked.connect(lambda _=False, v=vid: self._demo_voice(v))
-            row.addSpacing(14)
-            row.addWidget(play)
-            row.addStretch(1)
-            lay.addLayout(row)
-            lay.addSpacing(10)
-            self.voice_buttons[vid] = b
-        lay.addSpacing(24)
+        self.voice_cards = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        for i, (vid, (title, *_rest)) in enumerate(VOICES.items()):
+            name, _, desc = title.partition(" — ")
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            c.setMinimumHeight(76)
+            row = QHBoxLayout(c)
+            row.setContentsMargins(18, 14, 16, 14)
+            row.setSpacing(14)
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(label(name, 16, QFont.DemiBold))
+            col.addWidget(label(desc.capitalize(), 13, role="muted"))
+            row.addLayout(col, 1)
+            play = PlayButton("", 36)
+            play.setToolTip("Послушать")
+            play.clicked.connect(lambda _=False, v=vid, b=play: self._demo_voice(v, b))
+            row.addWidget(play, 0, Qt.AlignVCenter)
+            c.clicked.connect(lambda v=vid: self._choose_voice(v))
+            grid.addWidget(c, i // 2, i % 2)
+            self.voice_cards[vid] = c
+        lay.addLayout(grid)
+        lay.addSpacing(14)
+        self.voice_status = label("", 13, role="muted", wrap=True)
+        lay.addWidget(self.voice_status)
+        lay.addSpacing(22)
         self.t_speak = self._toggle_row(lay, "Озвучивать ответы",
                                         "Если выключить, ответы будут только текстом на экране.",
                                         "speak_replies")
         lay.addStretch(1)
 
+    def _mark_voice(self, vid):
+        for v, c in self.voice_cards.items():
+            c.setProperty("selected", "true" if v == vid else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+
     def _choose_voice(self, vid):
         self._set("voice_id", vid)
-        self._demo_voice(vid)
+        self._mark_voice(vid)
+        self._demo_voice(vid, None)
 
-    def _demo_voice(self, vid):
+    def _playing(self, btn):
+        """Отмечает кнопку, которая сейчас играет; остальные — в обычном виде."""
+        old = getattr(self, "_play_btn", None)
+        if old is not None and old is not btn:
+            old.set_playing(False)
+        self._play_btn = btn
+        if btn is not None:
+            btn.set_playing(True)
+
+    def _on_speaking(self, flag):
+        if not flag:
+            self._playing(None)
+
+    def _demo_voice(self, vid, btn=None):
         addr = self.settings["address"] if self.settings else ""
+        self.voice_status.setText("")
         self.speaker.interrupt()
+        self._playing(btn)
         self.speaker.say(personalize("Здравствуйте. Я SenioreM, ваш голосовой помощник.", addr),
                          force=True, voice_id=vid)
 
@@ -1184,8 +1225,8 @@ class ProfileScreen(Backdrop):
         self.f_address.setText(settings["address"])
         self.f_wake.setText(settings["wake_reply"])
         self.f_words.setText(settings["wake_words"])
-        for vid, b in self.voice_buttons.items():
-            b.setChecked(vid == settings["voice_id"])
+        self._mark_voice(settings["voice_id"])
+        self.voice_status.setText("")
         self.t_speak.setChecked(bool(settings["speak_replies"]))
         self.t_chime.setChecked(bool(settings["chime"]))
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
@@ -1415,7 +1456,22 @@ class MainWindow(QWidget):
         f.pw.clear()
         self._enter(email)
 
+    def request_close(self):
+        dlg = ConfirmDialog(self, "Закрыть SenioreM?",
+                            "Помощник перестанет слушать команды, пока вы снова его не откроете.",
+                            yes="Да, закрыть", no="Вернуться")
+        if dlg.exec() == ConfirmDialog.Accepted:
+            self.force_close()
+
+    def force_close(self):
+        self._close_ok = True
+        self.close()
+
     def closeEvent(self, e):
+        if not getattr(self, "_close_ok", False):
+            e.ignore()
+            QTimer.singleShot(0, self.request_close)
+            return
         self.home.stop()
         self.speaker.shutdown()
         super().closeEvent(e)

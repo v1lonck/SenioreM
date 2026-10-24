@@ -4,8 +4,8 @@ import math
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen,
                            QPixmap, QRadialGradient)
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractButton, QDialog, QFrame, QHBoxLayout, QLabel,
+                               QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 # ------------------------------------------------------------------ тема
 BG = "#0B0D12"
@@ -106,6 +106,27 @@ QPushButton[role="avatar"] {{
     border-radius: 20px; min-width: 40px; max-width: 40px; min-height: 40px; max-height: 40px;
 }}
 QPushButton[role="avatar"]:hover {{ background: rgba(91, 140, 255, 0.32); }}
+QFrame[role="modal"] {{
+    background: {SURFACE}; border: 1px solid {LINE}; border-radius: 20px;
+}}
+QFrame[role="option"] {{
+    background: rgba(255, 255, 255, 0.02); border: 1px solid {LINE}; border-radius: 14px;
+}}
+QFrame[role="option"]:hover {{ border-color: #3A4560; }}
+QFrame[role="option"][selected="true"] {{
+    background: rgba(91, 140, 255, 0.12); border: 1px solid {ACCENT};
+}}
+QPushButton[role="dangerfill"] {{
+    background: #E5484D; color: #FFFFFF; border: none; border-radius: 10px;
+    padding: 0 22px; min-height: 46px;
+}}
+QPushButton[role="dangerfill"]:hover {{ background: #F05A5F; }}
+QPushButton[role="dangerfill"]:pressed {{ background: #C93C41; }}
+QPushButton[role="secondary"] {{
+    background: rgba(255, 255, 255, 0.06); color: {TEXT}; border: 1px solid {LINE};
+    border-radius: 10px; padding: 0 22px; min-height: 46px;
+}}
+QPushButton[role="secondary"]:hover {{ background: rgba(255, 255, 255, 0.10); }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 4px; }}
@@ -158,7 +179,7 @@ def window_controls(win):
     mn.clicked.connect(win.showMinimized)
     cl = button("✕", "chrome", 14, QFont.Normal)
     cl.setToolTip("Закрыть")
-    cl.clicked.connect(win.close)
+    cl.clicked.connect(getattr(win, "request_close", win.close))
     box.addWidget(mn)
     box.addWidget(cl)
     return box
@@ -319,3 +340,107 @@ class Clickable(QFrame):
         if e.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(e)
+
+
+class PlayButton(QAbstractButton):
+    """Аккуратная круглая кнопка «прослушать» с нарисованным треугольником."""
+
+    def __init__(self, text="Прослушать", size=34):
+        super().__init__()
+        self.setCursor(Qt.PointingHandCursor)
+        self._text = text
+        self._d = size
+        self._hover = False
+        self._playing = False
+        f = font(14, QFont.DemiBold)
+        self.setFont(f)
+        from PySide6.QtGui import QFontMetrics
+        w = size + (12 + QFontMetrics(f).horizontalAdvance(text) if text else 0)
+        self.setFixedSize(w + 6, size + 4)
+
+    def set_playing(self, flag):
+        self._playing = flag
+        self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        d = self._d
+        c = QPointF(2 + d / 2, 2 + d / 2)
+        bg = QColor(ACCENT)
+        bg.setAlpha(255 if (self._hover or self._playing) else 210)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawEllipse(c, d / 2, d / 2)
+        p.setBrush(QColor("#FFFFFF"))
+        if self._playing:
+            w = d * 0.09
+            for dx in (-d * 0.11, d * 0.11):
+                p.drawRoundedRect(QRectF(c.x() + dx - w / 2, c.y() - d * 0.17, w, d * 0.34), 1.5, 1.5)
+        else:
+            from PySide6.QtGui import QPolygonF
+            r = d * 0.2
+            tri = QPolygonF([QPointF(c.x() - r * 0.7, c.y() - r), QPointF(c.x() - r * 0.7, c.y() + r),
+                             QPointF(c.x() + r * 1.05, c.y())])
+            p.drawPolygon(tri)
+        if self._text:
+            p.setPen(QColor(TEXT if self._hover else "#C9D3EA"))
+            p.setFont(self.font())
+            p.drawText(QRectF(d + 14, 0, self.width() - d - 14, self.height()),
+                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
+
+
+class ConfirmDialog(QDialog):
+    """Тёмное окно подтверждения поверх затемнённой программы."""
+
+    def __init__(self, parent, title, text, yes="Да, закрыть", no="Вернуться"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setModal(True)
+        if parent is not None:
+            self.setGeometry(parent.frameGeometry())
+        outer = QVBoxLayout(self)
+        outer.addStretch(1)
+        box = QFrame()
+        box.setProperty("role", "modal")
+        box.setFixedWidth(460)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(36, 32, 36, 30)
+        lay.setSpacing(0)
+        lay.addWidget(LogoMark(56, glow=False), 0, Qt.AlignLeft)
+        lay.addSpacing(18)
+        lay.addWidget(label(title, 24, QFont.Light, display=True))
+        lay.addSpacing(8)
+        lay.addWidget(label(text, 15, role="muted", wrap=True))
+        lay.addSpacing(28)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        back = button(no, "secondary", 15)
+        back.clicked.connect(self.reject)
+        ok = button(yes, "dangerfill", 15)
+        ok.clicked.connect(self.accept)
+        row.addWidget(back, 1)
+        row.addWidget(ok, 1)
+        lay.addLayout(row)
+        outer.addWidget(box, 0, Qt.AlignHCenter)
+        outer.addStretch(1)
+        back.setFocus()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(4, 6, 10, 175))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)

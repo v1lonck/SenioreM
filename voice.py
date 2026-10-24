@@ -138,6 +138,7 @@ def _log(text):
 
 class Speaker(QThread):
     speaking = Signal(bool)
+    problem = Signal(str)
 
     def __init__(self, voice_cfg: dict, parent=None):
         super().__init__(parent)
@@ -181,6 +182,7 @@ class Speaker(QThread):
             except queue.Empty:
                 break
         self._stop_now.set()
+        self._stop_playback()
 
     def shutdown(self):
         self.interrupt()
@@ -206,17 +208,28 @@ class Speaker(QThread):
 
     # ---------- озвучка ----------
     def _speak(self, text, voice_id="dmitry"):
+        import traceback
+        path = None
         if time.time() > self._edge_off_until:
             try:
-                self._play_mp3(self._edge_file(text, voice_id))
-                return
-            except Exception:  # noqa: BLE001
+                path = self._edge_file(text, voice_id)
+            except Exception:  # noqa: BLE001 — нет интернета / сервис недоступен
                 if not self._logged:
-                    import traceback
                     _log("Нейроголос недоступен, использую голос Windows:\n" + traceback.format_exc())
                     self._logged = True
-                self._edge_off_until = time.time() + 120  # нет интернета — 2 минуты офлайн-голос
-        self._speak_sapi(text)
+                self._edge_off_until = time.time() + 120
+                self.problem.emit("Нейроголос сейчас недоступен (нет интернета?) — "
+                                  "говорит встроенный голос Windows.")
+        if path:
+            try:
+                self._play_mp3(path)
+                return
+            except Exception:  # noqa: BLE001
+                _log("Не удалось воспроизвести звук:\n" + traceback.format_exc())
+                self.problem.emit("Не получилось воспроизвести нейроголос — "
+                                  "говорит встроенный голос Windows.")
+        if not self._stop_now.is_set():
+            self._speak_sapi(text)
 
     def _edge_file(self, text, voice_id="dmitry"):
         """mp3 с фразой: из кэша или свежесинтезированный нейроголосом."""
@@ -238,38 +251,75 @@ class Speaker(QThread):
         return path
 
     def _play_mp3(self, path):
+        """Воспроизведение через MCI Windows. «play … wait» надёжно ждёт конца фразы,
+        а interrupt() останавливает её командой stop из другого потока."""
         winmm = ctypes.windll.winmm
         alias = "s" + uuid.uuid4().hex[:8]
-        buf = ctypes.create_unicode_buffer(128)
+        buf = ctypes.create_unicode_buffer(256)
 
         def mci(cmd):
-            return winmm.mciSendStringW(cmd, buf, 127, 0)
+            err = winmm.mciSendStringW(cmd, buf, 255, 0)
+            if err:
+                msg = ctypes.create_unicode_buffer(256)
+                winmm.mciGetErrorStringW(err, msg, 255)
+                return f"{cmd.split()[0]}: {msg.value or err}"
+            return ""
 
-        if mci(f'open "{path}" type mpegvideo alias {alias}') != 0:
-            raise RuntimeError("mci open failed")
+        err = mci(f'open "{path}" type mpegvideo alias {alias}')
+        if err:
+            raise PlaybackError(err)
+        self._alias = alias
         try:
-            mci(f"play {alias}")
-            while not self._stop_now.is_set():
-                mci(f"status {alias} mode")
-                if buf.value != "playing":
-                    break
-                time.sleep(0.05)
+            if self._stop_now.is_set():
+                return
+            err = mci(f"play {alias} wait")
+            if err and not self._stop_now.is_set():
+                raise PlaybackError(err)
         finally:
-            mci(f"stop {alias}")
+            self._alias = None
             mci(f"close {alias}")
 
+    def _stop_playback(self):
+        alias = getattr(self, "_alias", None)
+        if alias and IS_WIN:
+            try:
+                ctypes.windll.winmm.mciSendStringW(f"stop {alias}", None, 0, 0)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _speak_sapi(self, text):
-        if self._engine is None:
-            import pyttsx3
-            self._engine = pyttsx3.init("sapi5")
-            for v in self._engine.getProperty("voices"):
-                meta = f"{v.name} {v.id} {getattr(v, 'languages', '')}".lower()
-                if any(k in meta for k in ("russian", "ru-ru", "irina", "pavel", "русск")):
-                    self._engine.setProperty("voice", v.id)
-                    break
-            self._engine.setProperty("rate", 185)
-        self._engine.say(text)
-        self._engine.runAndWait()
+        """Встроенный голос Windows (через SAPI напрямую, без генерации модулей)."""
+        try:
+            if self._engine is None:
+                import comtypes.client
+                eng = comtypes.client.CreateObject("SAPI.SpVoice", dynamic=True)
+                voices = eng.GetVoices()
+                for i in range(voices.Count):
+                    tok = voices.Item(i)
+                    desc = str(tok.GetDescription()).lower()
+                    if any(k in desc for k in ("russian", "русск", "irina", "pavel", "ru-ru")):
+                        eng.Voice = tok
+                        break
+                eng.Rate = 0
+                self._engine = eng
+            self._engine.Speak(text, 0)
+            return
+        except Exception:  # noqa: BLE001
+            import traceback
+            _log("Голос Windows (SAPI) не сработал:\n" + traceback.format_exc())
+            self._engine = None
+        # последний вариант — PowerShell System.Speech
+        import subprocess
+        safe = text.replace("'", "''")
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        "Add-Type -AssemblyName System.Speech; "
+                        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                        f"$s.Speak('{safe}')"],
+                       capture_output=True, timeout=30, creationflags=0x08000000)
+
+
+class PlaybackError(Exception):
+    pass
 
 
 class Chime:
