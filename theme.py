@@ -34,6 +34,7 @@ BACKGROUNDS = [
     ("glow", "Свечение", "Спокойный фон без анимации"),
     ("oled", "Чёрный", "Минимум нагрузки"),
     ("glass", "Стекло", "Виден рабочий стол"),
+    ("custom", "Свой фон", "Ваша картинка или GIF"),
 ]
 BG_ALIASES = {"stars": "space", "particles": "space", "solid": "glow"}
 THEMES = [
@@ -46,7 +47,7 @@ THEMES = [
 ]
 ANIMATED = ("space", "galaxy", "warp", "aurora", "waves", "grid")
 # медленные фоны не нужно перерисовывать часто — экономим процессор
-BG_FRAME_MS = {"space": 80, "galaxy": 90, "aurora": 80, "waves": 55, "grid": 50, "warp": 42}
+BG_FRAME_MS = {"custom": 33, "space": 80, "galaxy": 90, "aurora": 80, "waves": 55, "grid": 50, "warp": 42}
 
 
 def bg_style():
@@ -449,10 +450,20 @@ class Backdrop(QWidget):
         if self._timer.interval() != ms:
             self._timer.setInterval(ms)
         w = self.window()
-        if style in ANIMATED and self.isVisible() and \
+        moving = style in ANIMATED
+        if style == "custom":
+            import backgrounds
+            moving = backgrounds.CUSTOM.animated()
+        if moving and self.isVisible() and \
                 not (w is not None and (w.isMinimized() or not w.isVisible())):
             self._t += dt
             self.update()
+
+    def _custom_tick(self):
+        if bg_style() != "custom":
+            return 0
+        import backgrounds
+        return id(backgrounds.CUSTOM.current())
 
     def _render_dots(self):
         w, h = max(1, self.width()), max(1, self.height())
@@ -522,7 +533,8 @@ class Backdrop(QWidget):
     def paintEvent(self, e):
         w, h = max(1, self.width()), max(1, self.height())
         dpr = self.devicePixelRatioF()
-        key = (w, h, dpr, self._t, bg_style(), ACCENT, BG, APPEARANCE.get("glass"), focused())
+        key = (w, h, dpr, self._t, bg_style(), ACCENT, BG, APPEARANCE.get("glass"), focused(),
+               APPEARANCE.get("custom_bg"), APPEARANCE.get("custom_dim"), self._custom_tick())
         if self._frame is None or self._frame_key != key:
             pix = QPixmap(int(w * dpr), int(h * dpr))
             pix.setDevicePixelRatio(dpr)
