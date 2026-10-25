@@ -28,7 +28,11 @@ DEFAULT = [
 VPN_HINTS = ("vpn", "впн", "hiddify", "v2ray", "nekoray", "nekobox", "happ", "amnezia", "outline",
              "wireguard", "openvpn", "proton", "windscribe", "warp", "1 1 1 1", "clash", "karing",
              "throne", "psiphon", "hotspot shield", "invizible", "adguard vpn", "planet", "lantern",
-             "streisand", "sing box", "singbox", "v2rayn", "foxray", "shadowsocks", "radmin")
+             "streisand", "sing box", "singbox", "v2rayn", "foxray", "shadowsocks", "radmin", "incy",
+             "xray", "hysteria", "vless", "v2box", "mullvad", "nordvpn", "expressvpn", "surfshark",
+             "tunnelbear", "urban vpn", "browsec", "betternet", "vpn gate", "softether", "openconnect",
+             "tailscale", "zerotier", "hamachi", "ivpn", "privado", "kaspersky secure", "x vpn",
+             "turbo vpn", "thunder vpn", "redshield", "red shield", "amneziawg", "wg", "vpnly")
 CONNECT_WORDS = ("Подключить", "Подключиться", "Connect", "Включить", "Старт", "Start", "Запустить",
                  "Turn on", "Вкл", "ON", "Tap to connect")
 ACTIONS = ("scenario", "vpn", "vpn_off")

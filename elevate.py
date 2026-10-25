@@ -61,7 +61,7 @@ def run_as_admin(exe, params="", wait=True, show=0):
     -> True, если запуск состоялся (пользователь не отказался)."""
     sei = _SEI()
     sei.cbSize = ctypes.sizeof(_SEI)
-    sei.fMask = 0x00000040                      # SEE_MASK_NOCLOSEPROCESS
+    sei.fMask = 0x00000040 | 0x00000400         # NOCLOSEPROCESS | FLAG_NO_UI
     sei.lpVerb = "runas"
     sei.lpFile = exe
     sei.lpParameters = params
@@ -74,20 +74,48 @@ def run_as_admin(exe, params="", wait=True, show=0):
     return True
 
 
+def _self_args(flag):
+    """Как запустить сам SenioreM с флагом (собранный .exe или скрипт)."""
+    if getattr(sys, "frozen", False):
+        return sys.executable, flag
+    return sys.executable, f'"{os.path.abspath(sys.argv[0])}" {flag}'
+
+
+def create_task():
+    """Вызывается в процессе с правами администратора (--setup-admin)."""
+    if getattr(sys, "frozen", False):
+        tr = f'"{sys.executable}" --elevated'
+    else:
+        tr = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}" --elevated'
+    user = os.environ.get("USERDOMAIN", "") + "\\" + os.environ.get("USERNAME", "")
+    r = subprocess.run(["schtasks", "/Create", "/TN", TASK, "/TR", tr, "/SC", "ONCE", "/ST", "00:00",
+                        "/RL", "HIGHEST", "/IT", "/RU", user, "/F"],
+                       capture_output=True, creationflags=NO_WINDOW, timeout=30)
+    if r.returncode != 0:      # без /RU — для текущего пользователя
+        r = subprocess.run(["schtasks", "/Create", "/TN", TASK, "/TR", tr, "/SC", "ONCE",
+                            "/ST", "00:00", "/RL", "HIGHEST", "/F"],
+                           capture_output=True, creationflags=NO_WINDOW, timeout=30)
+    return r.returncode == 0
+
+
+def delete_task():
+    subprocess.run(["schtasks", "/Delete", "/TN", TASK, "/F"], capture_output=True,
+                   creationflags=NO_WINDOW, timeout=30)
+
+
 def enable():
     """Создаёт задачу (Windows один раз спросит разрешение). -> (успех, сообщение)."""
-    user = os.environ.get("USERDOMAIN", "") + "\\" + os.environ.get("USERNAME", "")
-    tr = _exe_cmd().replace('"', '\\"')
-    params = (f'/Create /TN "{TASK}" /TR "{tr}" /SC ONCE /ST 00:00 '
-              f'/RL HIGHEST /IT /RU "{user}" /F')
     if is_admin():
-        r = subprocess.run(f"schtasks {params}", capture_output=True, creationflags=NO_WINDOW,
-                           timeout=20, shell=True)
-        ok = r.returncode == 0
+        ok = create_task()
     else:
-        ok = run_as_admin("schtasks.exe", params) and task_exists()
+        # запускаем сам SenioreM с правами администратора — он и создаст задачу
+        exe, params = _self_args("--setup-admin")
+        started = run_as_admin(exe, params, wait=True, show=0)
+        ok = started and task_exists()
+        if not started:
+            return False, "Разрешение не дано — права администратора не включены."
     if not ok:
-        return False, "Не получилось: разрешение не дано."
+        return False, "Windows не дала создать задачу. Попробуйте ещё раз."
     _flag().write_text("1", encoding="utf-8")
     return True, "Готово. SenioreM перезапустится с правами администратора."
 
@@ -97,15 +125,24 @@ def disable():
         _flag().unlink()
     except OSError:
         pass
-    params = f'/Delete /TN "{TASK}" /F'
     try:
         if is_admin():
-            subprocess.run(f"schtasks {params}", capture_output=True, creationflags=NO_WINDOW,
-                           timeout=20, shell=True)
-        else:
-            run_as_admin("schtasks.exe", params)
+            delete_task()
+        elif task_exists():
+            exe, params = _self_args("--remove-admin")
+            run_as_admin(exe, params, wait=False, show=0)
     except Exception:  # noqa: BLE001
         pass
+
+
+def handle_cli():
+    """Служебные запуски: --setup-admin / --remove-admin. -> код выхода или None."""
+    if "--setup-admin" in sys.argv:
+        return 0 if create_task() else 1
+    if "--remove-admin" in sys.argv:
+        delete_task()
+        return 0
+    return None
 
 
 def relaunch():

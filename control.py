@@ -45,7 +45,10 @@ NUM_WORDS = {"один": 1, "одну": 1, "раз": 1, "два": 2, "две": 2
              "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "ноль": 0}
 ORDINALS = {"первое": 1, "первый": 1, "1": 1, "второе": 2, "второй": 2, "2": 2, "третье": 3,
             "третий": 3, "3": 3, "четвертое": 4, "четвертый": 4, "4": 4, "пятое": 5, "пятый": 5,
-            "5": 5, "шестое": 6, "седьмое": 7, "восьмое": 8, "девятое": 9, "десятое": 10}
+            "5": 5, "шестое": 6, "седьмое": 7, "восьмое": 8, "девятое": 9, "десятое": 10,
+            "первую": 1, "первая": 1, "вторую": 2, "вторая": 2, "третью": 3, "третья": 3,
+            "четвертую": 4, "четвертая": 4, "пятую": 5, "пятая": 5, "шестую": 6, "шестой": 6,
+            "седьмую": 7, "восьмую": 8, "девятую": 9, "десятую": 10}
 YT_KEYS = {"forward": ("L", "Перематываю вперёд."), "back": ("J", "Перематываю назад."),
            "full": ("F", "Готово."), "subs": ("C", "Готово."), "mute": ("M", "Готово."),
            "next": ("SHIFT+N", "Следующее видео."), "prev": ("SHIFT+P", "Предыдущее видео."),
@@ -98,6 +101,10 @@ def parse(text):
         return {"action": "yt_key", "key": "back"}
     if re.search(r"^(сделай )?(на весь экран|во весь экран|полноэкранный)", t):
         return {"action": "yt_key", "key": "full"}
+    # --- игры и лаунчеры: «найди игру … и зайди», «выбери первую игру», «играть»
+    hit = parse_app(t)
+    if hit:
+        return hit
     # --- клавиши и клики
     m = re.match(r"^(нажми|нажать|жми|кликни|клик|тыкни|ткни|щелкни|нажмите|выбери)\b\s*(.*)$", t)
     if not m:
@@ -122,6 +129,49 @@ def parse(text):
     if om and om.group(1) in ORDINALS:
         return {"action": "yt_nth", "n": ORDINALS[om.group(1)]}
     return {"action": "click_text", "text": target}
+
+
+ITEM_WORDS = r"(игру|игра|карточку|результат|пункт|вариант|ссылку|сервер|мод|режим|уровень|карту|" \
+             r"персонажа|скин|предмет|плейс|плейсы|место|файл|папку|элемент|строку|кнопку)"
+ENTER_WORDS = r"(зайди|войди|запусти|играй|поиграем|открой|включи|начни|присоединись|подключись)"
+PLACE_WORDS = ("тут", "здесь", "в окне", "в игре", "в роблоксе", "в роблокс", "в стиме", "в steam",
+               "в приложении", "в лаунчере", "в программе", "на экране", "в магазине")
+
+
+def parse_app(t):
+    # «выбери первую игру», «открой вторую карточку», «зайди в третий сервер»
+    m = re.match(r"^(выбери|открой|нажми на|нажми|зайди в|зайди на|запусти|кликни на|кликни|включи|"
+                 r"войди в|давай)\s+(\w+)\s+" + ITEM_WORDS + r"\b(.*)$", t)
+    if m and m.group(2) in ORDINALS:
+        play = bool(re.search(r"\bи\s+" + ENTER_WORDS, m.group(4) or "")) or m.group(1).startswith(
+            ("зайди", "войди", "запусти"))
+        return {"action": "nth_item", "n": ORDINALS[m.group(2)], "play": play}
+    # «найди игру доорс и зайди», «найди в роблоксе брукхейвен»
+    m = re.match(r"^(найди|поищи|ищи|отыщи|набери в поиске|введи в поиск)\s+(.+)$", t)
+    if m:
+        rest = m.group(2)
+        play = False
+        em = re.search(r"\s+и\s+" + ENTER_WORDS + r"(\s+в\s+(нее|неё|него|нее))?.*$", rest)
+        if em:
+            play = True
+            rest = rest[:em.start()]
+        local = any(p in " " + rest + " " for p in [" " + x + " " for x in PLACE_WORDS]) or \
+            re.match(r"^(игру|игра|сервер|карту|мод|режим|плейс)\s+", rest) or play or \
+            m.group(1) in ("набери в поиске", "введи в поиск")
+        if local:
+            for x in PLACE_WORDS:
+                rest = rest.replace(" " + x, "").replace(x + " ", "")
+            rest = re.sub(r"^(игру|игра|сервер|карту|мод|режим|плейс)\s+", "", rest).strip()
+            if rest:
+                return {"action": "app_search", "query": rest, "play": play}
+    # «зайди в доорс», «войди в игру брукхейвен»
+    m = re.match(r"^(зайди|войди|заходи)\s+(в|на)\s+(игру\s+|сервер\s+|режим\s+)?(.+)$", t)
+    if m and m.group(4) not in ("нее", "неё", "него", "игру", "нее"):
+        return {"action": "enter_item", "text": m.group(4)}
+    if re.fullmatch(r"(играть|нажми играть|нажми на играть|начни игру|играем|погнали играть|"
+                    r"нажми плей|плей|присоединиться|зайди в игру|войди в игру|запусти игру)", t):
+        return {"action": "click_play"}
+    return None
 
 
 def _yt_hint(t):
@@ -577,8 +627,191 @@ def yt_key(name):
 
 
 # ------------------------------------------------------------------ вход
+# ------------------------------------------------------------------ игры и лаунчеры
+PLAY_WORDS = ["Играть", "Play", "Join", "Присоединиться", "Start", "Начать", "Запустить", "Launch",
+              "Войти", "Continue", "Продолжить", "Начать игру", "Play now"]
+SEARCH_WORDS = ["Search", "Поиск", "Найти", "Искать", "Search experiences", "Поиск игр"]
+NOISE = re.compile(r"(rating|рейтинг|%|^\d+$|^ad$|^\W+$|online|онлайн|playing|играют|friends|друзья|"
+                   r"^home$|^charts$|^avatar$|^chat$|^more$|^главная$|recommended|continue|"
+                   r"рекоменд|продолжить|see all|все$|^search$|^поиск$|add friends)", re.I)
+
+
+def _window_words(win):
+    rect = _rect(win.hwnd)
+    return rect, ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+
+
+def _lines(words):
+    """Слова -> строки текста с координатами центра."""
+    lines = {}
+    for w in words:
+        key = (w.get("line"), round(w["y"] / 12))
+        lines.setdefault(key, []).append(w)
+    out = []
+    for (text, _), ws in lines.items():
+        x1 = min(w["x"] for w in ws)
+        y1 = min(w["y"] for w in ws)
+        x2 = max(w["x"] + w["w"] for w in ws)
+        y2 = max(w["y"] + w["h"] for w in ws)
+        out.append({"text": text or " ".join(w["t"] for w in ws), "x": (x1 + x2) / 2,
+                    "y": (y1 + y2) / 2, "x1": x1, "h": y2 - y1})
+    return out
+
+
+def _items(win):
+    """Похожие на названия игр/карточек строки в порядке чтения (слева направо, сверху вниз)."""
+    rect, words = _window_words(win)
+    left, top, right, bottom = rect
+    w, h = right - left, bottom - top
+    lines = [ln for ln in _lines(words)
+             if ln["y"] > top + h * 0.12 and ln["x1"] > left + w * 0.05
+             and len(re.sub(r"[^\wА-Яа-я]", "", ln["text"])) >= 3 and not NOISE.search(ln["text"].strip())]
+    # начинаем после заголовка раздела «Рекомендуем / Recommended / Результаты»
+    heads = [ln for ln in _lines(words) if re.search(r"recommended|рекоменд|results|результат|"
+                                                      r"популярн|popular|for you|для вас", ln["text"], re.I)]
+    if heads:
+        y0 = min(hd["y"] for hd in heads)
+        lines = [ln for ln in lines if ln["y"] > y0 + 10] or lines
+    rows = []
+    for ln in sorted(lines, key=lambda z: z["y"]):
+        if rows and abs(rows[-1][0]["y"] - ln["y"]) < 14:
+            rows[-1].append(ln)
+        else:
+            rows.append([ln])
+    rows = [r for r in rows if len(r) <= 8]          # длинные ряды — это ники друзей, меню
+    ordered = [ln for r in rows for ln in sorted(r, key=lambda z: z["x"])]
+    return ordered
+
+
+def nth_item(n, play=False):
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытых окон."
+    _focus(win)
+    items = _items(win)
+    if len(items) < n:
+        return f"Не нашёл {n}-й вариант в окне «{win.title[:30]}»."
+    it = items[n - 1]
+    click_at(it["x"], it["y"])
+    name = it["text"][:40]
+    if play:
+        time.sleep(3.0)
+        played = click_in(win, PLAY_WORDS, min_score=0.85)
+        return f"Открыл «{name}»" + (" и нажал «Играть»." if played else ". Кнопку «Играть» не нашёл.")
+    return f"Открыл «{name}»."
+
+
+def _find_search_box(win):
+    """Поле поиска: сначала через UI Automation, потом по надписи «Search/Поиск» на экране."""
+    try:
+        uia = _uia_client()
+        root = uia.ElementFromHandle(win.hwnd)
+        arr = root.FindAll(4, uia.CreatePropertyCondition(30003, 50004))     # Edit
+        rect = _rect(win.hwnd)
+        best = None
+        for i in range(min(arr.Length, 30)):
+            el = arr.GetElement(i)
+            r = el.CurrentBoundingRectangle
+            if r.right - r.left < 40:
+                continue
+            name = (el.CurrentName or "").lower()
+            score = 2 if ("search" in name or "поиск" in name or "найти" in name) else 1
+            if r.top < rect[1] + (rect[3] - rect[1]) * 0.3:
+                score += 1
+            if best is None or score > best[0]:
+                best = (score, (r.left + r.right) / 2, (r.top + r.bottom) / 2)
+        if best:
+            return best[1], best[2]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        hit = click_target_ocr(win, SEARCH_WORDS)
+        if hit:
+            return hit[0], hit[1]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def click_target_ocr(win, texts, min_score=0.85):
+    rect, words = _window_words(win)
+    for t in texts:
+        hit = find_ocr(rect, t, min_score=min_score, words=words)
+        if hit:
+            return hit
+    return None
+
+
+def app_search(query, play=False):
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытых окон."
+    _focus(win)
+    box = _find_search_box(win)
+    if box is None:
+        press([0x11, 0x46])                 # Ctrl+F — поиск во многих программах
+        time.sleep(0.3)
+    else:
+        click_at(*box)
+        time.sleep(0.25)
+    press([0x11, 0x41])                     # выделить старый текст
+    type_text(query)
+    time.sleep(0.1)
+    press([0x0D])
+    if not play:
+        return f"Ищу «{query}»."
+    time.sleep(3.5)
+    # первый результат, похожий на запрос (ниже поля поиска)
+    rect, words = _window_words(win)
+    sy = box[1] if box else rect[1] + 80
+    best, best_sc = None, 0.0
+    for ln in _lines(words):
+        if ln["y"] <= sy + 20:
+            continue
+        sc = _similar(query, ln["text"])
+        if sc > best_sc:
+            best, best_sc = ln, sc
+    if best is None or best_sc < 0.55:
+        items = _items(win)
+        best = items[0] if items else None
+    if best is None:
+        return f"Нашёл «{query}», но не понял, куда нажать."
+    click_at(best["x"], best["y"])
+    time.sleep(3.0)
+    played = click_in(win, PLAY_WORDS, min_score=0.85)
+    return f"Нашёл «{best['text'][:40]}»" + (" и нажал «Играть»." if played else ". Открыл страницу.")
+
+
+def enter_item(text):
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытых окон."
+    name = click_in(win, [text], min_score=0.7)
+    if not name:
+        return app_search(text, play=True)
+    time.sleep(3.0)
+    played = click_in(win, PLAY_WORDS, min_score=0.85)
+    return f"Открыл «{name}»" + (" и нажал «Играть»." if played else ".")
+
+
+def click_play():
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытых окон."
+    name = click_in(win, PLAY_WORDS, min_score=0.85)
+    return f"Нажал «{name}»." if name else "Не нашёл кнопку «Играть» в этом окне."
+
+
 def run(intent):
     a = intent["action"]
+    if a == "nth_item":
+        return nth_item(intent["n"], intent.get("play"))
+    if a == "app_search":
+        return app_search(intent["query"], intent.get("play"))
+    if a == "enter_item":
+        return enter_item(intent["text"])
+    if a == "click_play":
+        return click_play()
     if a == "press_key":
         win = _target_window()
         if win is None:
@@ -605,4 +838,5 @@ def run(intent):
     return ""
 
 
-ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_key")
+ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_key", "nth_item",
+           "app_search", "enter_item", "click_play")
