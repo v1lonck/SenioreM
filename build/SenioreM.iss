@@ -250,7 +250,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   { при автообновлении из программы окно не показываем — SenioreM сам откроется снова }
-  { окно установщика не показываем вообще — SenioreM сам откроется со своим окном загрузки }
+  { при ручной установке показываем окно (чтобы не нажимали установщик повторно);
+    при автообновлении из программы (/nosplash=1) — не показываем: SenioreM сам откроется }
+  if (CurStep = ssInstall) and WizardSilent and (ExpandConstant('{param:nosplash|0}') = '0') then
+    ShowInstallSplash;
   if (CurStep = ssPostInstall) and (Splash <> nil) then
   begin
     BarFill.Width := BarW;
