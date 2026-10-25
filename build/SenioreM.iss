@@ -330,8 +330,10 @@ end;
 { Если мастер всё-таки открылся — не ждём нажатия «Установить», ставим сразу }
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  { «нажимаем» кнопку «Установить» сообщением окну (BM_CLICK) — сработает, как только
+    страница покажется; сам мастер вынесен за пределы экрана, его не видно }
   if CurPageID = wpReady then
-    WizardForm.NextButton.OnClick(WizardForm.NextButton);
+    PostMessage(WizardForm.NextButton.Handle, $00F5, 0, 0);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
