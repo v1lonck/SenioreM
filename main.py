@@ -2641,9 +2641,9 @@ class ProfileScreen(Backdrop):
 
     def _build_companion(self, lay):
         from companion import FigurePreview
-        self._title(lay, "Компаньон", "Ваш персонаж над панелью задач. Когда помощник отвечает — "
-                    "он оживает и показывает текст. Добавьте персонажа из архива (.zip) или папки "
-                    "с картинками — например, shimeji.")
+        self._title(lay, "Компаньон", "Персонаж над панелью задач. Когда помощник отвечает — "
+                    "он оживает и показывает текст. Есть встроенные (котёнок, лисёнок, Аля), а своих "
+                    "можно добавить из архива (.zip) или папки с картинками — например, shimeji.")
         row = QHBoxLayout()
         row.setSpacing(28)
         self.comp_preview = FigurePreview(200)
@@ -2660,7 +2660,8 @@ class ProfileScreen(Backdrop):
         for title, fn in (("Добавить из архива…", self._comp_add_zip),
                           ("Добавить из папки…", self._comp_add_dir),
                           ("Переименовать", self._comp_rename),
-                          ("Удалить персонажа", self._comp_delete)):
+                          ("Удалить персонажа", self._comp_delete),
+                          ("Вернуть встроенных", self._comp_restore)):
             b = button(title, "ghost", 13, QFont.Normal)
             b.clicked.connect(fn)
             brow.addWidget(b)
@@ -2801,6 +2802,14 @@ class ProfileScreen(Backdrop):
         self._fill_comp_cards()
         self._refresh_comp()
         self.comp_status.setText("Персонаж удалён.")
+
+    def _comp_restore(self):
+        import companion
+        added = companion.install_builtin(restore=True)
+        self._fill_comp_cards()
+        self._refresh_comp()
+        self.comp_status.setText("Встроенные персонажи на месте." if not added else
+                                 f"Вернул встроенных персонажей: {len(added)}.")
 
     def _set_comp(self, **changes):
         if self.settings is None or self._loading:
@@ -3194,6 +3203,11 @@ class MainWindow(QWidget):
             asr.DOWNLOADS.start()
         switch_page(self.stack, self.home)
         self.home.start(email, s)
+        try:
+            import companion
+            companion.install_builtin()
+        except Exception:  # noqa: BLE001
+            pass
         self.apply_companion()
         self._auto_import_companions()
         if not self.greeted:
@@ -3813,6 +3827,19 @@ def run_uitest(out_dir):
             win.settings.set("companion", "pack:" + added[0][0])
         win.open_profile("companion")
         shot(win, "06-profile-companion")
+        for bid in ("builtin-alya", "builtin-cat", "builtin-fox"):
+            for pose in ("stand", "sit", "lie"):
+                win.settings.set("companion", "pack:" + bid)
+                win.settings.set("companion_pose", pose)
+                win.apply_companion()
+                win.companion.set_speaking(pose == "stand")
+                pump(700)
+                win.companion.grab().save(os.path.join(out_dir, f"07-{bid}-{pose}.png"))
+            log.append(f"07-{bid}")
+        win.companion.set_speaking(False)
+        win.settings.set("companion_pose", "auto")
+        if added:
+            win.settings.set("companion", "pack:" + added[0][0])
         win.apply_companion()
         win.companion.say("Привет! Я твой компаньон. Чем помочь?", 20)
         win.companion.set_speaking(True)
