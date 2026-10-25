@@ -1000,6 +1000,8 @@ class HomeScreen(Backdrop):
             self.listener.final.connect(self._on_final)
             self.listener.failed.connect(self._on_failed)
             self.listener.ready.connect(self._on_ready)
+            self.listener.stop_heard.connect(self._on_stop_heard)
+            self.listener.set_stop_words((settings["stop_words"] or "стоп").split(","))
             self.listener.start()
         self._rest_state()
         self._poll_volume()
@@ -1149,6 +1151,16 @@ class HomeScreen(Backdrop):
         self._rest_state()
         self.reply.setText(msg)
 
+    def _on_stop_heard(self):
+        """Сказали «стоп», пока помощник говорил — сразу замолкает."""
+        if not self.speaking:
+            return
+        self._continue = False
+        self._hush = True                      # остаток потокового ответа ИИ не озвучиваем
+        self.speaker.interrupt()
+        timers.manager().stop_alarm()
+        self._show_heard("Стоп", False)
+
     def _on_speaking(self, flag):
         self.speaking = flag
         if not flag:
@@ -1224,22 +1236,43 @@ class HomeScreen(Backdrop):
             rest = words[i + 1:]
             if rest:
                 self._disarm(silent=True)
-                self._voice_command(" ".join(rest), audio, strip_wake=True)
+                self._voice_command(" ".join(rest), audio, strip_wake=True,
+                                    confs=confs[i + 1:] if confs else None)
             elif not self.armed:
                 self._arm()
         elif self.armed:
             followup = getattr(self, "_arm_quiet", False)
             self._disarm(silent=True)
-            self._voice_command(text, audio, strip_wake=False, followup=followup)
+            self._voice_command(text, audio, strip_wake=False, followup=followup, confs=confs)
         else:
             self._show_heard("", True)
 
-    def _voice_command(self, vosk_text, audio, strip_wake, followup=False):
-        """Команду после обращения уточняем точным распознаванием (Whisper), если оно готово."""
+    FAST_ACTIONS = {"volume_set", "volume_delta", "volume_get", "mute", "time", "date", "media",
+                    "weather", "rates", "crypto", "stop", "window", "desktop", "lock", "screenshot",
+                    "brightness_set", "brightness_delta", "brightness_get", "greet", "thanks", "help",
+                    "yt_key", "press_key", "mouse_click", "scenario", "vpn", "vpn_off",
+                    "startup_list", "sysinfo", "settings_page", "timer_add", "timer_cancel",
+                    "timer_left", "timer_alarm_stop", "timer_snooze"}
+
+    def _quick_intent(self, text):
+        t = commands.fix_text(text)
+        return (scenarios.match(t, self.settings) or timers.parse(t) or system.parse(t)
+                or control.parse(t) or commands.parse(t))
+
+    def _voice_command(self, vosk_text, audio, strip_wake, followup=False, confs=None):
+        """Простые команды (громкость, время, пауза…) выполняем сразу по быстрому распознаванию;
+        названия программ, вопросы и всё сложное уточняем точным распознаванием (Whisper)."""
         self._followup_cmd = followup
         if not audio or not asr.RECOGNIZER.available:
             self.execute(vosk_text)
             return
+        try:
+            sure = not confs or (sum(confs) / len(confs) >= 0.8 and min(confs) >= 0.5)
+            if sure and self._quick_intent(vosk_text)["action"] in self.FAST_ACTIONS:
+                self.execute(vosk_text)          # без ожидания — отвечает сразу
+                return
+        except Exception:  # noqa: BLE001
+            pass
         self._set_state("busy", "РАСПОЗНАЮ…")
         wake = self.settings.wake_words if self.settings else None
 
@@ -1306,6 +1339,7 @@ class HomeScreen(Backdrop):
         intent = (scenarios.match(text, self.settings) or timers.parse(text) or system.parse(text)
                   or control.parse(text) or commands.parse(text))
         intent["typed"] = typed
+        self._hush = False
         # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
         intent["followup"] = (not typed and sink is None and getattr(self, "_followup_cmd", False))
         self._followup_cmd = False
@@ -1320,6 +1354,7 @@ class HomeScreen(Backdrop):
             self._on_action_done(self._timer_action(intent), "")
             return
         if intent["action"] == "stop":
+            self._hush = True
             timers.manager().stop_alarm()
             self.speaker.interrupt()
             self.reply.setText("")
@@ -1392,6 +1427,8 @@ class HomeScreen(Backdrop):
 
     def _on_ai_sentence(self, sentence):
         """ИИ дописал фразу — сразу говорим её, не дожидаясь всего ответа."""
+        if getattr(self, "_hush", False):
+            return
         self._streamed = (getattr(self, "_streamed", "") + " " + sentence).strip()
         if getattr(self, "_sink", None) is None:
             self.reply.setText(self._streamed)
@@ -1878,9 +1915,23 @@ class ProfileScreen(Backdrop):
                          force=True, speed=speed, cache=True,
                          cloud=self.settings.cloud_voice if self.settings else None)
 
+    def _stop_words_changed(self):
+        v = self.f_stop.text().strip() or "стоп"
+        self._set("stop_words", v)
+        lst = self.win.home.listener
+        if lst is not None:
+            lst.set_stop_words(v.split(","))
+
     def _build_wake(self, lay):
         self._title(lay, "Активация", "Как вы обращаетесь к помощнику и как он даёт понять, "
                                       "что слушает.")
+        self._caption(lay, "Чем остановить, пока помощник говорит (через запятую)")
+        self.f_stop = field("стоп")
+        self.f_stop.editingFinished.connect(self._stop_words_changed)
+        lay.addWidget(self.f_stop)
+        lay.addWidget(label("Скажите это слово во время ответа — помощник сразу замолчит. "
+                            "Без «Сеньор».", 12, role="faint", wrap=True))
+        lay.addSpacing(22)
         self._caption(lay, "Дополнительные слова-обращения (через запятую, необязательно)")
         self.f_words = field("например: эй, слушай")
         self.f_words.textEdited.connect(lambda v: self._set("wake_words", v))
@@ -2725,6 +2776,7 @@ class ProfileScreen(Backdrop):
         self.f_wake.setText(settings["wake_reply"])
         ww = settings["wake_words"] or ""
         self.f_words.setText("" if ww.replace(" ", "") == "сеньор,сеньер,синьор" else ww)
+        self.f_stop.setText(settings["stop_words"] or "стоп")
         custom = settings.name not in NAME_PRESETS
         self.f_ai_name.setText(settings.name if custom else "")
         self._refresh_name()
@@ -3219,6 +3271,11 @@ def run_selftest(out_path):
         for speed in ("slow", "fast"):
             tts.synth_wav(voice, "Проверка скорости.", wav, speed)
         log("OK speeds")
+        try:
+            import system as _sys2
+            log(f"pc info: {_sys2.pc_info()}")
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN pc info: {e!r}")
         try:
             import control as _ctl2
             ids = _ctl2.video_ids(_ctl2.search_url("lofi hip hop"))

@@ -111,7 +111,7 @@ class Recognizer:
         audio = audio * min(8.0, 0.6 / peak)          # нормализуем громкость (шёпот)
         with self.lock:
             segments, _info = self.model.transcribe(
-                audio, language="ru", beam_size=3 if len(audio) < 16000 * 7 else 1,
+                audio, language="ru", beam_size=2 if len(audio) < 16000 * 7 else 1,
                 initial_prompt=prompt(),
                 condition_on_previous_text=False, vad_filter=False,
                 no_speech_threshold=0.6, temperature=0.0)
