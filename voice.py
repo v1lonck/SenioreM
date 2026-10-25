@@ -167,18 +167,21 @@ class Speaker(QThread):
         self.enabled = True
         self.speed = "normal"
         self._warned = False
+        self.cloud = None      # {"key": ..., "voice": ...} — голос Яндекса
 
     def set_voice(self, voice):
         self._piper = voice
 
-    def configure(self, speed="normal", enabled=True):
+    def configure(self, speed="normal", enabled=True, cloud=None):
         self.speed = speed if speed in ("slow", "normal", "fast") else "normal"
         self.enabled = enabled
+        self.cloud = cloud if cloud and cloud.get("key") else None
 
-    def say(self, text: str, force=False, speed=None, cache=True):
-        """cache=False — для одноразовых фраз (ответы ИИ): файл удаляется после озвучки."""
+    def say(self, text: str, force=False, speed=None, cache=True, cloud="same"):
+        """cache=False — для одноразовых фраз (ответы ИИ): файл удаляется после озвучки.
+        cloud — разово другой голос (для «Послушать»): None — Руслан, dict — Яндекс."""
         if text and (self.enabled or force):
-            self.q.put((text, speed or self.speed, cache))
+            self.q.put((text, speed or self.speed, cache, self.cloud if cloud == "same" else cloud))
 
     def prefetch(self, texts):
         """Заранее готовит частые фразы, чтобы они звучали мгновенно."""
@@ -210,11 +213,11 @@ class Speaker(QThread):
             item = self.q.get()
             if item is None:
                 break
-            text, speed, cache = item
+            text, speed, cache, cloud = item
             self._stop_now.clear()
             self.speaking.emit(True)
             try:
-                self._speak(text, speed, cache)
+                self._speak(text, speed, cache, cloud)
             except Exception:  # noqa: BLE001
                 import traceback
                 _log("Ошибка озвучки:\n" + traceback.format_exc())
@@ -223,18 +226,37 @@ class Speaker(QThread):
                 self.speaking.emit(False)
 
     # ---------- озвучка ----------
-    def _wav(self, text, speed, cache=True):
+    def _wav(self, text, speed, cache=True, cloud=None):
         import tts
-        path = tts.cache_path(text, speed)
+        tag = f"ya-{cloud['voice']}" if cloud else ""
+        path = tts.cache_path(tag + text, speed)
         if not cache:
             path = path[:-4] + ".once.wav"
         if not os.path.exists(path):
-            with self._lock:   # синтез одной модели — по очереди
-                if not os.path.exists(path):
-                    tts.synth_wav(self._piper, text, path, speed)
+            if cloud:
+                tts.yandex_synth(text, path, cloud["key"], cloud["voice"], speed)
+            else:
+                with self._lock:   # синтез одной модели — по очереди
+                    if not os.path.exists(path):
+                        tts.synth_wav(self._piper, text, path, speed)
         return path
 
-    def _speak(self, text, speed, cache=True):
+    def _speak(self, text, speed, cache=True, cloud=None):
+        if cloud:
+            try:
+                path = self._wav(text, speed, cache, cloud)
+                try:
+                    self._play_wav(path)
+                finally:
+                    if not cache:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                return
+            except Exception as e:  # noqa: BLE001 — нет интернета или ключ неверный
+                _log(f"Голос Яндекса не сработал: {e}")
+                self.problem.emit(f"Голос Яндекса недоступен ({e}) — говорит Руслан.")
         if self._piper is not None:
             try:
                 path = self._wav(text, speed, cache)

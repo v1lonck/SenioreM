@@ -19,6 +19,7 @@ import ai
 import commands
 import config
 import sites
+import tts
 from auth import AuthError, AuthStore, Mailer
 from splash import Splash
 from settings import (NAME_PRESETS, WAKE_REPLY_PRESETS, Settings, greeting, personalize,
@@ -1007,8 +1008,9 @@ class ProfileScreen(Backdrop):
         if self.settings is None or self._loading:
             return
         self.settings.set(key, value)
-        if key in ("voice_speed", "speak_replies"):
-            self.speaker.configure(self.settings["voice_speed"], self.settings["speak_replies"])
+        if key in ("voice_speed", "speak_replies", "voice_engine", "yandex_key", "yandex_voice"):
+            self.speaker.configure(self.settings["voice_speed"], self.settings["speak_replies"],
+                                   self.settings.cloud_voice)
         if key == "mic_sensitivity" and self.win.home.listener is not None:
             self.win.home.listener.sensitivity = value
         if key == "autostart":
@@ -1143,25 +1145,73 @@ class ProfileScreen(Backdrop):
             self.preview.setText(f"Вы: «Сеньор»  →  «{a}»\nВы: «Громкость десять»  →  «{b}»")
 
     def _build_voice(self, lay):
-        self._title(lay, "Голос", "Помощник говорит голосом «Руслан» — это бесплатный голос "
-                                  "Piper. Он работает прямо на компьютере, даже без интернета.")
-        c = QFrame()
-        c.setProperty("role", "option")
-        c.setProperty("selected", "true")
-        row = QHBoxLayout(c)
-        row.setContentsMargins(20, 18, 18, 18)
-        row.setSpacing(16)
-        row.addWidget(LogoMark(52, glow=False))
-        col = QVBoxLayout()
-        col.setSpacing(3)
-        col.addWidget(label("Руслан", 18, QFont.DemiBold))
-        col.addWidget(label("Мужской, спокойный · русский · офлайн", 13, role="muted"))
-        row.addLayout(col, 1)
+        self._title(lay, "Голос", "Бесплатный голос «Руслан» работает прямо на компьютере. "
+                                  "Голоса Яндекса звучат как у Алисы — нужен ключ Yandex Cloud "
+                                  "(стоит копейки) и интернет.")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        self.engine_cards = {}
+        for i, (key, title, desc) in enumerate((
+                ("piper", "Руслан", "Бесплатно · без интернета"),
+                ("yandex", "Голоса Яндекса", "Как у Алисы · по ключу API"))):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            row = QHBoxLayout(c)
+            row.setContentsMargins(18, 14, 16, 14)
+            col = QVBoxLayout()
+            col.setSpacing(3)
+            col.addWidget(label(title, 16, QFont.DemiBold))
+            col.addWidget(label(desc, 12, role="muted"))
+            row.addLayout(col, 1)
+            c.clicked.connect(lambda k=key: self._choose_engine(k))
+            grid.addWidget(c, 0, i)
+            self.engine_cards[key] = c
+        lay.addLayout(grid)
+        lay.addSpacing(16)
+
+        # --- Яндекс: ключ и выбор голоса
+        self.ya_box = QWidget()
+        yl = QVBoxLayout(self.ya_box)
+        yl.setContentsMargins(0, 0, 0, 0)
+        yl.setSpacing(4)
+        self._caption(yl, "API-ключ Yandex Cloud")
+        krow = QHBoxLayout()
+        self.f_ya_key = field("вставьте ключ сюда", True)
+        self.f_ya_key.textEdited.connect(lambda v: self._set("yandex_key", v.strip()))
+        krow.addWidget(self.f_ya_key, 1)
+        how = button("Как получить ключ", "link", 13, QFont.Normal)
+        how.clicked.connect(lambda: webbrowser.open(
+            "https://yandex.cloud/ru/docs/iam/operations/authentication/manage-api-keys"))
+        krow.addSpacing(14)
+        krow.addWidget(how)
+        yl.addLayout(krow)
+        yl.addSpacing(14)
+        self._caption(yl, "Голос")
+        vg = QGridLayout()
+        vg.setHorizontalSpacing(8)
+        vg.setVerticalSpacing(8)
+        group = QButtonGroup(self)
+        self.ya_buttons = {}
+        for i, (vid, title, desc) in enumerate(tts.YANDEX_VOICES):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setToolTip(desc)
+            b.clicked.connect(lambda _=False, v=vid: self._choose_ya_voice(v))
+            group.addButton(b)
+            vg.addWidget(b, i // 5, i % 5)
+            self.ya_buttons[vid] = b
+        yl.addLayout(vg)
+        yl.addSpacing(16)
+        lay.addWidget(self.ya_box)
+
+        prow = QHBoxLayout()
         self.voice_play = PlayButton("Послушать")
         self.voice_play.clicked.connect(lambda: self._demo_voice(self.voice_play))
-        row.addWidget(self.voice_play, 0, Qt.AlignVCenter)
-        lay.addWidget(c)
-        lay.addSpacing(26)
+        prow.addWidget(self.voice_play)
+        prow.addStretch(1)
+        lay.addLayout(prow)
+        lay.addSpacing(22)
         self._caption(lay, "Скорость речи")
         speeds = QHBoxLayout()
         speeds.setSpacing(10)
@@ -1180,11 +1230,37 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(14)
         self.voice_status = label("", 13, role="muted", wrap=True)
         lay.addWidget(self.voice_status)
-        lay.addSpacing(22)
+        lay.addSpacing(18)
         self.t_speak = self._toggle_row(lay, "Озвучивать ответы",
                                         "Если выключить, ответы будут только текстом на экране.",
                                         "speak_replies")
         lay.addStretch(1)
+
+    def _choose_engine(self, key):
+        self._set("voice_engine", key)
+        self._refresh_voice()
+        if key == "piper" or self.settings.cloud_voice:
+            self._demo_voice(self.voice_play)
+
+    def _choose_ya_voice(self, vid):
+        self._set("yandex_voice", vid)
+        self._refresh_voice()
+        if self.settings.cloud_voice:
+            self._demo_voice(self.voice_play)
+        else:
+            self.voice_status.setText("Сначала вставьте API-ключ Yandex Cloud.")
+
+    def _refresh_voice(self):
+        if self.settings is None:
+            return
+        eng = self.settings["voice_engine"] or "piper"
+        for k, c in self.engine_cards.items():
+            c.setProperty("selected", "true" if k == eng else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+        self.ya_box.setVisible(eng == "yandex")
+        for v, b in self.ya_buttons.items():
+            b.setChecked(v == (self.settings["yandex_voice"] or "filipp"))
 
     def _choose_speed(self, key):
         self._set("voice_speed", key)
@@ -1210,7 +1286,8 @@ class ProfileScreen(Backdrop):
         self.speaker.interrupt()
         self._playing(btn)
         self.speaker.say(personalize("Здравствуйте. Я SenioreM, ваш голосовой помощник.", addr),
-                         force=True, speed=speed)
+                         force=True, speed=speed, cache=True,
+                         cloud=self.settings.cloud_voice if self.settings else None)
 
     def _build_wake(self, lay):
         self._title(lay, "Активация", "Как вы обращаетесь к помощнику и как он даёт понять, "
@@ -1568,6 +1645,8 @@ class ProfileScreen(Backdrop):
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
         self.t_autostart.setChecked(bool(settings["autostart"]))
         self.t_dialog.setChecked(bool(settings["dialog_mode"]))
+        self.f_ya_key.setText(settings["yandex_key"] or "")
+        self._refresh_voice()
         for sec, b in self.listen_buttons.items():
             b.setChecked(sec == int(settings["listen_seconds"] or 10))
         self.acc_email.setText(email)
@@ -1655,7 +1734,7 @@ class MainWindow(QWidget):
         self.email = email
         self.settings = Settings(config.data_dir(), email)
         s = self.settings
-        self.speaker.configure(s["voice_speed"], s["speak_replies"])
+        self.speaker.configure(s["voice_speed"], s["speak_replies"], s.cloud_voice)
         self.speaker.prefetch([s["wake_reply"]] if s["wake_reply"] else [])
         mode = s["ai_mode"] or "smart"
         if s["ai_enabled"] and mode != "api" and ai.local_ready(mode):

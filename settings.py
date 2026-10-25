@@ -14,6 +14,9 @@ DEFAULTS = {
     "speak_wake_reply": True,
     "chime": True,
     "voice_speed": "normal",
+    "voice_engine": "piper",        # piper (Руслан, бесплатно) | yandex (по ключу)
+    "yandex_key": "",
+    "yandex_voice": "filipp",
     "mic_sensitivity": "normal",
     "assistant_name": "Сеньор",
     "speak_replies": True,
@@ -87,6 +90,12 @@ class Settings:
             extra = ""   # старое значение по умолчанию
         words += [w.strip().lower() for w in re.split(r"[,;\n]", extra) if w.strip()]
         return words
+
+    @property
+    def cloud_voice(self):
+        if self["voice_engine"] == "yandex" and (self["yandex_key"] or "").strip():
+            return {"key": self["yandex_key"].strip(), "voice": self["yandex_voice"] or "filipp"}
+        return None
 
     @property
     def name(self):
