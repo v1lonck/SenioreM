@@ -9,7 +9,7 @@ import traceback
 import webbrowser
 
 from PySide6.QtCore import QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence,
+from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainterPath,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout,
                                QPushButton, QSlider,
@@ -24,6 +24,8 @@ import commands
 import config
 import theme as T
 import sites
+import timers
+from chat import ChatScreen
 import widgets
 import tts
 from auth import AuthError, AuthStore, Mailer
@@ -308,8 +310,19 @@ class AuthScreen(Backdrop):
 
 
 # ================================================================== главный экран
+ORB_STYLES = [
+    ("sphere", "Сфера", "Светящийся шар и волны"),
+    ("waves", "Волны", "Кольца расходятся от центра"),
+    ("particles", "Частицы", "Рой частиц на орбитах"),
+    ("equalizer", "Эквалайзер", "Столбики по кругу"),
+    ("blob", "Капля", "Живая переливающаяся форма"),
+    ("rings", "Кольца", "Вращающиеся дуги"),
+]
+
+
 class Orb(QWidget):
-    """Круг-индикатор. Когда вы говорите — пульсирует, расходится волнами и синеет."""
+    """Круг-индикатор. Когда вы говорите — расширяется от вашего голоса; когда отвечает
+    помощник — движется. Вид выбирается в профиле → «Оформление» → «Круг»."""
 
     def __init__(self, size=340):
         super().__init__()
@@ -317,13 +330,19 @@ class Orb(QWidget):
         self.state = "loading"
         self._level = 0.0
         self._target = 0.0
-        self._heat = 0.0          # 0 — спокойный, 1 — ярко-синий
+        self._heat = 0.0          # 0 — спокойный, 1 — яркий
+        self._talk = 0.0          # «громкость» речи помощника (для анимации)
         self._t = 0.0
         self._ripples = []        # [радиус 0..1, прозрачность]
         self._last_ripple = 0.0
+        import random
+        rnd = random.Random(7)
+        self._parts = [(rnd.uniform(0.35, 0.95), rnd.uniform(0, 6.283), rnd.uniform(0.3, 1.2),
+                        rnd.uniform(1.2, 3.2)) for _ in range(70)]
+        self._bars = [0.0] * 48
         timer = QTimer(self)
         timer.timeout.connect(self._tick)
-        timer.start(16)
+        timer.start(33)
 
     def push_level(self, v):
         self._target = max(self._target, v)
@@ -332,19 +351,35 @@ class Orb(QWidget):
             self._last_ripple = self._t
 
     def _tick(self):
-        self._t += 0.016
-        self._level += (self._target - self._level) * 0.25
-        self._target *= 0.85
+        w = self.window()
+        if w is not None and w.isMinimized():
+            return                                  # свёрнуто — не тратим процессор
+        dt = 0.033
+        self._t += dt
+        self._level += (self._target - self._level) * 0.35
+        self._target *= 0.78
+        speaking = self.state == "speaking"
+        if speaking:
+            tt = self._t
+            want = 0.35 + 0.3 * abs(math.sin(tt * 7.3) * math.sin(tt * 2.9 + 1.0))
+        else:
+            want = 0.0
+        self._talk += (want - self._talk) * 0.3
         active = self.state in ("armed", "busy") or self._level > 0.06
-        goal = 1.0 if active else (0.55 if self.state == "speaking" else 0.0)
-        self._heat += (goal - self._heat) * 0.08
+        goal = 1.0 if active else (0.7 if speaking else 0.0)
+        self._heat += (goal - self._heat) * 0.1
         for r in self._ripples:
-            r[0] += 0.012
-            r[1] *= 0.965
+            r[0] += 0.02
+            r[1] *= 0.94
         self._ripples = [r for r in self._ripples if r[0] < 1.0 and r[1] > 0.02]
-        if self.state == "speaking" and self._t - self._last_ripple > 0.55:
-            self._ripples.append([0.0, 0.45])
+        if speaking and self._t - self._last_ripple > 0.45:
+            self._ripples.append([0.0, 0.5])
             self._last_ripple = self._t
+        energy = max(self._level, self._talk)
+        for i in range(len(self._bars)):
+            n = 0.5 + 0.5 * math.sin(self._t * (3 + i % 5) + i * 1.7)
+            goal_b = 0.08 + energy * (0.35 + 0.65 * n)
+            self._bars[i] += (goal_b - self._bars[i]) * 0.35
         self.update()
 
     @staticmethod
@@ -354,32 +389,36 @@ class Orb(QWidget):
                       int(a.green() + (b.green() - a.green()) * t),
                       int(a.blue() + (b.blue() - a.blue()) * t))
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        c = QPointF(self.width() / 2, self.height() / 2)
-        R = min(self.width(), self.height()) / 2 - 4
-        breathe = (math.sin(self._t * 2.2) + 1) / 2
-        lvl = min(1.0, self._level)
-
+    def _core(self, breathe):
         if self.state == "error":
-            core = QColor(T.ERROR)
-        elif self.state == "speaking":
-            core = self._mix(T.ACCENT_SOFT, "#FFFFFF", breathe * 0.6)
-        else:
-            core = self._mix(T._mix(T.LINE, "#FFFFFF", 0.08), T.ACCENT, self._heat)
+            return QColor(T.ERROR)
+        if self.state == "speaking":
+            return self._mix(T.ACCENT_SOFT, "#FFFFFF", breathe * 0.4)
+        return self._mix(T._mix(T.LINE, "#FFFFFF", 0.12), T.ACCENT, self._heat)
 
-        # свечение позади
+    def _glow(self, p, c, R, core):
         g = QRadialGradient(c, R)
         glow = QColor(core)
-        glow.setAlpha(int(40 + 70 * self._heat + 60 * lvl))
+        glow.setAlpha(int(30 + 70 * self._heat + 70 * max(self._level, self._talk)))
         g.setColorAt(0.0, glow)
         g.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(g))
         p.drawEllipse(c, R, R)
 
-        # расходящиеся волны
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        c = QPointF(self.width() / 2, self.height() / 2)
+        R = min(self.width(), self.height()) / 2 - 4
+        breathe = (math.sin(self._t * 2.2) + 1) / 2
+        core = self._core(breathe)
+        self._glow(p, c, R, core)
+        style = T.APPEARANCE.get("orb_style", "sphere")
+        getattr(self, "_draw_" + style, self._draw_sphere)(p, c, R, core, breathe)
+
+    # ---- сфера (классика)
+    def _draw_sphere(self, p, c, R, core, breathe):
         for rad, alpha in self._ripples:
             col = QColor(core)
             col.setAlphaF(max(0.0, alpha * (1 - rad)))
@@ -387,17 +426,17 @@ class Orb(QWidget):
             p.setBrush(Qt.NoBrush)
             rr = R * (0.30 + 0.66 * rad)
             p.drawEllipse(c, rr, rr)
-
-        # внешнее кольцо
         ring = self._mix(T.LINE, T.ACCENT, self._heat)
         ring.setAlphaF(0.55 + 0.35 * breathe * self._heat)
         p.setPen(QPen(ring, 1.4))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(c, R * 0.86, R * 0.86)
-
-        # ядро
+        lvl = min(1.0, self._level)
         base = R * 0.27
-        if self.state in ("speaking", "busy", "loading"):
+        if self.state == "speaking":
+            r = base * (1.0 + 0.25 * self._talk) + R * 0.04 * math.sin(self._t * 5)
+            c = QPointF(c.x() + R * 0.03 * math.sin(self._t * 3.1), c.y() + R * 0.03 * math.cos(self._t * 2.3))
+        elif self.state in ("busy", "loading"):
             r = base + R * 0.06 * breathe
         else:
             r = base + R * 0.03 * breathe + R * 0.42 * lvl
@@ -406,6 +445,111 @@ class Orb(QWidget):
         cg.setColorAt(1.0, core)
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(cg))
+        p.drawEllipse(c, r, r)
+
+    # ---- волны
+    def _draw_waves(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        speed = 0.25 + 1.2 * energy
+        for i in range(7):
+            ph = (self._t * speed * 0.35 + i / 7) % 1.0
+            rr = R * (0.18 + 0.8 * ph)
+            col = QColor(core)
+            col.setAlphaF(max(0.0, (1 - ph) * (0.25 + 0.6 * self._heat + 0.5 * energy)))
+            p.setPen(QPen(col, 1.5 + 3 * (1 - ph) * energy))
+            p.setBrush(Qt.NoBrush)
+            if self.state == "speaking":
+                path = QPainterPath()
+                for k in range(73):
+                    a = k / 72 * 2 * math.pi
+                    wob = 1 + 0.05 * self._talk * math.sin(a * 6 + self._t * 6 + i)
+                    pt = QPointF(c.x() + rr * wob * math.cos(a), c.y() + rr * wob * math.sin(a))
+                    path.moveTo(pt) if k == 0 else path.lineTo(pt)
+                p.drawPath(path)
+            else:
+                p.drawEllipse(c, rr, rr)
+        r = R * (0.16 + 0.3 * self._level + 0.05 * breathe)
+        p.setPen(Qt.NoPen)
+        p.setBrush(core)
+        p.drawEllipse(c, r, r)
+
+    # ---- частицы
+    def _draw_particles(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        spin = 0.25 + 1.6 * self._talk + 0.6 * self._heat
+        p.setPen(Qt.NoPen)
+        for rad, ang, spd, size in self._parts:
+            a = ang + self._t * spd * spin
+            rr = R * rad * (0.55 + 0.45 * (0.3 + 0.7 * self._level) + 0.05 * math.sin(self._t * 2 + ang))
+            if self.state == "speaking":
+                rr *= 1 + 0.12 * self._talk * math.sin(self._t * 8 + ang * 3)
+            pt = QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a) * 0.92)
+            col = QColor(core)
+            col.setAlphaF(0.35 + 0.6 * rad * (0.4 + 0.6 * max(self._heat, energy)))
+            p.setBrush(col)
+            p.drawEllipse(pt, size * (1 + energy), size * (1 + energy))
+        r = R * (0.12 + 0.1 * energy + 0.03 * breathe)
+        p.setBrush(self._mix(core, "#FFFFFF", 0.35))
+        p.drawEllipse(c, r, r)
+
+    # ---- эквалайзер
+    def _draw_equalizer(self, p, c, R, core, breathe):
+        n = len(self._bars)
+        inner = R * 0.36
+        for i, v in enumerate(self._bars):
+            a = i / n * 2 * math.pi - math.pi / 2 + self._t * 0.15
+            length = R * 0.55 * min(1.0, v + 0.02 * breathe)
+            x1, y1 = c.x() + inner * math.cos(a), c.y() + inner * math.sin(a)
+            x2, y2 = c.x() + (inner + length) * math.cos(a), c.y() + (inner + length) * math.sin(a)
+            col = self._mix(core, T.ACCENT_SOFT, i / n)
+            col.setAlphaF(0.55 + 0.45 * self._heat)
+            pen = QPen(col, max(2.0, R * 0.028))
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        p.setPen(QPen(T.qcolor(T.ACCENT, 120), 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, inner * 0.92, inner * 0.92)
+
+    # ---- живая капля
+    def _draw_blob(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        base = R * (0.42 + 0.25 * self._level)
+        path = QPainterPath()
+        for k in range(97):
+            a = k / 96 * 2 * math.pi
+            wob = (0.06 + 0.22 * energy) * (math.sin(a * 3 + self._t * 1.7) * 0.5 +
+                                             math.sin(a * 5 - self._t * 2.3) * 0.3 +
+                                             math.sin(a * 2 + self._t * 0.9) * 0.2)
+            rr = base * (1 + wob + 0.02 * breathe)
+            pt = QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a))
+            path.moveTo(pt) if k == 0 else path.lineTo(pt)
+        path.closeSubpath()
+        g = QRadialGradient(QPointF(c.x() - base * 0.3, c.y() - base * 0.35), base * 1.6)
+        g.setColorAt(0, self._mix(core, "#FFFFFF", 0.5))
+        g.setColorAt(0.6, core)
+        g.setColorAt(1, self._mix(core, "#000000", 0.35))
+        p.setPen(QPen(T.qcolor(T.ACCENT_SOFT, 120), 1.5))
+        p.setBrush(QBrush(g))
+        p.drawPath(path)
+
+    # ---- вращающиеся кольца
+    def _draw_rings(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        for i, (rad, spd, span) in enumerate(((0.82, 0.6, 250), (0.66, -0.9, 200),
+                                              (0.50, 1.3, 150), (0.36, -1.8, 110))):
+            ang = (self._t * spd * (1 + 2.5 * self._talk + self._heat)) * 57.3
+            col = self._mix(core, T.ACCENT_SOFT, i / 4)
+            col.setAlphaF(0.4 + 0.5 * max(self._heat, energy))
+            pen = QPen(col, R * (0.025 + 0.03 * energy))
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            rr = R * rad * (1 + 0.08 * self._level)
+            p.drawArc(QRectF(c.x() - rr, c.y() - rr, rr * 2, rr * 2), int(ang * 16),
+                      int((span + 60 * energy) * 16))
+        r = R * (0.14 + 0.12 * energy + 0.02 * breathe)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._mix(core, "#FFFFFF", 0.3))
         p.drawEllipse(c, r, r)
 
 
@@ -506,6 +650,7 @@ class HomeScreen(Backdrop):
         self._old_listeners = []
         self.armed = False
         self.speaking = False
+        self._last_spoken, self._spoken_end = "", 0.0
         self.mic = "loading"
         self.chime = Chime()
         self.bridge = Bridge()
@@ -533,6 +678,11 @@ class HomeScreen(Backdrop):
         self.clock = label("", 14, role="muted")
         top.addWidget(self.clock)
         top.addSpacing(18)
+        chat_btn = button("💬  Чат", "ghost", 14, QFont.Normal)
+        chat_btn.setToolTip("Написать помощнику")
+        chat_btn.clicked.connect(lambda: self.win.open_chat())
+        top.addWidget(chat_btn)
+        top.addSpacing(12)
         self.avatar = button("", "avatar", 15, QFont.DemiBold)
         self.avatar.setToolTip("Профиль и настройки")
         self.avatar.clicked.connect(self.profile_requested.emit)
@@ -657,6 +807,8 @@ class HomeScreen(Backdrop):
         body.addWidget(right_area)
         self.apply_widgets()
         self._ai_warmed = False
+        self._sink = None
+        timers.manager().finished.connect(self._timer_done)
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._bg_status)
         self._status_timer.start(1000)
@@ -741,10 +893,40 @@ class HomeScreen(Backdrop):
             self.bg_status.setText(ai.DOWNLOADS.error)
         else:
             self.bg_status.setText("")
+        # ИИ занимает 1–2.5 ГБ памяти: после 10 минут без вопросов выгружаем его
+        eng = ai.ENGINE
+        if eng.running() and time.time() - max(eng.last_time, getattr(eng, "started", 0)) > 600:
+            eng.stop()
         if ai.DOWNLOADS.done_kind and not self._ai_warmed:
             self._ai_warmed = True
             kind = ai.DOWNLOADS.done_kind
             threading.Thread(target=lambda: MainWindow._warm_ai(kind), daemon=True).start()
+
+    def _timer_action(self, intent):
+        mgr = timers.manager()
+        a = intent["action"]
+        if a == "timer_add":
+            kind, sec, lab = intent["kind"], intent["seconds"], intent.get("label", "")
+            mgr.add(kind, sec, lab)
+            h = timers.human(sec)
+            return {"timer": f"Поставил таймер на {h}." + (f" Для: {lab}." if lab else ""),
+                    "remind": f"Хорошо, напомню через {h}" + (f": {lab}." if lab else "."),
+                    "shutdown": f"Компьютер выключится через {h}. Чтобы отменить — скажите "
+                                f"«отмени выключение» или нажмите крестик на плашке.",
+                    "restart": f"Перезагружу компьютер через {h}. Отменить — «отмени перезагрузку».",
+                    "sleep": f"Переведу компьютер в спящий режим через {h}."}[kind]
+        if a == "timer_cancel":
+            n = mgr.cancel(kinds=intent.get("kinds"))
+            return "Отменил." if n else "Сейчас нет таймеров, которые можно отменить."
+        nearest = mgr.nearest()
+        if not nearest:
+            return "Сейчас нет активных таймеров."
+        return f"Осталось {timers.human(nearest['end'] - time.time())}."
+
+    def _timer_done(self, text):
+        self.reply.setText(text)
+        self._last_spoken = text
+        self.speaker.say(text, force=True)
 
     def _notes_changed(self, _text):
         self._notes_timer.start(800)
@@ -769,6 +951,9 @@ class HomeScreen(Backdrop):
     # ---------- состояния ----------
     def _set_state(self, s, text=None):
         self.orb.state = s
+        comp = getattr(self.win, "companion", None)
+        if comp is not None:
+            comp.set_listening(s in ("armed", "listening"))
         self.state_lbl.setText(text if text is not None else STATE_TEXT.get(s, ""))
         set_role(self.state_lbl, "error" if s == "error" else ("accent" if s == "armed" else "muted"))
 
@@ -799,6 +984,8 @@ class HomeScreen(Backdrop):
 
     def _on_speaking(self, flag):
         self.speaking = flag
+        if not flag:
+            self._spoken_end = time.time()
         if self.listener:
             self.listener.set_paused(flag)
         if not flag:
@@ -835,7 +1022,18 @@ class HomeScreen(Backdrop):
             if self.armed:
                 self.arm_timer.start(getattr(self, "_arm_ms", self._listen_ms()))  # не перебиваем
 
+    def _is_echo(self, text):
+        """Помощник не должен слышать сам себя (звук из колонок попал в микрофон)."""
+        from difflib import SequenceMatcher
+        last = getattr(self, "_last_spoken", "")
+        if not last or time.time() - getattr(self, "_spoken_end", 0) > 2.5:
+            return False
+        a, b = commands.normalize(text), commands.normalize(last)
+        return bool(a) and (a in b or SequenceMatcher(None, a, b).ratio() > 0.55)
+
     def _on_final(self, text, confs=None, audio=None):
+        if self.speaking or self._is_echo(text):
+            return
         words = commands.tokens(text)
         if confs is not None and len(confs) != len(words):
             confs = None
@@ -894,6 +1092,7 @@ class HomeScreen(Backdrop):
         self._show_heard("", True)
         reply = (s["wake_reply"] if s else "") or ""
         if s is not None and s["speak_wake_reply"] and reply.strip():
+            self._last_spoken = reply
             self.reply.setText(reply)
             QTimer.singleShot(250 if s["chime"] else 0, lambda: self.speaker.say(reply, force=True))
         else:
@@ -916,14 +1115,20 @@ class HomeScreen(Backdrop):
             self.execute(text, typed=True)
 
     # ---------- выполнение ----------
-    def execute(self, text, typed=False):
-        intent = commands.parse(text)
+    def execute(self, text, typed=False, sink=None):
+        """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
+        intent = timers.parse(text) or commands.parse(text)
         intent["typed"] = typed
+        self._sink = sink
         self._continue = False
-        self._voice_cmd = not typed
+        self._voice_cmd = not typed and sink is None
         shown = commands.normalize(text)
         self._last_cmd = shown
-        self._show_heard(shown[:1].upper() + shown[1:], False)
+        if sink is None:
+            self._show_heard(shown[:1].upper() + shown[1:], False)
+        if intent["action"].startswith("timer_"):
+            self._on_action_done(self._timer_action(intent), "")
+            return
         if intent["action"] == "stop":
             self.speaker.interrupt()
             self.reply.setText("")
@@ -950,10 +1155,13 @@ class HomeScreen(Backdrop):
                     reply = "Не получилось узнать погоду. Проверьте интернет."
                 self.bridge.action_done.emit(reply, "")
                 return
-            if intent["action"] == "rates":
+            if intent["action"] in ("rates", "crypto"):
                 try:
-                    reply = live.rate_phrase(intent.get("cur", "USD"))
-                except Exception:  # noqa: BLE001
+                    reply = (live.rate_phrase(intent.get("cur", "USD"))
+                             if intent["action"] == "rates"
+                             else live.crypto_phrase(intent.get("coin", "bitcoin")))
+                except Exception as e:  # noqa: BLE001
+                    _err_log(f"курс: {e!r}")
                     reply = "Не получилось узнать курс. Проверьте интернет."
                 self.bridge.action_done.emit(reply, "")
                 return
@@ -995,11 +1203,24 @@ class HomeScreen(Backdrop):
             if self._last_cmd:
                 self.settings.add_history(self._last_cmd, reply)
                 self.history.set_items(self.settings["history"])
+        sink, self._sink = getattr(self, "_sink", None), None
+        if sink is not None:                       # ответ — в чат
+            sink(reply)
+            if reply and self.settings is not None and self.settings["chat_speak"]:
+                self._last_spoken = reply
+                self.speaker.say(reply, cache=not from_ai)
+            self._rest_state()
+            if ui == "minimize":
+                QTimer.singleShot(300, self.win.smooth_minimize)
+            elif ui == "quit":
+                QTimer.singleShot(1800, self.win.force_close)
+            return
         self.reply.setFont(font(16 if len(reply) > 140 else 18))
         self.reply.setText(reply + ("\nЗвук на компьютере выключен — скажите или напишите "
                                     "«включи звук»." if muted and reply else ""))
         dialog = (self._voice_cmd and ui not in ("quit", "minimize")
                   and self._followup_ms() > 0)
+        self._last_spoken = reply
         if reply and self.speaker.enabled:
             self._continue = dialog           # снова слушаем, когда договорит
             self.speaker.say(reply, cache=not from_ai)
@@ -1032,6 +1253,7 @@ class ProfileScreen(Backdrop):
         ("history", "История"),
         ("apps", "Программы и игры"),
         ("ai", "ИИ-собеседник"),
+        ("companion", "Компаньон"),
         ("startup", "Запуск"),
         ("account", "Аккаунт"),
         ("about", "О программе"),
@@ -1263,6 +1485,8 @@ class ProfileScreen(Backdrop):
         lay.addStretch(1)
 
     def _listen_preview(self, btn):
+        if self._stop_if_playing(btn):
+            return
         self.speaker.interrupt()
         self._playing(btn)
         a, b = self._preview_lines()
@@ -1420,7 +1644,18 @@ class ProfileScreen(Backdrop):
         if not flag:
             self._playing(None)
 
+    def _stop_if_playing(self, btn):
+        """Повторное нажатие на играющую кнопку — пауза (а не воспроизведение заново)."""
+        if btn is not None and btn._playing:
+            self.speaker.interrupt()
+            btn.set_playing(False)
+            self._play_btn = None
+            return True
+        return False
+
     def _demo_voice(self, btn=None):
+        if self._stop_if_playing(btn):
+            return
         addr = self.settings["address"] if self.settings else ""
         speed = self.settings["voice_speed"] if self.settings else "normal"
         self.voice_status.setText("")
@@ -1708,6 +1943,18 @@ class ProfileScreen(Backdrop):
         outer.addWidget(scroll)
         self._title(lay, "Оформление", "Цвет, фон, прозрачность и виджеты главного экрана. "
                                        "Всё применяется сразу.")
+        self._caption(lay, "Готовые темы")
+        trow = QGridLayout()
+        trow.setHorizontalSpacing(10)
+        trow.setVerticalSpacing(10)
+        for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
+            b = button(tname, "ghost", 14)
+            b.setMinimumHeight(48)
+            b.setStyleSheet(f"QPushButton {{ border-left: 4px solid {acc}; }}")
+            b.clicked.connect(lambda _=False, a=acc, g=bg, c=clock, o=orb: self._apply_theme(a, g, c, o))
+            trow.addWidget(b, 0, i)
+        lay.addLayout(trow)
+        lay.addSpacing(26)
         self._caption(lay, "Цвет")
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -1748,7 +1995,7 @@ class ProfileScreen(Backdrop):
             cl.addWidget(label(title, 15, QFont.DemiBold))
             cl.addWidget(label(desc, 12, role="muted", wrap=True))
             c.clicked.connect(lambda k=key: self._choose_bg(k))
-            grid.addWidget(c, i // 2, i % 2)
+            grid.addWidget(c, i // 3, i % 3)
             self.bg_cards[key] = c
         lay.addLayout(grid)
         lay.addSpacing(10)
@@ -1771,6 +2018,32 @@ class ProfileScreen(Backdrop):
             lay.addWidget(sl)
             lay.addSpacing(20)
             return sl
+        self._caption(lay, "Круг в центре")
+        ogrid = QGridLayout()
+        ogrid.setHorizontalSpacing(12)
+        ogrid.setVerticalSpacing(12)
+        self.orb_cards = {}
+        for i, (key, title, desc) in enumerate(ORB_STYLES):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            cl = QVBoxLayout(c)
+            cl.setContentsMargins(16, 12, 16, 12)
+            cl.setSpacing(2)
+            cl.addWidget(label(title, 15, QFont.DemiBold))
+            cl.addWidget(label(desc, 12, role="muted", wrap=True))
+            c.clicked.connect(lambda k=key: self._set_look(orb_style=k))
+            ogrid.addWidget(c, i // 3, i % 3)
+            self.orb_cards[key] = c
+        lay.addLayout(ogrid)
+        lay.addSpacing(10)
+        lay.addWidget(label("Когда вы говорите, круг расширяется от вашего голоса, а когда "
+                            "отвечает помощник — движется.", 12, role="faint", wrap=True))
+        lay.addSpacing(22)
+        self.t_eco = self._toggle_row(lay, "Экономный режим",
+                                      "Фон без анимации, меньше нагрузка на компьютер и батарею.",
+                                      None)
+        self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         self.s_glass = slider("Прозрачность окна (для «Стекла»)", "glass", 15, 85)
         self.s_panels = slider("Плотность панелей", "panels", 25, 95)
 
@@ -1817,6 +2090,12 @@ class ProfileScreen(Backdrop):
         acc = (a.get("accent") or "").lower()
         for c, b in self.swatches.items():
             b.setChecked(c == acc)
+        orb = a.get("orb_style", "sphere")
+        for k, c in self.orb_cards.items():
+            c.setProperty("selected", "true" if k == orb else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+        self.t_eco.setChecked(bool(a.get("eco")))
         bg = a.get("background", "aurora")
         for k, c in self.bg_cards.items():
             c.setProperty("selected", "true" if k == bg else "false")
@@ -1837,6 +2116,11 @@ class ProfileScreen(Backdrop):
         T.set_appearance(QApplication.instance(), **changes)
         self.win.home.apply_widgets()
         self._refresh_look()
+
+    def _apply_theme(self, accent, bg, clock, orb):
+        if (bg == "glass") != self.win.glass:
+            self._choose_bg(bg)
+        self._set_look(accent=accent, background=bg, clock_style=clock, orb_style=orb)
 
     def _set_widget(self, key, value):
         if not self._loading:
@@ -2026,6 +2310,79 @@ class ProfileScreen(Backdrop):
             self.apps_scan.setText("Обновить список")
             self._fill_apps()
 
+    def _build_companion(self, lay):
+        from companion import FIGURES, FigurePreview
+        self._title(lay, "Компаньон", "Фигурка над панелью задач в правом нижнем углу. Когда "
+                    "помощник отвечает — она говорит вместе с ним и показывает текст.")
+        row = QHBoxLayout()
+        row.setSpacing(28)
+        self.comp_preview = FigurePreview(190)
+        row.addWidget(self.comp_preview, 0, Qt.AlignTop)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        self.comp_cards = {}
+        for i, (key, title, desc) in enumerate(FIGURES):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            cl = QVBoxLayout(c)
+            cl.setContentsMargins(14, 10, 14, 10)
+            cl.setSpacing(2)
+            cl.addWidget(label(title, 15, QFont.DemiBold))
+            cl.addWidget(label(desc, 12, role="muted", wrap=True))
+            c.clicked.connect(lambda k=key: self._set_comp(companion=k))
+            grid.addWidget(c, i // 2, i % 2)
+            self.comp_cards[key] = c
+        row.addLayout(grid, 1)
+        lay.addLayout(row)
+        lay.addSpacing(26)
+        self.t_comp_anim = self._toggle_row(lay, "Всегда двигается",
+                                            "Покачивается и моргает. Если выключить — стоит "
+                                            "неподвижно и оживает только когда говорит.", None)
+        self.t_comp_anim.toggled.connect(lambda v: self._set_comp(companion_anim=bool(v)))
+        self._caption(lay, "Размер")
+        srow = QHBoxLayout()
+        srow.setSpacing(10)
+        self.comp_sizes = {}
+        for px, name in ((110, "Маленький"), (150, "Средний"), (200, "Большой")):
+            b = button(name, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, v=px: self._set_comp(companion_size=v))
+            srow.addWidget(b)
+            self.comp_sizes[px] = b
+        srow.addStretch(1)
+        lay.addLayout(srow)
+        lay.addSpacing(14)
+        lay.addWidget(label("Фигурку можно перетащить мышью, а нажатие на неё открывает SenioreM.",
+                            12, role="faint", wrap=True))
+        lay.addStretch(1)
+
+    def _set_comp(self, **changes):
+        if self.settings is None or self._loading:
+            return
+        for k, v in changes.items():
+            self.settings.set(k, v)
+        self._refresh_comp()
+        self.win.apply_companion()
+        self._flash()
+
+    def _refresh_comp(self):
+        s = self.settings
+        kind = s["companion"] or "none"
+        for k, c in self.comp_cards.items():
+            c.setProperty("selected", "true" if k == kind else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+        self.comp_preview.kind = kind
+        self.comp_preview.painter.animated = bool(s["companion_anim"])
+        self.t_comp_anim.blockSignals(True)
+        self.t_comp_anim.setChecked(bool(s["companion_anim"]))
+        self.t_comp_anim.blockSignals(False)
+        size = int(s["companion_size"] or 150)
+        for px, b in self.comp_sizes.items():
+            b.setChecked(px == size)
+
     def _build_startup(self, lay):
         self._title(lay, "Запуск", "Когда и как открывается SenioreM.")
         self.t_autostart = self._toggle_row(lay, "Запускать вместе с Windows",
@@ -2141,6 +2498,7 @@ class ProfileScreen(Backdrop):
         self.f_api_model.setText(settings["ai_api_model"] or "")
         self._refresh_ai()
         self.full_history.set_items(settings["history"])
+        self._refresh_comp()
         self._loading = False
         self._refresh_preview()
 
@@ -2178,6 +2536,7 @@ class MainWindow(QWidget):
         self.mailer = Mailer(cfg)
         self.speaker = Speaker(models.get("voice"))
         self.speaker.start()
+        self.companion = None
         self.bridge = Bridge()
         self.bridge.mail_done.connect(self._mail_done)
         self.pending_email = ""
@@ -2193,7 +2552,11 @@ class MainWindow(QWidget):
         self.auth = AuthScreen(self, self.by_email)
         self.home = HomeScreen(self, cfg, self.speaker, model)
         self.profile = ProfileScreen(self, cfg, self.store, self.speaker)
-        for w in (self.auth, self.home, self.profile):
+        self.chat = ChatScreen(self)
+        self.chat.back_requested.connect(self._back_home)
+        self.chat.send_requested.connect(
+            lambda txt: self.home.execute(txt, typed=True, sink=self.chat.receive))
+        for w in (self.auth, self.home, self.profile, self.chat):
             self.stack.addWidget(w)
 
         a = self.auth
@@ -2247,12 +2610,12 @@ class MainWindow(QWidget):
             asr.DOWNLOADS.start()
         switch_page(self.stack, self.home)
         self.home.start(email, s)
+        self.apply_companion()
         if not self.greeted:
             self.greeted = True
             who = s["name"] or s["address"]
             hello = greeting(datetime.datetime.now().hour)
-            self.speaker.say(f"{hello}{', ' + who if who else ''}. Я на связи — "
-                             f"скажите «{s.name}» и команду.")
+            self.speaker.say(f"{hello}{', ' + who if who else ''}. Я на связи.")
 
     @staticmethod
     def _warm_ai(mode):
@@ -2260,6 +2623,28 @@ class MainWindow(QWidget):
             ai.ENGINE.start_local(mode)
         except Exception:  # noqa: BLE001 — запустится при первом вопросе
             pass
+
+    def apply_companion(self):
+        s = self.settings
+        kind = (s["companion"] if s is not None else "none") or "none"
+        if kind == "none" or os.environ.get("SENIOREM_NO_COMPANION"):
+            if self.companion is not None:
+                self.companion.hide()
+            return
+        if self.companion is None:
+            from companion import CompanionWindow
+            self.companion = CompanionWindow(on_click=self.smooth_restore)
+            self.speaker.speaking.connect(self.companion.set_speaking)
+            self.speaker.said.connect(lambda t: self.companion.say(t, 4 + len(t) / 14))
+        self.companion.configure(kind, bool(s["companion_anim"]), int(s["companion_size"] or 150))
+        self.companion.show()
+        self.companion.raise_()
+
+    def open_chat(self):
+        if self.settings is None:
+            return
+        self.chat.load(self.settings, self.settings.name)
+        switch_page(self.stack, self.chat)
 
     def open_profile(self, section="address"):
         if self.settings is None:
@@ -2273,6 +2658,8 @@ class MainWindow(QWidget):
         self.home.start(self.email, self.settings)
 
     def _logout(self):
+        if self.companion is not None:
+            self.companion.hide()
         self.home.stop()
         self.speaker.interrupt()
         self.store.logout()
@@ -2461,12 +2848,22 @@ class MainWindow(QWidget):
             QTimer.singleShot(0, self.request_close)
             return
         self.home.stop()
+        if self.companion is not None:
+            self.companion.close()
         self.speaker.shutdown()
         ai.ENGINE.stop()
         super().closeEvent(e)
 
 
 # ================================================================== запуск
+def _err_log(text):
+    try:
+        with open(config.data_dir() / "error.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
+    except OSError:
+        pass
+
+
 def _install_error_log():
     log = config.data_dir() / "error.log"
 
@@ -2650,6 +3047,51 @@ def run_uitest(out_dir):
         for sec in ("look", "city", "voice", "apps", "ai", "name", "wake"):
             win.open_profile(sec)
             shot(win, f"05-profile-{sec}")
+        win.settings.set("companion", "girl")
+        win.open_profile("companion")
+        shot(win, "06-profile-companion")
+        from PySide6.QtGui import QImage, QPainter as _QP
+        from PySide6.QtCore import QRectF as _R
+        import companion as _cmp
+        figs = [k for k, _, _ in _cmp.FIGURES if k != "none"]
+        img = QImage(220 * len(figs), 440, QImage.Format_ARGB32)
+        img.fill(QColor(T.BG))
+        fp = _cmp.FigurePainter()
+        qp = _QP(img)
+        for i, k in enumerate(figs):
+            fp.speaking = False
+            fp.mouth = 0
+            fp.paint(qp, _R(i * 220 + 10, 10, 200, 200), k)
+            fp.speaking = True
+            fp.mouth = 0.9
+            fp.paint(qp, _R(i * 220 + 10, 230, 200, 200), k)
+        qp.end()
+        img.save(os.path.join(out_dir, "07-companions.png"))
+        log.append("07-companions")
+        win.open_chat()
+        win.chat.send("Кто такой Павел Дуров?")
+        win.chat.receive("Павел Дуров — российский предприниматель, основатель ВКонтакте и Telegram.")
+        shot(win, "08-chat")
+        win._back_home()
+        for st in ("waves", "particles", "equalizer", "blob", "rings"):
+            T.set_appearance(app, orb_style=st)
+            h.orb.state = "speaking"
+            pump(600)
+            shot(win, f"09-orb-{st}")
+        T.set_appearance(app, orb_style="sphere")
+        import timers as _tm
+        mgr = _tm.manager()
+        mgr.add("timer", 300, "Чай")
+        mgr.add("sleep", 1800, "")       # не выключение — чтобы не трогать компьютер сборки
+        pump(800)
+        for i, tt in enumerate(mgr.toasts):
+            shot(tt, f"10-toast-{i}")
+        mgr.toasts[0].finish()
+        pump(700)
+        shot(mgr.toasts[0], "10-toast-done")
+        mgr.cancel()
+        for tt in list(mgr.toasts):
+            tt.close()
         win.request_close = lambda: None
         log.append("OK")
     except Exception:  # noqa: BLE001

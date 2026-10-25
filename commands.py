@@ -191,8 +191,15 @@ def parse(text: str) -> dict:
         if any(st in t for st in stems):
             cur = code
             break
-    if cur and _has(t, "курс", "сколько стоит", "почем", "сколько рублей"):
+    if cur and (_has(t, "курс", "стоит", "почем", "рубл", "сколько") or len(w) <= 2):
         return {"action": "rates", "cur": cur}
+    for code, stems in (("bitcoin", ("биткоин", "биткойн", "bitcoin")),
+                        ("ethereum", ("эфир", "эфириум", "ethereum")),
+                        ("toncoin", ("тонкоин", "toncoin")),
+                        ("tether", ("тезер", "usdt"))):
+        if any(st in t for st in stems) and (_has(t, "курс", "стоит", "почем", "сколько")
+                                               or len(w) <= 2):
+            return {"action": "crypto", "coin": code}
 
     if _has(t, "обнови список", "обнови программы", "обнови игры", "найди новые игры",
             "найди новые программы", "просканируй", "выучи программы", "выучи игры"):

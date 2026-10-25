@@ -137,6 +137,7 @@ class AI:
         self.lock = threading.Lock()
         self.history = []
         self.last_time = 0.0
+        self.started = 0.0
 
     # ---------- локальный сервер ----------
     @staticmethod
@@ -170,6 +171,7 @@ class AI:
              "-c", "4096", "-t", str(threads)],
             cwd=str(exe.parent), stdout=log, stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
         self.kind = kind
+        self.started = time.time()
         if wait:
             self._wait_ready(timeout)
 

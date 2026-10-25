@@ -32,8 +32,13 @@ class ClockFace(QWidget):
         self.style_name = "digital"
         self.setMinimumHeight(150)
         t = QTimer(self)
-        t.timeout.connect(self.update)
-        t.start(50)
+        t.timeout.connect(self._tick)
+        t.start(100)
+
+    def _tick(self):
+        w = self.window()
+        if self.isVisible() and not (w and w.isMinimized()):
+            self.update()
 
     def set_style(self, name):
         self.style_name = name
@@ -319,7 +324,8 @@ class SystemCard(QWidget):
         lay.addWidget(caption("КОМПЬЮТЕР"))
         lay.addSpacing(12)
         self.rows = {}
-        for key, title in (("cpu", "Процессор"), ("ram", "Память"), ("bat", "Батарея")):
+        for key, title in (("cpu", "Процессор"), ("ram", "Память компьютера"),
+                           ("app", "Из них SenioreM"), ("bat", "Батарея")):
             w = QWidget()
             wl = QVBoxLayout(w)
             wl.setContentsMargins(0, 0, 0, 10)
@@ -336,7 +342,7 @@ class SystemCard(QWidget):
             self.rows[key] = (w, val, bar)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(2000)
+        self.timer.start(3000)
         self.refresh()
 
     def refresh(self):
@@ -351,6 +357,17 @@ class SystemCard(QWidget):
         self._set("cpu", cpu / 100, f"{cpu:.0f}%")
         self._set("ram", mem.percent / 100,
                   f"{mem.used / 1e9:.1f} из {mem.total / 1e9:.0f} ГБ")
+        try:
+            me = psutil.Process()
+            used = me.memory_info().rss
+            for ch in me.children(recursive=True):
+                try:
+                    used += ch.memory_info().rss
+                except Exception:  # noqa: BLE001
+                    pass
+            self._set("app", used / max(1, mem.total), f"{used / 1e9:.1f} ГБ")
+        except Exception:  # noqa: BLE001
+            pass
         bat = None
         try:
             bat = psutil.sensors_battery()

@@ -66,7 +66,7 @@ class Recognizer:
             return self.model
         _stub_av()
         from faster_whisper import WhisperModel
-        threads = max(2, (os.cpu_count() or 4) // 2)
+        threads = max(2, (os.cpu_count() or 4) // 3)    # не нагружаем весь процессор
         self.model = WhisperModel(str(model_dir()), device="cpu", compute_type="int8",
                                   cpu_threads=threads)
         return self.model
@@ -90,7 +90,7 @@ class Recognizer:
         audio = audio * min(8.0, 0.6 / peak)          # нормализуем громкость (шёпот)
         with self.lock:
             segments, _info = self.model.transcribe(
-                audio, language="ru", beam_size=3, initial_prompt=PROMPT,
+                audio, language="ru", beam_size=1, initial_prompt=PROMPT,
                 condition_on_previous_text=False, vad_filter=False,
                 no_speech_threshold=0.6, temperature=0.0)
             text = " ".join(s.text.strip() for s in segments).strip()

@@ -32,6 +32,11 @@ DEFAULTS = {
     "ai_api_key": "",
     "ai_api_model": "",
     "notes": "",
+    "chat": [],
+    "chat_speak": False,
+    "companion": "none",            # фигура над панелью задач
+    "companion_anim": True,
+    "companion_size": 150,
     "history": [],
 }
 
