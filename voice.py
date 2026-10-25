@@ -24,13 +24,14 @@ def _co_init():
         pass
 
 
-GAINS = {"normal": 3.0, "high": 6.0, "whisper": 14.0}   # максимальное усиление микрофона
+MAX_GAIN = 14.0          # тихую речь и шёпот подтягиваем до нормальной громкости
+MAX_UTTERANCE = 16000 * 2 * 20   # не больше 20 секунд звука на фразу
 
 
 class Listener(QThread):
     level = Signal(float)
     partial = Signal(str)
-    final = Signal(str, object)   # текст и уверенность в каждом слове
+    final = Signal(str, object, object)   # текст, уверенность слов, звук фразы (PCM16)
     failed = Signal(str)
     ready = Signal()
 
@@ -87,6 +88,7 @@ class Listener(QThread):
             return
 
         last_partial = ""
+        utter = bytearray()
         gain = 1.0
         floor = 0.004            # оценка уровня тишины/шума
         with stream:
@@ -97,8 +99,10 @@ class Listener(QThread):
                 except queue.Empty:
                     continue
                 if self._paused:
+                    utter.clear()
                     continue
                 if self._reset:
+                    utter.clear()
                     rec.Reset()
                     self._reset = False
                     last_partial = ""
@@ -116,7 +120,7 @@ class Listener(QThread):
                 rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768.0
                 floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
                 floor = max(0.0005, min(floor, 0.05))
-                max_gain = GAINS.get(self.sensitivity, 6.0)
+                max_gain = MAX_GAIN
                 if rms > floor * 1.6:                      # похоже на голос, а не тишину
                     want = max(1.0, min(max_gain, 0.08 / max(rms, 1e-5)))
                 else:
@@ -128,6 +132,9 @@ class Listener(QThread):
                     data = samples.tobytes()
                     rms *= g
                 self.level.emit(min(1.0, rms * 7))
+                utter += data
+                if len(utter) > MAX_UTTERANCE:
+                    del utter[: len(utter) - MAX_UTTERANCE]
 
                 if rec.AcceptWaveform(data):
                     res = json.loads(rec.Result())
@@ -135,7 +142,8 @@ class Listener(QThread):
                     confs = [float(w.get("conf", 1.0)) for w in res.get("result", [])]
                     last_partial = ""
                     if text:
-                        self.final.emit(text, confs)
+                        self.final.emit(text, confs, bytes(utter))
+                    utter.clear()
                 else:
                     p = json.loads(rec.PartialResult()).get("partial", "").strip()
                     if p != last_partial:

@@ -12,7 +12,7 @@ if os.path.exists(os.path.join(ROOT, "config.json")):      # почта, вши�
 
 binaries = []
 hiddenimports = []
-for pkg in ("vosk", "piper", "onnxruntime"):
+for pkg in ("vosk", "piper", "onnxruntime", "faster_whisper", "ctranslate2", "tokenizers"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -22,7 +22,7 @@ for pkg in ("comtypes", "pycaw"):
 
 # Всё, что программе не нужно, — не тащим (меньше размер, быстрее скачивание).
 excludes = [
-    "tkinter", "pydoc", "doctest", "lib2to3", "edge_tts", "pyttsx3",
+    "tkinter", "pydoc", "doctest", "lib2to3", "edge_tts", "pyttsx3", "av", "torch",
     "PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf",
     "PySide6.QtSvg", "PySide6.QtOpenGL", "PySide6.QtMultimedia", "PySide6.QtSql",
     "PySide6.QtWebEngineCore", "PySide6.QtDBus", "PySide6.QtConcurrent",

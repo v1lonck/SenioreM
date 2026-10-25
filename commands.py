@@ -173,6 +173,14 @@ def parse(text: str) -> dict:
     if w[0] in AI_VERBS or any(t.startswith(p + " ") for p in AI_PHRASES):
         return {"action": "ask", "text": text.strip()}
 
+    if _has(t, "какая погода", "погода сейчас", "что с погодой", "сколько градусов",
+            "погода на улице", "какая сейчас погода", "что по погоде", "холодно ли", "тепло ли"):
+        return {"action": "weather"}
+
+    if _has(t, "обнови список", "обнови программы", "обнови игры", "найди новые игры",
+            "найди новые программы", "просканируй", "выучи программы", "выучи игры"):
+        return {"action": "rescan"}
+
     for phrases, reply in SMALL_TALK:
         if any(t == p or t.startswith(p + " ") or t.endswith(" " + p) for p in phrases):
             return {"action": "chat", "reply": reply}

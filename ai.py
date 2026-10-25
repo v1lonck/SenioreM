@@ -203,8 +203,9 @@ class AI:
         now = datetime.datetime.now()
         who = f" Обращайся к пользователю «{address}»." if address else ""
         return (f"Ты — {name}, голосовой ИИ-помощник программы SenioreM на компьютере "
-                f"пользователя. Отвечай по-русски, дружелюбно и по делу, коротко: обычно 1–3 "
-                f"предложения, потому что ответ звучит вслух. Не используй списки, разметку, "
+                f"пользователя. Отвечай по-русски, грамотно, дружелюбно и по существу вопроса, "
+                f"коротко: обычно 1–3 законченных предложения, потому что ответ звучит вслух. "
+                f"Если не знаешь — честно скажи. Не используй списки, разметку, "
                 f"эмодзи и ссылки. Если просят что-то сделать на компьютере, а ты не можешь, "
                 f"подскажи голосовую команду, например «{name}, открой телеграм» или "
                 f"«{name}, громкость 30».{who} Сейчас {now:%d.%m.%Y}, {now:%H:%M}.")
@@ -219,7 +220,7 @@ class AI:
             msgs += self.history[-MEMORY_TURNS:]
             msgs.append({"role": "user", "content": text})
             mode = settings["ai_mode"] or "smart"
-            payload = {"messages": msgs, "temperature": 0.6, "max_tokens": 260, "stream": False}
+            payload = {"messages": msgs, "temperature": 0.5, "max_tokens": 260, "stream": False}
             try:
                 if mode == "api":
                     base = (settings["ai_api_url"] or "").strip().rstrip("/")
@@ -249,3 +250,52 @@ class AI:
 
 
 ENGINE = AI()
+
+
+# ---------------- фоновое скачивание (одно на всю программу) ----------------
+class Downloader:
+    def __init__(self):
+        self.active = False
+        self.kind = None
+        self.frac = 0.0
+        self.text = ""
+        self.error = ""
+        self.done_kind = None
+
+    def start(self, kind):
+        if self.active:
+            return
+        self.active, self.kind, self.frac, self.error = True, kind, 0.0, ""
+        self.text = "Готовлю ИИ"
+
+        def work():
+            try:
+                download_local(kind, self._progress)
+                self.done_kind = kind
+            except Exception as e:  # noqa: BLE001
+                self.error = f"Не удалось скачать ИИ: {e}"
+            finally:
+                self.active = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _progress(self, frac, text):
+        self.frac, self.text = frac, text
+
+
+DOWNLOADS = Downloader()
+
+
+def recommended_kind() -> str:
+    """«Умный», если хватает памяти и места на диске, иначе «Быстрый»."""
+    try:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / 1e9
+    except Exception:  # noqa: BLE001
+        ram_gb = 8
+    try:
+        import shutil
+        free_gb = shutil.disk_usage(str(ai_dir())).free / 1e9
+    except Exception:  # noqa: BLE001
+        free_gb = 10
+    return "smart" if ram_gb >= 7 and free_gb >= 4 else "fast"

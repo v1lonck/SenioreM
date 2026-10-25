@@ -99,13 +99,16 @@ ALIASES = {
     "вкшку": "vk", "вкшка": "vk", "ворлд оф танкс": "world of tanks", "танки": "world of tanks",
     "доту": "dota", "кску": "counter strike", "контру": "counter strike", "впн": "vpn",
     "блюстакс": "bluestacks", "амонг ас": "among us", "геншин": "genshin", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
-    "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
+    "ведьмак": "witcher", "ведьмака": "witcher", "гта": "grand theft auto", "пабг": "pubg",
+    "пубг": "pubg", "кс го": "counter strike", "майн": "minecraft", "симс": "sims",
+    "фифа": "fifa", "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
 }
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n",
                      "o", "p", "r", "s", "t", "u", "f", "h", "ts", "ch", "sh", "sch", "", "y",
                      "", "e", "yu", "ya"]))
-FILLER = {"сайт", "сайте", "страницу", "мне", "пожалуйста", "приложение", "программу", "ка"}
+FILLER = {"сайт", "сайте", "страницу", "мне", "пожалуйста", "приложение", "программу", "ка",
+          "игру", "игра", "игрушку", "поиграть", "в", "во"}
 
 
 def translit(text):
@@ -268,23 +271,249 @@ def _scan_start_apps():
         return []
 
 
+_apps_full = []       # [(норм. имя, имя, цель, источник)]
+
+
 def refresh_apps(force=False):
-    global _apps, _apps_time
+    """Все программы и игры компьютера. Сначала мгновенно из кэша, затем свежий список."""
+    global _apps, _apps_time, _apps_full
     with _apps_lock:
         if not force and _apps and time.time() - _apps_time < 600:
             return _apps
+        if not _apps and not force:
+            cached = _load_index()
+            if cached:
+                _apps_full = cached
+                _apps = [(n, o, t) for n, o, t, _s in cached]
+                _apps_time = time.time() - 540     # обновим в фоне через минуту
+                return _apps
         items = {}
-        # ярлыки — первыми: их запуск самый надёжный
-        for name, target in _scan_shortcuts() + _scan_start_apps():
+        sources = ([(n, t, "Ярлык") for n, t in _scan_shortcuts()] + _scan_steam() + _scan_epic()
+                   + _scan_gog() + [(n, t, "Пуск") for n, t in _scan_start_apps()]
+                   + _scan_uninstall())
+        for name, target, src in sources:
             n = _norm(name)
             if not n or any(k in n for k in SKIP) or n in items:
                 continue
-            ok = _lnk_ok(target[1]) if target[0] == "lnk" else _appid_ok(target[1])
+            if target[0] == "lnk":
+                ok = _lnk_ok(target[1])
+            elif target[0] == "app":
+                ok = _appid_ok(target[1])
+            else:
+                ok = True
             if ok:
-                items[n] = (n, name, target)
-        _apps = list(items.values())
+                items[n] = (n, name, target, src)
+        _apps_full = list(items.values())
+        _apps = [(n, o, t) for n, o, t, _s in _apps_full]
         _apps_time = time.time()
+        _save_index(_apps_full)
         return _apps
+
+
+# ---------------- игры: Steam, Epic Games, GOG и все установленные программы ----------------
+def _reg_value(root, path, name):
+    try:
+        import winreg
+        with winreg.OpenKey(root, path) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _steam_root():
+    import winreg
+    for root, path, name in ((winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+                             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+                             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath")):
+        v = _reg_value(root, path, name)
+        if v and os.path.isdir(v):
+            return os.path.normpath(v)
+    for v in (r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"):
+        if os.path.isdir(v):
+            return v
+    return None
+
+
+STEAM_SKIP = ("redistributable", "steamworks common", "proton", "steam linux runtime",
+              "directx", "vcredist", "dedicated server")
+
+
+def _scan_steam():
+    out = []
+    try:
+        root = _steam_root()
+        if not root:
+            return out
+        libs = {os.path.join(root, "steamapps")}
+        vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+        if os.path.isfile(vdf):
+            with open(vdf, encoding="utf-8", errors="ignore") as f:
+                for p in re.findall(r'"path"\s+"([^"]+)"', f.read()):
+                    libs.add(os.path.join(p.replace("\\\\", "\\"), "steamapps"))
+        for lib in libs:
+            if not os.path.isdir(lib):
+                continue
+            for fn in os.listdir(lib):
+                if not (fn.startswith("appmanifest_") and fn.endswith(".acf")):
+                    continue
+                try:
+                    with open(os.path.join(lib, fn), encoding="utf-8", errors="ignore") as f:
+                        txt = f.read()
+                    appid = re.search(r'"appid"\s+"(\d+)"', txt).group(1)
+                    name = re.search(r'"name"\s+"([^"]+)"', txt).group(1)
+                except Exception:  # noqa: BLE001
+                    continue
+                if any(k in name.lower() for k in STEAM_SKIP):
+                    continue
+                out.append((name, ("url", f"steam://rungameid/{appid}"), "Steam"))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _scan_epic():
+    import json
+    out = []
+    d = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
+                     r"Epic\EpicGamesLauncher\Data\Manifests")
+    if not os.path.isdir(d):
+        return out
+    for fn in os.listdir(d):
+        if not fn.endswith(".item"):
+            continue
+        try:
+            with open(os.path.join(d, fn), encoding="utf-8", errors="ignore") as f:
+                m = json.load(f)
+            name = m.get("DisplayName")
+            ns, item, app = m.get("CatalogNamespace"), m.get("CatalogItemId"), m.get("AppName")
+            if name and ns and item and app:
+                out.append((name, ("url", f"com.epicgames.launcher://apps/{ns}%3A{item}%3A{app}"
+                                          f"?action=launch&silent=true"), "Epic Games"))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _scan_gog():
+    out = []
+    try:
+        import winreg
+        base = r"SOFTWARE\WOW6432Node\GOG.com\Games"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                name = _reg_value(winreg.HKEY_LOCAL_MACHINE, base + "\\" + sub, "gameName")
+                exe = _reg_value(winreg.HKEY_LOCAL_MACHINE, base + "\\" + sub, "exe")
+                if name and exe and os.path.isfile(exe):
+                    out.append((name, ("path", exe), "GOG"))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+UNINSTALL_SKIP = ("redistributable", "runtime", "driver", "update for", "security update",
+                  "sdk", "hotfix", "service pack", "language pack", "языковой", "обновление",
+                  "microsoft visual c++", ".net", "directx", "vcredist", "webview2", "helper",
+                  "uninstall", "удален", "plugin", "plug-in", "codec", "bonjour")
+
+
+def _scan_uninstall():
+    out = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    roots = ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"))
+    for root, base in roots:
+        try:
+            k = winreg.OpenKey(root, base)
+        except OSError:
+            continue
+        with k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                try:
+                    sub = base + "\\" + winreg.EnumKey(k, i)
+                    name = _reg_value(root, sub, "DisplayName")
+                    if not name or _reg_value(root, sub, "SystemComponent") == 1:
+                        continue
+                    if any(x in name.lower() for x in UNINSTALL_SKIP):
+                        continue
+                    icon = (_reg_value(root, sub, "DisplayIcon") or "").split(",")[0].strip('" ')
+                    loc = (_reg_value(root, sub, "InstallLocation") or "").strip('" ')
+                    if icon.lower().endswith(".exe") and os.path.isfile(icon) and \
+                            "unins" not in os.path.basename(icon).lower():
+                        out.append((name, ("path", icon), "Программа"))
+                    elif loc and os.path.isdir(loc):
+                        out.append((name, ("path", loc), "Программа"))
+                except Exception:  # noqa: BLE001
+                    continue
+    return out
+
+
+def _index_file():
+    import config
+    return config.data_dir() / "apps_index.json"
+
+
+def _save_index(items):
+    import json
+    try:
+        data = [{"n": n, "name": o, "kind": t[0], "value": t[1], "src": src}
+                for n, o, t, src in items]
+        with open(_index_file(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_index():
+    import json
+    try:
+        with open(_index_file(), encoding="utf-8") as f:
+            return [(d["n"], d["name"], (d["kind"], d["value"]), d.get("src", ""))
+                    for d in json.load(f)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def all_apps():
+    """[(имя, источник)] — для списка в профиле."""
+    return sorted(((o, src) for _n, o, _t, src in _apps_full), key=lambda x: x[0].lower())
+
+
+# ---- фонетическое сравнение: «хартстоун» ~ «Hearthstone», «террария» ~ «Terraria»
+NUM_WORDS = {"один": "1", "одна": "1", "два": "2", "две": "2", "три": "3", "четыре": "4",
+             "пять": "5", "шесть": "6", "семь": "7", "восемь": "8", "девять": "9", "десять": "10"}
+ROMAN = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8"}
+
+
+def _latinize(s: str) -> str:
+    s = s.lower()
+    if re.search("[а-я]", s):
+        s = " ".join(NUM_WORDS.get(w, w) for w in s.split())
+        s = translit(s)
+    s = " ".join(ROMAN.get(w, w) for w in s.split())
+    return s
+
+
+def _skel(s: str) -> str:
+    s = _latinize(s)
+    for a, b in (("sch", "sh"), ("ph", "f"), ("th", "t"), ("ck", "k"), ("qu", "kv"), ("dzh", "j"),
+                 ("kh", "h"), ("c", "k"), ("q", "k"), ("x", "ks"), ("w", "v"), ("z", "s"),
+                 ("y", "i"), ("e", "i"), ("o", "a"), ("u", "a")):
+        s = s.replace(a, b)
+    s = re.sub(r"[^a-z0-9]", "", s)
+    if not s:
+        return ""
+    out = s[0]
+    for ch in s[1:]:
+        if ch in "aeiou":
+            continue
+        if ch != out[-1]:
+            out += ch
+    return out
 
 
 # ---- скачанные программы и папки (например, «запрет» — zapret-discord-youtube)
@@ -347,17 +576,19 @@ def refresh_local(force=False):
     return _local
 
 
-def warm():
-    """Заранее собирает список программ в фоне, чтобы «открой …» срабатывало мгновенно."""
+def warm(force=False):
+    """Заранее собирает список программ и игр в фоне, чтобы «открой …» срабатывало мгновенно."""
     def work():
         refresh_apps()
+        if force or time.time() - _apps_time > 500:
+            refresh_apps(force=True)
         refresh_local()
     threading.Thread(target=work, daemon=True).start()
 
 
 def _keys(text: str):
     n = clean(text)
-    keys = {n, translit(n), ALIASES.get(n, ""), ALIASES.get(_base(n), "")}
+    keys = {n, translit(n), _latinize(n), ALIASES.get(n, ""), ALIASES.get(_base(n), "")}
     if " " not in n and len(n) >= 4:
         keys |= {_base(n), translit(_base(n))}
     return {_norm(k) for k in keys if len(_norm(k)) >= 2}
@@ -387,6 +618,17 @@ def _score(key: str, app: str) -> float:
     for w in words:
         if len(w) >= 3:
             best = max(best, SequenceMatcher(None, flat_k, w).ratio() - 0.04)
+    # звучание: русская запись английского названия
+    sk, sa = _skel(key), _skel(app)
+    if len(sk) >= 3 and any(_skel(w) == sk for w in words):
+        best = max(best, 0.88 - 0.01 * max(0, len(words) - 1))   # совпало целое слово названия
+    if len(sk) >= 4 and sa:
+        if sk == sa:
+            best = max(best, 0.9)
+        elif sa.startswith(sk) and len(sk) >= 5:
+            best = max(best, 0.86)
+        else:
+            best = max(best, SequenceMatcher(None, sk, sa).ratio() * 0.93)
     return best
 
 
@@ -458,7 +700,7 @@ def launch(target):
     if kind == "app":
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + value], creationflags=NO_WINDOW)
         return "Запускаю"
-    if kind == "lnk":
+    if kind in ("lnk", "url"):
         os.startfile(value)  # type: ignore[attr-defined]
         return "Запускаю"
     path = value

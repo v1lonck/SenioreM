@@ -24,11 +24,13 @@ DEFAULTS = {
     "dialog_mode": True,
     "wake_words": "",               # дополнительные слова-обращения
     "autostart": False,
-    "ai_enabled": False,
+    "ai_enabled": True,
+    "ai_auto_setup": False,         # ИИ уже настроен автоматически
     "ai_mode": "smart",             # smart | fast | api
     "ai_api_url": "",
     "ai_api_key": "",
     "ai_api_model": "",
+    "notes": "",
     "history": [],
 }
 

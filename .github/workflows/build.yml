@@ -59,6 +59,10 @@ jobs:
             "vosk-model-small-ru-0.22.zip" = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
             "ru_RU-ruslan-medium.onnx" = "$hfv/ru_RU-ruslan-medium.onnx"
             "ru_RU-ruslan-medium.onnx.json" = "$hfv/ru_RU-ruslan-medium.onnx.json"
+            "whisper-small-config.json" = "https://huggingface.co/Systran/faster-whisper-small/resolve/main/config.json"
+            "whisper-small-model.bin" = "https://huggingface.co/Systran/faster-whisper-small/resolve/main/model.bin"
+            "whisper-small-tokenizer.json" = "https://huggingface.co/Systran/faster-whisper-small/resolve/main/tokenizer.json"
+            "whisper-small-vocabulary.txt" = "https://huggingface.co/Systran/faster-whisper-small/resolve/main/vocabulary.txt"
             "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
             "Qwen2.5-3B-Instruct-Q4_K_M.gguf" = "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
           }
@@ -103,8 +107,21 @@ jobs:
         run: |
           $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt | ForEach-Object { "$_" }
-          Get-Content selftest.txt | Select-Object -Last 9 | ForEach-Object { Write-Output "::notice::$_" }
+          Get-Content selftest.txt | Select-Object -Last 12 | ForEach-Object { Write-Output "::notice::$_" }
           if ($p.ExitCode -ne 0) { Write-Output "::error::Самопроверка не прошла"; exit 1 }
+
+      - name: Снимки экранов (проверка дизайна)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--uitest","$PWD\screens" -Wait -PassThru
+          Get-Content screens\uitest.txt | ForEach-Object { "$_" }
+          Get-Content screens\uitest.txt | Select-Object -Last 3 | ForEach-Object { Write-Output "::notice::ui: $_" }
+          gh release view ci-screens *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create ci-screens --prerelease --title "Снимки экранов сборки" --notes "Автоматические снимки интерфейса для проверки." }
+          Get-ChildItem screens\*.png, screens\uitest.txt | ForEach-Object { gh release upload ci-screens $_.FullName --clobber }
+          if ($p.ExitCode -ne 0) { Write-Output "::error::Проверка интерфейса не прошла"; exit 1 }
 
       - name: Inno Setup
         run: choco install innosetup -y --no-progress

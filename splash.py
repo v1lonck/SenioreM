@@ -12,7 +12,8 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen, QPixma
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 import config
-from theme import ACCENT, BG, ERROR, LINE, TEXT, button, label, set_role
+import theme as T
+from theme import button, label, set_role
 
 MIN_SHOW_SECONDS = 1.2
 
@@ -239,18 +240,13 @@ class Mark(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         c = QPointF(self.width() / 2, self.height() / 2)
         b = (math.sin(self._t * 2.2) + 1) / 2
-        glow = QColor(ACCENT)
+        glow = QColor(T.ACCENT)
         glow.setAlphaF(0.05 + 0.07 * b)
         p.setPen(Qt.NoPen)
         p.setBrush(glow)
         p.drawEllipse(c, self.width() * 0.5, self.width() * 0.5)
-        if not self._pix.isNull():
-            side = self.width() * 0.84
-            p.drawPixmap(QRectF(c.x() - side / 2, c.y() - side / 2, side, side), self._pix,
-                         QRectF(self._pix.rect()))
-        else:
-            p.setBrush(QColor(TEXT))
-            p.drawEllipse(c, self.width() * 0.2, self.width() * 0.2)
+        side = self.width() * 0.84
+        T.draw_logo(p, QRectF(c.x() - side / 2, c.y() - side / 2, side, side))
 
 
 class ProgressLine(QWidget):
@@ -259,7 +255,7 @@ class ProgressLine(QWidget):
         self.setFixedHeight(3)
         self.target = 0.0
         self.value = 0.0
-        self.color = ACCENT
+        self.color = T.ACCENT
         t = QTimer(self)
         t.timeout.connect(self._tick)
         t.start(16)
@@ -273,7 +269,7 @@ class ProgressLine(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(LINE))
+        p.setBrush(QColor(T.LINE))
         p.drawRoundedRect(QRectF(0, 0, w, h), 1.5, 1.5)
         p.setBrush(QColor(self.color))
         p.drawRoundedRect(QRectF(0, 0, max(h, w * self.value), h), 1.5, 1.5)
@@ -397,8 +393,8 @@ class Splash(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(QColor(LINE), 1))
-        p.setBrush(QColor(BG))
+        p.setPen(QPen(QColor(T.LINE), 1))
+        p.setBrush(QColor(T.BG))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 18, 18)
 
     def mousePressEvent(self, e):  # окно можно перетаскивать
@@ -425,7 +421,7 @@ class Splash(QWidget):
     def start(self):
         self.actions.hide()
         set_role(self.status, "muted")
-        self.bar.color = ACCENT
+        self.bar.color = T.ACCENT
         self.status.setText("Запускаю")
         self._loader = Loader()
         self._loader.progress.connect(self._on_progress)
@@ -457,7 +453,7 @@ class Splash(QWidget):
         self.update_row.hide()
         self.actions.hide()
         set_role(self.status, "muted")
-        self.bar.color = ACCENT
+        self.bar.color = T.ACCENT
         self.bar.value = self.bar.target = 0.0
         self._updater = Updater(url, version)
         self._updater.progress.connect(self._on_progress_update)
@@ -496,7 +492,7 @@ class Splash(QWidget):
             return
         self.status.setText(msg)
         set_role(self.status, "error")
-        self.bar.color = ERROR
+        self.bar.color = T.ERROR
         self.actions.show()
 
     def _on_loaded(self, model):
