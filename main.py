@@ -1077,12 +1077,46 @@ class HomeScreen(Backdrop):
     def _update_downloaded(self, path):
         self._upd_busy = False
         self._upd_ready = path
+        if getattr(self, "_install_after", False) and path:
+            self._install_after = False
+            QTimer.singleShot(200, self._install_update)
+            return
         self.upd_btn.setText(f"Обновить до {self._upd_version}")
         icons.set_icon(self.upd_btn, "update", 17, "#0A0C10", 1.7)
         self.upd_btn.setEnabled(True)
         self.upd_btn.show()
 
+    def _latest_now(self):
+        """Быстро спрашиваем GitHub о самой новой версии. -> (версия, ссылка) или None."""
+        import json
+        import urllib.request
+        from splash import _version_tuple
+        repo = self.cfg.get("update_repo") or ""
+        if not repo:
+            return None
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
+                                         headers={"User-Agent": "SenioreM"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.load(r)
+            ver = (data.get("tag_name") or "").lstrip("vV")
+            for a in data.get("assets", []):
+                url = a.get("browser_download_url", "")
+                if a.get("name", "").lower().endswith("setup.exe") and \
+                        url.startswith(f"https://github.com/{repo}/releases/download/"):
+                    if _version_tuple(ver) > _version_tuple(getattr(self, "_upd_version", "0")):
+                        return ver, url
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     def _install_update(self):
+        # перед установкой — не вышло ли ещё новее: тогда сразу ставим самую новую
+        newer = self._latest_now()
+        if newer:
+            self._install_after = True
+            self._update_found(*newer)
+            return
         path = getattr(self, "_upd_ready", None)
         if not path or not os.path.isfile(path):
             self.upd_btn.hide()
