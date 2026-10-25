@@ -3594,6 +3594,24 @@ def run_selftest(out_path):
         _ = sites  # модуль поиска программ подключён
         secs = tts.wav_seconds(wav)
         log(f"OK synth {secs:.2f}s")
+        # произношение: понимает ли голос ударения и как он читает слова
+        try:
+            import speechprobe
+            log(f"accents supported: {tts.accents_supported(voice)}")
+            for w in ("замок", "за\u0301мок", "замо\u0301к", "все", "всё"):
+                log(f"PH {w} {''.join(sum(voice.phonemize(w), []))}")
+            for w in speechprobe.WORDS:
+                log(f"PH {w} {''.join(sum(voice.phonemize(w), []))}")
+            long = "Сегодня в Магадане облачно. Температура минус три градуса. Ветер слабый, осадков не будет."
+            raw = str(config.local_dir() / "selftest_raw.wav")
+            import speechtext as _st
+            with wave.open(raw, "wb") as wf:
+                voice.synthesize_wav(_st.prepare(long), wf, syn_config=tts._syn_config(1.0))
+            t_raw = tts.wav_seconds(raw)
+            tts._tighten(raw)
+            log(f"pause test: raw {t_raw:.2f}s -> tight {tts.wav_seconds(raw):.2f}s")
+        except Exception as e:  # noqa: BLE001
+            log(f"probe error: {e!r}")
         if secs < 0.5:
             ok = False
             log("FAIL synth too short")
