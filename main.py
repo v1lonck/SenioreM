@@ -57,6 +57,7 @@ class Bridge(QObject):
     volume = Signal(int)                # текущая громкость системы
     recognized = Signal(str)            # текст, уточнённый точным распознаванием
     ai_sentence = Signal(str)           # очередная готовая фраза ответа ИИ (озвучиваем сразу)
+    downloads = Signal(int)             # сколько раз скачали SenioreM
 
 
 # ================================================================== вход
@@ -835,6 +836,11 @@ class HomeScreen(Backdrop):
         top.setSpacing(12)
         top.addWidget(LogoMark(34, glow=False))
         top.addWidget(label("SenioreM", 18, QFont.DemiBold))
+        top.addSpacing(6)
+        self.dl_label = label("", 12, role="faint")
+        self.dl_label.setToolTip("Сколько раз SenioreM скачали с GitHub (обновляется раз в 30 минут)")
+        self.dl_label.hide()
+        top.addWidget(self.dl_label, 0, Qt.AlignVCenter)
         top.addStretch(1)
         self.clock = label("", 14, role="muted")
         top.addWidget(self.clock)
@@ -979,6 +985,31 @@ class HomeScreen(Backdrop):
         self._clock_timer.start(1000)
         self._vol_timer = QTimer(self)
         self._vol_timer.timeout.connect(self._poll_volume)
+        self.bridge.downloads.connect(self._show_downloads)
+        self._dl_timer = QTimer(self)
+        self._dl_timer.timeout.connect(self._refresh_downloads)
+        self._dl_timer.start(30 * 60 * 1000)
+        QTimer.singleShot(3000, self._refresh_downloads)
+
+    def _refresh_downloads(self):
+        import stats
+        n, _at = stats.cached()
+        if n is not None:
+            self._show_downloads(n)
+        repo = self.cfg.get("update_repo") or ""
+        if not repo or os.environ.get("SENIOREM_NO_DOWNLOADS"):
+            return
+
+        def work():
+            v = stats.get(repo)
+            if v is not None:
+                self.bridge.downloads.emit(int(v))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_downloads(self, n):
+        import stats
+        self.dl_label.setText("⬇ " + stats.phrase(n))
+        self.dl_label.setVisible(n > 0)
 
     # ---------- жизненный цикл ----------
     def start(self, email, settings):
@@ -3734,6 +3765,7 @@ def run_uitest(out_dir):
         h.orb.state = "armed"
         h.orb.push_level(0.5)
         pump(2500)
+        h._show_downloads(1234)
         shot(win, "03-home-blue")
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
