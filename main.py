@@ -2533,7 +2533,8 @@ def run_selftest(out_path):
         for name, fn in (("weather", lambda: live.weather_phrase({"city": "Магадан"}, "now")),
                          ("tomorrow", lambda: live.weather_phrase({"city": "Магадан"}, "tomorrow")),
                          ("rate", lambda: live.rate_phrase("USD")),
-                         ("search", lambda: live.quick_answer("столица Австралии"))):
+                         ("search", lambda: live.quick_answer("столица Австралии")),
+                         ("news", lambda: live.quick_answer("последние новости сегодня"))):
             try:
                 log(f"live {name}: {fn()}")
             except Exception as e:  # noqa: BLE001
