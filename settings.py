@@ -38,6 +38,8 @@ DEFAULTS = {
     "companion": "none",            # фигура над панелью задач
     "companion_anim": True,
     "companion_size": 150,
+    "companion_pose": "auto",       # stand | sit | lie | auto
+    "avatar": "",                   # аватар: "preset:<id>" или путь к своей картинке
     "history": [],
     "scenarios": None,              # свои фразы и действия (None — сценарии по умолчанию)
     "vpn": {},                      # {"app": {"name", "target"}, "admin", "click", "button"}

@@ -93,7 +93,8 @@ def _iou(a, b):
 
 
 def _build_pack(images, name):
-    """images — [(имя, байты)] кадров одного персонажа. -> id или None."""
+    """images — [(имя, байты)] кадров одного персонажа. -> id или None.
+    Сохраняем все пригодные кадры и отмечаем позы: стоит (idle), сидит (sit), лежит (lie)."""
     import io
     from PIL import Image
     frames = []
@@ -104,8 +105,7 @@ def _build_pack(images, name):
             im = im.convert("RGBA")
         except Exception:  # noqa: BLE001
             continue
-        alpha = im.getchannel("A")
-        bbox = alpha.point(lambda v: 255 if v > 40 else 0).getbbox()
+        bbox = im.getchannel("A").point(lambda v: 255 if v > 40 else 0).getbbox()
         if not bbox:
             continue
         bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -115,7 +115,13 @@ def _build_pack(images, name):
     if not frames:
         return None
     w0, h0 = frames[0][0].size
-    frames = [(im if im.size == (w0, h0) else im.resize((w0, h0)), bb) for im, bb in frames]
+    fixed = []
+    for im, bb in frames:
+        if im.size != (w0, h0):
+            im = im.resize((w0, h0))
+            bb = im.getchannel("A").point(lambda v: 255 if v > 40 else 0).getbbox() or bb
+        fixed.append((im, bb))
+    frames = fixed
 
     def mask(im):
         a = im.getchannel("A").resize((32, 32))
@@ -128,11 +134,13 @@ def _build_pack(images, name):
         return full > crop.width * crop.height * 0.93
 
     def tone(im):
-        """Цвета по зонам 12×12 на белом фоне: перевёрнутые и другие позы сильно отличаются."""
         bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
         bg.alpha_composite(im)
         return list(bg.convert("RGB").resize((12, 12)).getdata())
 
+    frames = [(im, bb) for im, bb in frames if not boxy(im, bb)][:120]
+    if not frames:
+        return None
     base = mask(frames[0][0])
     base_tone = tone(frames[0][0])
 
@@ -142,28 +150,46 @@ def _build_pack(images, name):
         diff = sum(abs(x[k] - y[k]) for x, y in zip(tone(im), base_tone) for k in range(3)) / 432
         return diff < 23.5
 
-    idle = [i for i, (im, bb) in enumerate(frames) if similar(im) and not boxy(im, bb)][:30] or [0]
-    x1 = min(frames[i][1][0] for i in idle)
-    y1 = min(frames[i][1][1] for i in idle)
-    x2 = max(frames[i][1][2] for i in idle)
-    y2 = max(frames[i][1][3] for i in idle)
-    pad = 4
-    box = (max(0, x1 - pad), max(0, y1 - pad), min(w0, x2 + pad), min(h0, y2 + pad))
+    idle = [i for i, (im, _bb) in enumerate(frames) if similar(im)][:30] or [0]
+    ix1 = min(frames[i][1][0] for i in idle)
+    iy1 = min(frames[i][1][1] for i in idle)
+    ix2 = max(frames[i][1][2] for i in idle)
+    iy2 = max(frames[i][1][3] for i in idle)
+    ih, iw = max(1, iy2 - iy1), max(1, ix2 - ix1)
+    base_aspect = iw / ih
+    tags = []
+    for i, (im, bb) in enumerate(frames):
+        t = []
+        if i in idle:
+            t.append("idle")
+        else:
+            w, h = bb[2] - bb[0], bb[3] - bb[1]
+            rh, ra = h / ih, (w / max(1, h)) / base_aspect
+            low = bb[3] >= iy2 - ih * 0.12              # стоит на «полу», а не в прыжке
+            if low and ra >= 1.4 and rh <= 0.75:
+                t.append("lie")
+            elif low and 0.55 <= rh <= 0.88 and 0.8 <= ra <= 1.6:
+                t.append("sit")
+        tags.append(t)
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower().encode("ascii", "ignore").decode()).strip("-")
     pid = (slug or "pack") + "-" + format(int(time.time() * 1000) % 100000, "05d")
     out = packs_dir() / pid
     out.mkdir(parents=True, exist_ok=True)
-    scale = min(1.0, MAX_H / max(1, box[3] - box[1]))
-    size = (1, 1)
-    for k, i in enumerate(idle):
-        im = frames[i][0].crop(box)
-        if scale < 1.0:
-            im = im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))),
-                           Image.LANCZOS)
-        im.save(out / f"idle_{k:02d}.png")
-        size = im.size
-    (out / "meta.json").write_text(json.dumps({"name": name, "frames": len(idle), "w": size[0],
-                                               "h": size[1]}, ensure_ascii=False), encoding="utf-8")
+    sc = min(1.0, MAX_H / ih)
+    meta_frames = []
+    for k, (im, bb) in enumerate(frames):
+        x1, y1 = max(0, bb[0] - 2), max(0, bb[1] - 2)
+        x2, y2 = min(w0, bb[2] + 2), min(h0, bb[3] + 2)
+        crop = im.crop((x1, y1, x2, y2))
+        if sc < 1.0:
+            crop = crop.resize((max(1, int(crop.width * sc)), max(1, int(crop.height * sc))),
+                               Image.LANCZOS)
+        fname = f"f_{k:03d}.png"
+        crop.save(out / fname)
+        meta_frames.append({"f": fname, "x": x1 * sc, "y": y1 * sc, "tags": tags[k]})
+    meta = {"v": 2, "name": name, "frames": meta_frames, "idle_h": ih * sc, "idle_w": iw * sc,
+            "cx": (ix1 + ix2) / 2 * sc, "bottom": iy2 * sc}
+    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return pid
 
 
@@ -203,6 +229,68 @@ def import_path(path):
     return added
 
 
+def _looks_like_pack(path):
+    """Архив с кадрами персонажа (shimeji: img/shime1.png…, или sprites/0000.webp…)."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.lower().endswith(IMG_EXT)]
+    except (OSError, zipfile.BadZipFile):
+        return False
+    if len(names) < 3:
+        return False
+    hits = sum(1 for n in names if re.search(r"(^|/)(sprites|img|frames)/", n.lower())
+               or re.search(r"shime\d+\.png$", n.lower()) or re.search(r"/\d{2,4}\.(png|webp|gif)$", n.lower()))
+    return hits >= 3
+
+
+def auto_import():
+    """Сам находит архивы с персонажами в «Загрузках» и на рабочем столе и добавляет их.
+    -> [(id, имя)] новых персонажей."""
+    env = os.environ
+    home = env.get("USERPROFILE", "")
+    roots = [os.path.join(home, "Downloads"), os.path.join(home, "Desktop"),
+             os.path.join(home, "OneDrive", "Desktop"), os.path.join(home, "Documents")]
+    if env.get("OneDrive"):
+        roots.append(os.path.join(env["OneDrive"], "Desktop"))
+    done_file = packs_dir() / "imported.json"
+    try:
+        done = set(json.loads(done_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        done = set()
+    found = []
+    for root in dict.fromkeys(roots):
+        try:
+            for e in os.scandir(root):
+                if e.is_file() and e.name.lower().endswith(".zip") and e.stat().st_size < 150_000_000:
+                    key = f"{e.name}|{e.stat().st_size}"
+                    if key not in done and _looks_like_pack(e.path):
+                        found.append((e.path, key))
+        except OSError:
+            continue
+    if not found:
+        return []
+    # персонажи старого формата (только одна поза) — заменяем на новые из тех же архивов
+    for pid, _n in list_packs():
+        try:
+            m = json.loads((packs_dir() / pid / "meta.json").read_text(encoding="utf-8"))
+            if m.get("v") != 2:
+                delete_pack(pid)
+        except (OSError, ValueError):
+            continue
+    added = []
+    for path, key in found:
+        try:
+            added += import_path(path)
+        except Exception:  # noqa: BLE001
+            pass
+        done.add(key)
+    try:
+        done_file.write_text(json.dumps(sorted(done), ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    return added
+
+
 def rename_pack(pid, name):
     meta = packs_dir() / pid / "meta.json"
     m = json.loads(meta.read_text(encoding="utf-8"))
@@ -211,26 +299,68 @@ def rename_pack(pid, name):
 
 
 class Pack:
+    """Кадры персонажа с позами. Все кадры выравниваются по «полу» основной позы."""
+
     def __init__(self, pid):
         d = packs_dir() / pid
+        self.pid = pid
         self.meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         self.name = self.meta.get("name", pid)
-        self.frames = []
-        for k in range(int(self.meta.get("frames", 1))):
-            pix = QPixmap(str(d / f"idle_{k:02d}.png"))
-            if not pix.isNull():
+        self.frames, self.pos, self.tags = [], [], []
+        if self.meta.get("v") == 2:
+            for fr in self.meta["frames"]:
+                pix = QPixmap(str(d / fr["f"]))
+                if pix.isNull():
+                    continue
                 self.frames.append(pix)
-        self.aspect = self.meta.get("h", 1) / max(1, self.meta.get("w", 1))
+                self.pos.append((fr["x"], fr["y"]))
+                self.tags.append(set(fr.get("tags", [])))
+            self.idle_h = self.meta.get("idle_h", 100)
+            self.idle_w = self.meta.get("idle_w", 100)
+            self.cx = self.meta.get("cx", 50)
+            self.bottom = self.meta.get("bottom", 100)
+        else:                                       # старый формат (только основная поза)
+            for k in range(int(self.meta.get("frames", 1))):
+                pix = QPixmap(str(d / f"idle_{k:02d}.png"))
+                if not pix.isNull():
+                    self.frames.append(pix)
+                    self.pos.append((0, 0))
+                    self.tags.append({"idle"})
+            self.idle_w, self.idle_h = self.meta.get("w", 100), self.meta.get("h", 100)
+            self.cx, self.bottom = self.idle_w / 2, self.idle_h
+        self.aspect = self.idle_h / max(1, self.idle_w)
         self._scaled = {}
 
-    def frame(self, i, height):
-        key = (i, int(height))
+    def pose_frames(self, pose):
+        out = [i for i, t in enumerate(self.tags) if pose in t]
+        return out or [i for i, t in enumerate(self.tags) if "idle" in t] or [0]
+
+    def has(self, pose):
+        return any(pose in t for t in self.tags)
+
+    def scaled(self, i, scale):
+        key = (i, round(scale, 3))
         if key not in self._scaled:
-            if len(self._scaled) > 64:
+            if len(self._scaled) > 96:
                 self._scaled.clear()
-            self._scaled[key] = self.frames[i].scaledToHeight(max(1, int(height)),
-                                                              Qt.SmoothTransformation)
+            pix = self.frames[i]
+            self._scaled[key] = pix.scaled(max(1, int(pix.width() * scale)),
+                                           max(1, int(pix.height() * scale)),
+                                           Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         return self._scaled[key]
+
+    def set_tags(self, i, tags):
+        """Поменять позу кадра (из окна «Позы») и сохранить."""
+        self.tags[i] = set(tags)
+        if self.meta.get("v") == 2:
+            self.meta["frames"][i]["tags"] = sorted(tags)
+            (packs_dir() / self.pid / "meta.json").write_text(
+                json.dumps(self.meta, ensure_ascii=False), encoding="utf-8")
+
+
+def frame_pixmap(kind, i):
+    p = get_pack(kind)
+    return p.frames[i] if p and 0 <= i < len(p.frames) else None
 
 
 _PACKS = {}
@@ -243,7 +373,7 @@ def get_pack(kind):
     if pid not in _PACKS:
         try:
             p = Pack(pid)
-        except (OSError, ValueError):
+        except (OSError, ValueError, KeyError):
             return None
         if not p.frames:
             return None
@@ -257,39 +387,66 @@ def aspect(kind):
 
 
 # ------------------------------------------------------------------ анимация
+POSES = (("auto", "Сам меняет"), ("stand", "Стоит"), ("sit", "Сидит"), ("lie", "Лежит"))
+
+
 class FigurePainter:
     def __init__(self):
         self.t = 0.0
         self.speaking = False
         self.listening = False
         self.animated = True
+        self.pose = "auto"            # stand | sit | lie | auto
+        self._cur_pose = "idle"
+        self._pose_left = 30.0
         self.frame = 0
         self._next = 1.5
         self._jump = 0.0
 
-    def tick(self, dt, n_frames=1):
+    def _want_pose(self, pack, dt):
+        if self.pose == "sit":
+            return "sit"
+        if self.pose == "lie":
+            return "lie"
+        if self.pose == "stand" or not self.animated or pack is None:
+            return "idle"
+        # «сам меняет»: в основном стоит, иногда садится или ложится отдохнуть
+        self._pose_left -= dt
+        if self._pose_left <= 0:
+            options = [p for p in ("sit", "lie") if pack.has(p)]
+            if self._cur_pose == "idle" and options and random.random() < 0.6:
+                self._cur_pose = random.choice(options)
+                self._pose_left = random.uniform(12, 30)
+            else:
+                self._cur_pose = "idle"
+                self._pose_left = random.uniform(25, 60)
+        return "idle" if self.speaking and self._cur_pose == "lie" else self._cur_pose
+
+    def tick(self, dt, pack=None):
         self.t += dt
         self._next -= dt
+        pose = self._want_pose(pack, dt)
+        frames = pack.pose_frames(pose) if pack else [0]
+        if self.frame not in frames:
+            self.frame = frames[0]
+            self._next = 0.6
         if self.speaking:
             if self._next <= 0:
-                if n_frames > 1:
-                    self.frame = random.choice([i for i in range(n_frames) if i != self.frame])
+                if len(frames) > 1:
+                    self.frame = random.choice([i for i in frames if i != self.frame])
                 self._next = random.uniform(0.16, 0.32)
-            self._jump = abs(math.sin(self.t * 7.5))
+            self._jump = abs(math.sin(self.t * 7.5)) * (0.4 if pose != "idle" else 1.0)
         else:
             self._jump *= 0.8
             if not self.animated:
-                self.frame = 0
+                self.frame = frames[0]
             elif self._next <= 0:
-                # чаще основная поза, иногда другие выражения
-                if self.frame != 0 or n_frames == 1 or random.random() < 0.45:
-                    self.frame = 0
+                if self.frame != frames[0] or len(frames) == 1 or random.random() < 0.45:
+                    self.frame = frames[0]
                     self._next = random.uniform(2.0, 4.5)
                 else:
-                    self.frame = random.randrange(1, n_frames)
+                    self.frame = random.choice(frames[1:])
                     self._next = random.uniform(0.35, 1.4)
-        if self.frame >= n_frames:
-            self.frame = 0
 
     def paint(self, p, rect, kind):
         pack = get_pack(kind)
@@ -298,24 +455,28 @@ class FigurePainter:
         if self.frame >= len(pack.frames):
             self.frame = 0
         h = min(rect.height() - 6, rect.width() * pack.aspect)
-        pix = pack.frame(self.frame, h)
-        w = pix.width()
+        scale = h / max(1, pack.idle_h)
+        pix = pack.scaled(self.frame, scale)
+        fx, fy = pack.pos[self.frame]
+        feet = QPointF(rect.center().x(), rect.bottom() - 6)
+        x = feet.x() + (fx - pack.cx) * scale
+        y = feet.y() - (pack.bottom - fy) * scale
+        w = pack.idle_w * scale
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        feet = QPointF(rect.center().x(), rect.bottom())
-        g = QRadialGradient(QPointF(feet.x(), feet.y() - 4), w * 0.45)
+        g = QRadialGradient(QPointF(feet.x(), feet.y() + 2), w * 0.55)
         g.setColorAt(0, _c("#000000", 70))
         g.setColorAt(1, _c("#000000", 0))
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(g))
-        p.drawEllipse(QPointF(feet.x(), feet.y() - 4), w * 0.42, 7)
+        p.drawEllipse(QPointF(feet.x(), feet.y() + 2), w * 0.5, 7)
         p.translate(feet)
         if self.animated:
             p.scale(1.0, 1.0 + 0.008 * math.sin(self.t * 2.0))       # «дыхание»
         p.translate(0, -h * 0.05 * self._jump)                         # подпрыгивает, когда говорит
         p.translate(-feet.x(), -feet.y())
-        p.drawPixmap(QPointF(feet.x() - w / 2, feet.y() - h - 6), pix)
+        p.drawPixmap(QPointF(x, y), pix)
         p.restore()
 
 
@@ -341,9 +502,10 @@ class CompanionWindow(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(40)
 
-    def configure(self, kind, animated, size):
+    def configure(self, kind, animated, size, pose="auto"):
         self.kind = norm_kind(kind)
         self.painter.animated = animated
+        self.painter.pose = pose or "auto"
         self.size_px = int(size)
         self.fig_h = int(self.size_px * 1.6)
         self.fig_w = int(self.fig_h / max(0.3, aspect(self.kind))) + 8
@@ -368,8 +530,7 @@ class CompanionWindow(QWidget):
         self.painter.listening = flag
 
     def _tick(self):
-        pack = get_pack(self.kind)
-        self.painter.tick(0.04, len(pack.frames) if pack else 1)
+        self.painter.tick(0.04, get_pack(self.kind))
         if self.text and time.time() > self._text_until and not self.painter.speaking:
             self.text = ""
         self.update()
@@ -464,8 +625,7 @@ class FigurePreview(QWidget):
 
     def _tick(self):
         if self.isVisible():
-            pack = get_pack(self.kind)
-            self.painter.tick(0.04, len(pack.frames) if pack else 1)
+            self.painter.tick(0.04, get_pack(self.kind))
             self.update()
 
     def paintEvent(self, _):
@@ -493,7 +653,8 @@ def thumb(kind, w, h):
     pack = get_pack(kind)
     if pack is not None:
         fh = min(h * 0.74, w * 0.9 * pack.aspect)
-        fr = pack.frame(0, fh)
+        i0 = pack.pose_frames("idle")[0]
+        fr = pack.scaled(i0, fh / max(1, pack.idle_h))
         p.drawPixmap(QPointF((w - fr.width()) / 2, h * 0.05), fr)
     else:
         p.setPen(QPen(_c("#FFFFFF", 90), 3))
@@ -501,3 +662,75 @@ def thumb(kind, w, h):
         p.drawLine(QPointF(w / 2 - 18, h * 0.4 + 18), QPointF(w / 2 + 18, h * 0.4 - 18))
     p.end()
     return pix
+
+
+# ------------------------------------------------------------------ окно «Позы»
+class PoseDialog:
+    """Сетка всех кадров персонажа: отмечаете, какие кадры — «стоит», «сидит», «лежит»."""
+
+    def __new__(cls, parent, kind):
+        from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+                                       QScrollArea, QVBoxLayout, QWidget)
+        from theme import button, label
+        pack = get_pack(kind)
+        dlg = QDialog(parent)
+        dlg.setWindowTitle("Позы персонажа")
+        dlg.resize(820, 640)
+        dlg.setStyleSheet(f"QDialog {{ background: {T.BG}; }}")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(22, 20, 22, 20)
+        lay.addWidget(label("Позы персонажа", 20))
+        lay.addWidget(label("Выберите позу сверху и нажимайте на кадры, которые к ней относятся. "
+                            "Синяя рамка — кадр в этой позе.", 13, role="muted", wrap=True))
+        state = {"pose": "idle"}
+        names = {"idle": "Стоит", "sit": "Сидит", "lie": "Лежит"}
+        top = QHBoxLayout()
+        pose_btns = {}
+        for key, title in names.items():
+            b = button(title, "ghost", 14)
+            b.setCheckable(True)
+            top.addWidget(b)
+            pose_btns[key] = b
+        top.addStretch(1)
+        lay.addLayout(top)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        grid = QGridLayout(inner)
+        grid.setSpacing(8)
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
+        cells = []
+
+        def refresh():
+            for k, b in pose_btns.items():
+                b.setChecked(k == state["pose"])
+            for i, cell in cells:
+                on = state["pose"] in pack.tags[i]
+                cell.setStyleSheet(f"QPushButton {{ background: {T.SURFACE}; border-radius: 10px; "
+                                   f"border: {'3px solid ' + T.ACCENT if on else '1px solid ' + T.LINE}; }}")
+
+        def toggle(i):
+            t = set(pack.tags[i])
+            t ^= {state["pose"]}
+            pack.set_tags(i, t)
+            refresh()
+
+        if pack is not None:
+            from PySide6.QtCore import QSize
+            from PySide6.QtGui import QIcon
+            for i, pix in enumerate(pack.frames):
+                b = QPushButton()
+                b.setFixedSize(112, 112)
+                b.setIcon(QIcon(pix.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+                b.setIconSize(QSize(96, 96))
+                b.clicked.connect(lambda _=False, i=i: toggle(i))
+                grid.addWidget(b, i // 6, i % 6)
+                cells.append((i, b))
+        for key, b in pose_btns.items():
+            b.clicked.connect(lambda _=False, k=key: (state.update(pose=k), refresh()))
+        ok = button("Готово", "primary", 14)
+        ok.clicked.connect(dlg.accept)
+        lay.addWidget(ok, 0, Qt.AlignRight)
+        refresh()
+        return dlg
