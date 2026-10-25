@@ -18,6 +18,7 @@ import config
 
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 LLAMA_ZIP = "llama-server-win-x64.zip"
+LLAMA_GPU_ZIP = "llama-server-win-vulkan.zip"     # для видеокарт: ответы в разы быстрее
 MODELS = {
     "smart": ("Qwen2.5-3B-Instruct-Q4_K_M.gguf", 1_930_000_000,
               "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/"),
@@ -25,6 +26,7 @@ MODELS = {
              "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/"),
 }
 MEMORY_TURNS = 8          # сколько последних реплик помнит
+MEMORY_CHARS = 600        # длинные реплики в памяти укорачиваем — меньше работы ИИ на каждый вопрос
 MEMORY_IDLE = 15 * 60     # через 15 минут тишины начинает разговор заново
 
 
@@ -47,10 +49,69 @@ def model_file(kind) -> Path:
     return ai_dir() / MODELS[kind][0]
 
 
-def server_exe():
-    for p in (ai_dir() / "llama").rglob("llama-server.exe"):
+def server_exe(gpu=False):
+    for p in (ai_dir() / ("llama-gpu" if gpu else "llama")).rglob("llama-server.exe"):
         return p
     return None
+
+
+_GPU = None
+
+
+def has_gpu():
+    """Есть ли настоящая видеокарта (не «базовый адаптер» и не виртуальная)."""
+    global _GPU
+    if _GPU is None:
+        if os.environ.get("SENIOREM_FORCE_GPU"):
+            _GPU = True
+            return _GPU
+        _GPU = False
+        if sys.platform == "win32":
+            try:
+                r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                    "(Get-CimInstance Win32_VideoController).Name"],
+                                   capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW)
+                names = [n.strip().lower() for n in r.stdout.splitlines() if n.strip()]
+                bad = ("basic", "hyper-v", "remote", "virtual", "vmware", "virtualbox", "parsec",
+                       "citrix", "mirror", "displaylink")
+                _GPU = any(any(k in n for k in ("nvidia", "geforce", "radeon", "amd", "intel", "arc"))
+                           and not any(b in n for b in bad) for n in names)
+            except Exception:  # noqa: BLE001
+                _GPU = False
+    return _GPU
+
+
+def _gpu_failed_flag():
+    return ai_dir() / "gpu_failed"
+
+
+def gpu_usable():
+    return has_gpu() and not _gpu_failed_flag().exists()
+
+
+def download_gpu(progress=None):
+    """Сборка llama.cpp для видеокарты (Vulkan) — докачивается в фоне, если видеокарта есть."""
+    if server_exe(gpu=True) is not None or not _mirror(LLAMA_GPU_ZIP):
+        return server_exe(gpu=True) is not None
+    import tts
+    z = ai_dir() / LLAMA_GPU_ZIP
+    tts.download(_mirror(LLAMA_GPU_ZIP), z, progress or (lambda d, t: None), expect=30_000_000)
+    with zipfile.ZipFile(z) as zf:
+        zf.extractall(ai_dir() / "llama-gpu")
+    z.unlink(missing_ok=True)
+    return server_exe(gpu=True) is not None
+
+
+def _threads():
+    """Потоки для ИИ: по числу настоящих ядер (не логических) — так быстрее всего."""
+    try:
+        import psutil
+        phys = psutil.cpu_count(logical=False) or 0
+    except Exception:  # noqa: BLE001
+        phys = 0
+    if not phys:
+        phys = max(2, (os.cpu_count() or 4) // 2)
+    return max(2, min(12, phys))
 
 
 def local_ready(kind) -> bool:
@@ -160,6 +221,7 @@ class AI:
         self.port = 0
         self.kind = None
         self.lock = threading.Lock()
+        self.gpu = False
         self.history = []
         self.last_time = 0.0
         self.started = 0.0
@@ -185,20 +247,40 @@ class AI:
         if self.running() and self.kind == kind:
             return
         self.stop()
-        exe = server_exe()
-        if exe is None or not model_file(kind).is_file():
+        if server_exe() is None or not model_file(kind).is_file():
             raise AIError("ИИ ещё не скачан — откройте профиль → «ИИ-собеседник».")
-        self.port = _free_port()
-        threads = max(2, (os.cpu_count() or 4) // 2)
-        log = open(ai_dir() / "server.log", "w", encoding="utf-8", errors="ignore")
-        self.proc = subprocess.Popen(
-            [str(exe), "-m", str(model_file(kind)), "--host", "127.0.0.1", "--port", str(self.port),
-             "-c", "4096", "-t", str(threads)],
-            cwd=str(exe.parent), stdout=log, stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
-        self.kind = kind
-        self.started = time.time()
+        # сначала пробуем видеокарту; не вышло — один раз запоминаем и дальше работаем на процессоре
+        if gpu_usable() and server_exe(gpu=True) is not None:
+            try:
+                self._launch(kind, gpu=True)
+                if wait:
+                    self._wait_ready(min(timeout, 90))
+                return
+            except AIError:
+                self.stop()
+                try:
+                    _gpu_failed_flag().write_text("1", encoding="utf-8")
+                except OSError:
+                    pass
+        self._launch(kind, gpu=False)
         if wait:
             self._wait_ready(timeout)
+
+    def _launch(self, kind, gpu):
+        exe = server_exe(gpu=gpu)
+        self.port = _free_port()
+        threads = _threads()
+        args = [str(exe), "-m", str(model_file(kind)), "--host", "127.0.0.1", "--port", str(self.port),
+                "-c", "4096", "-t", str(threads), "-tb", str(max(threads, os.cpu_count() or threads)),
+                "-b", "512"]
+        if gpu:
+            args += ["-ngl", "99"]
+        log = open(ai_dir() / "server.log", "w", encoding="utf-8", errors="ignore")
+        self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdout=log, stderr=subprocess.STDOUT,
+                                     creationflags=NO_WINDOW)
+        self.kind = kind
+        self.gpu = gpu
+        self.started = time.time()
 
     def _wait_ready(self, timeout):
         end = time.time() + timeout
@@ -230,17 +312,19 @@ class AI:
         now = datetime.datetime.now()
         who = f" Обращайся к пользователю «{address}»." if address else ""
         return (f"Ты — {name}, голосовой ИИ-помощник программы SenioreM на компьютере "
-                f"пользователя. Отвечай по-русски, грамотно, дружелюбно и по существу вопроса, "
-                f"коротко: обычно 1–3 законченных предложения, потому что ответ звучит вслух. "
-                f"Если не знаешь — честно скажи. Не используй списки, разметку, "
+                f"пользователя. Отвечай по-русски, грамотно, дружелюбно, точно и по существу: "
+                f"сначала главное, без вступлений и повторов вопроса. Обычно 1–3 законченных "
+                f"предложения, потому что ответ звучит вслух; если просят рассказать подробно или "
+                f"объяснить — до 5–6 предложений. Числа, даты и факты называй точно; если не "
+                f"уверен — честно скажи. Не используй списки, разметку, "
                 f"эмодзи и ссылки. Если просят что-то сделать на компьютере, а ты не можешь, "
                 f"подскажи голосовую команду, например «{name}, открой телеграм» или "
                 f"«{name}, громкость 30».{who} Сегодня {now:%d.%m.%Y}.")
 
     @staticmethod
-    def _ask_stream(url, payload, on_sentence):
+    def _ask_stream(url, payload, on_sentence, key=""):
         buf, full = "", ""
-        for piece in _stream(url, payload):
+        for piece in _stream(url, payload, key):
             buf += piece
             full += piece
             # отдаём законченные фразы сразу — помощник начинает говорить, пока ИИ дописывает
@@ -275,8 +359,10 @@ class AI:
                           "числа; не говори, что у тебя нет доступа к интернету):\n" + context)
             msgs.append({"role": "user", "content": text + "\n\n" + extra})
             mode = settings["ai_mode"] or "smart"
-            payload = {"messages": msgs, "temperature": 0.5, "max_tokens": 220, "stream": False,
-                       "cache_prompt": True}
+            long_ask = re.search(r"подробн|расскажи|объясни|история|почему|как работает|сравни",
+                                 text.lower()) is not None
+            payload = {"messages": msgs, "temperature": 0.4, "top_p": 0.9,
+                       "max_tokens": 420 if long_ask else 220, "stream": False, "cache_prompt": True}
             try:
                 if mode == "api":
                     base = (settings["ai_api_url"] or "").strip().rstrip("/")
@@ -286,7 +372,17 @@ class AI:
                         base += "/chat/completions"
                     payload.pop("cache_prompt", None)
                     payload["model"] = (settings["ai_api_model"] or "").strip() or "gpt-4o-mini"
-                    data = _post(base, payload, (settings["ai_api_key"] or "").strip(), 60)
+                    key = (settings["ai_api_key"] or "").strip()
+                    data = None
+                    if on_sentence is not None:
+                        try:              # потоком: первая фраза звучит, пока ИИ дописывает остальное
+                            reply = self._ask_stream(base, payload, on_sentence, key)
+                        except urllib.error.HTTPError:
+                            raise
+                        except Exception:  # noqa: BLE001 — сервис не умеет потоком
+                            data = _post(base, payload, key, 60)
+                    else:
+                        data = _post(base, payload, key, 60)
                 else:
                     self.start_local(mode)
                     url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
@@ -305,8 +401,8 @@ class AI:
                 raise AIError(f"ИИ сейчас недоступен: {e}")
             if not reply:
                 reply = "Не знаю, что ответить. Спросите иначе."
-            self.history += [{"role": "user", "content": text},
-                             {"role": "assistant", "content": reply}]
+            self.history += [{"role": "user", "content": text[:MEMORY_CHARS]},
+                             {"role": "assistant", "content": reply[:MEMORY_CHARS]}]
             self.history = self.history[-MEMORY_TURNS:]
             self.last_time = time.time()
             return reply

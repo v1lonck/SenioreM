@@ -3329,6 +3329,13 @@ class MainWindow(QWidget):
             pass
         self.apply_companion()
         self._auto_import_companions()
+        # уборка в фоне: старая история чата и команд, кэш голоса, большие журналы
+        import housekeeping
+        try:
+            housekeeping.trim_settings(s)
+        except Exception:  # noqa: BLE001
+            pass
+        threading.Thread(target=housekeeping.run, daemon=True).start()
         if not self.greeted:
             self.greeted = True
             who = s["name"] or s["address"]
@@ -3340,6 +3347,17 @@ class MainWindow(QWidget):
         try:
             ai.ENGINE.start_local(mode)
         except Exception:  # noqa: BLE001 — запустится при первом вопросе
+            pass
+        # есть видеокарта — докачиваем для неё движок и переключаемся: ответы в разы быстрее
+        try:
+            if ai.gpu_usable() and ai.server_exe(gpu=True) is None and ai.download_gpu():
+                if ai.ENGINE.lock.acquire(timeout=60):
+                    try:
+                        ai.ENGINE.stop()
+                        ai.ENGINE.start_local(mode)
+                    finally:
+                        ai.ENGINE.lock.release()
+        except Exception:  # noqa: BLE001
             pass
 
     def apply_companion(self):
@@ -3816,7 +3834,22 @@ def run_selftest(out_path):
             s = _S(address="", ai_mode="fast")
             t0 = _t.time()
             _ai.ENGINE.start_local("fast", timeout=300)
-            log(f"OK ai server {(_t.time() - t0):.1f}s")
+            log(f"OK ai server {(_t.time() - t0):.1f}s (gpu={_ai.ENGINE.gpu}, threads={_ai._threads()})")
+            # проверка движка для видеокарты: на сервере сборки её нет — должен сработать запасной путь
+            try:
+                os.environ["SENIOREM_FORCE_GPU"] = "1"
+                _ai._GPU = None
+                t1 = _t.time()
+                got = _ai.download_gpu()
+                log(f"gpu engine download: {got} {(_t.time() - t1):.0f}s")
+                _ai.ENGINE.stop()
+                _ai.ENGINE.start_local("fast", timeout=300)
+                log(f"ai after gpu try: gpu={_ai.ENGINE.gpu} failed_flag={_ai._gpu_failed_flag().exists()}")
+            except Exception as e:  # noqa: BLE001
+                log(f"gpu try error: {e!r}")
+            finally:
+                os.environ.pop("SENIOREM_FORCE_GPU", None)
+                _ai._GPU = None
             t0 = _t.time()
             ans = _ai.ENGINE.ask("Привет! Какого цвета небо днём? Ответь одной фразой.", s)
             log(f"ai answer ({(_t.time() - t0):.1f}s): {ans}")
