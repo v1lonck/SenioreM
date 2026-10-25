@@ -41,12 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Почта для кодов (из секретов)
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      - name: Настройки программы (версия; без паролей)
         run: python build/make_config.py
 
       - name: Сборка exe
@@ -166,6 +161,8 @@ jobs:
             exit 1
           }
           Get-Item Output\SenioreM-Setup.exe | ForEach-Object { "Размер установщика: {0:N1} МБ" -f ($_.Length / 1MB) }
+          # контрольная сумма: программа сверяет её перед установкой обновления
+          (Get-FileHash Output\SenioreM-Setup.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline -Encoding ascii Output\SenioreM-Setup.exe.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -179,4 +176,6 @@ jobs:
           tag_name: v${{ env.APP_VERSION }}
           name: SenioreM ${{ env.APP_VERSION }}
           make_latest: true
-          files: Output/SenioreM-Setup.exe
+          files: |
+            Output/SenioreM-Setup.exe
+            Output/SenioreM-Setup.exe.sha256

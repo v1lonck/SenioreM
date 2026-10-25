@@ -1,5 +1,4 @@
 """Распознавание речи (Vosk, офлайн) и озвучка (нейроголос / голос Windows)."""
-import array
 import json
 import math
 import os
