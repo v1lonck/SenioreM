@@ -1,6 +1,7 @@
 """Выполнение команд в Windows. Возвращает (что сказать, действие для окна)."""
 import ctypes
 import datetime
+import re
 import os
 import subprocess
 import sys
@@ -178,8 +179,16 @@ def open_by_name(name, cfg):
     if site:
         webbrowser.open(site[0])
         return f"Открываю {pretty}."
+    if re.search(r"\bигр", name) or len(sites.all_apps()) and _looks_like_game(pretty):
+        return (f"Не нашёл «{pretty}» среди игр и программ на компьютере. Если она только что "
+                f"установлена — скажите «обнови список программ».")
     webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + pretty))
     return f"Открываю {pretty}."
+
+
+def _looks_like_game(name):
+    """Название латиницей или с цифрой — скорее игра/программа, чем сайт: в браузер не идём."""
+    return bool(re.search(r"[a-z]", name)) or bool(re.search(r"\d", name))
 
 
 # ---------------- закрытие программ ----------------
@@ -360,6 +369,11 @@ def run(intent: dict, cfg: dict):
             if intent.get("app"):
                 return open_app(intent["app"], cfg), ""
             return open_by_name(intent.get("name") or "", cfg), ""
+        if a == "rescan":
+            import sites
+            sites.refresh_apps(force=True)
+            sites.refresh_local(force=True)
+            return f"Готово. Я знаю {len(sites.all_apps())} программ и игр.", ""
         if a == "close":
             return close_app(intent), ""
         if a == "search":

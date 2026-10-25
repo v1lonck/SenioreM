@@ -4,27 +4,32 @@ import math
 import os
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 
 from PySide6.QtCore import QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout,
+                               QPushButton, QSlider,
                                QLineEdit, QMessageBox, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
 
 import actions
+import asr
 import ai
 import commands
 import config
+import theme as T
 import sites
+import widgets
 import tts
 from auth import AuthError, AuthStore, Mailer
 from splash import Splash
 from settings import (NAME_PRESETS, WAKE_REPLY_PRESETS, Settings, greeting, personalize,
                       set_autostart)
-from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, Clickable, ConfirmDialog,
+from theme import (Backdrop, Clickable, ConfirmDialog,
                    LogoMark, PlayButton, Toggle,
                    apply_app_theme, button, card, field, font, hline, label, set_role,
                    switch_page, window_controls)
@@ -42,6 +47,7 @@ class Bridge(QObject):
     mail_done = Signal(str, str)        # email, ошибка ('' если ок)
     action_done = Signal(str, str)      # ответ, действие окна
     volume = Signal(int)                # текущая громкость системы
+    recognized = Signal(str)            # текст, уточнённый точным распознаванием
 
 
 # ================================================================== вход
@@ -356,11 +362,11 @@ class Orb(QWidget):
         lvl = min(1.0, self._level)
 
         if self.state == "error":
-            core = QColor(ERROR)
+            core = QColor(T.ERROR)
         elif self.state == "speaking":
-            core = self._mix("#9DB8FF", "#FFFFFF", breathe * 0.6)
+            core = self._mix(T.ACCENT_SOFT, "#FFFFFF", breathe * 0.6)
         else:
-            core = self._mix("#323A4B", ACCENT, self._heat)
+            core = self._mix(T._mix(T.LINE, "#FFFFFF", 0.08), T.ACCENT, self._heat)
 
         # свечение позади
         g = QRadialGradient(c, R)
@@ -382,7 +388,7 @@ class Orb(QWidget):
             p.drawEllipse(c, rr, rr)
 
         # внешнее кольцо
-        ring = self._mix(LINE, ACCENT, self._heat)
+        ring = self._mix(T.LINE, T.ACCENT, self._heat)
         ring.setAlphaF(0.55 + 0.35 * breathe * self._heat)
         p.setPen(QPen(ring, 1.4))
         p.setBrush(Qt.NoBrush)
@@ -478,11 +484,11 @@ class VolumeMeter(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(LINE))
+        p.setBrush(QColor(T.LINE))
         p.drawRoundedRect(QRectF(0, 0, self.width(), 6), 3, 3)
         g = QLinearGradient(0, 0, self.width(), 0)
-        g.setColorAt(0, QColor("#3D6BFF"))
-        g.setColorAt(1, QColor("#8FB0FF"))
+        g.setColorAt(0, QColor(T.ACCENT))
+        g.setColorAt(1, QColor(T.ACCENT_SOFT))
         p.setBrush(QBrush(g))
         p.drawRoundedRect(QRectF(0, 0, max(6, self.width() * self.value), 6), 3, 3)
 
@@ -504,6 +510,7 @@ class HomeScreen(Backdrop):
         self.bridge = Bridge()
         self.bridge.action_done.connect(self._on_action_done)
         self.bridge.volume.connect(self._on_volume)
+        self.bridge.recognized.connect(lambda t: self.execute(t))
         self.speaker.speaking.connect(self._on_speaking)
         self.arm_timer = QTimer(self)
         self.arm_timer.setSingleShot(True)
@@ -534,44 +541,84 @@ class HomeScreen(Backdrop):
         root.addLayout(top)
         root.addSpacing(18)
 
-        # ---- три колонки
+        # ---- три колонки: виджеты слева и справа, круг — в центре
         body = QHBoxLayout()
         body.setSpacing(28)
         root.addLayout(body, 1)
 
-        left, ll = card((26, 24, 26, 24))
-        left.setFixedWidth(340)
-        self.hello = label("", 26, QFont.Light, display=True, wrap=True)
-        ll.addWidget(self.hello)
-        ll.addSpacing(4)
-        self.today = label("", 13, role="muted")
-        ll.addWidget(self.today)
-        ll.addSpacing(22)
-        ll.addWidget(hline())
-        ll.addSpacing(18)
+        def column():
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            area.setFixedWidth(356)
+            inner = QWidget()
+            lay = QVBoxLayout(inner)
+            lay.setContentsMargins(0, 0, 10, 0)
+            lay.setSpacing(16)
+            area.setWidget(inner)
+            return area, lay
+
+        left_area, left = column()
+        right_area, right = column()
+
+        self.w_clock = widgets.ClockCard()
+        self.w_weather = widgets.WeatherCard()
+        self.w_system = widgets.SystemCard()
+
+        self.w_volume, vl = card((24, 18, 24, 20))
+        vh = QHBoxLayout()
+        vh.addWidget(widgets.caption("ГРОМКОСТЬ"))
+        vh.addStretch(1)
+        self.vol_lbl = label("—", 13, role="muted")
+        vh.addWidget(self.vol_lbl)
+        vl.addLayout(vh)
+        vl.addSpacing(12)
+        self.vol = VolumeMeter()
+        vl.addWidget(self.vol)
+
+        self.w_history, hl = card((24, 20, 24, 20))
         hh = QHBoxLayout()
-        hh.addWidget(label("ПОСЛЕДНИЕ КОМАНДЫ", 11, QFont.DemiBold, "accent", spacing=1.8))
+        hh.addWidget(widgets.caption("ПОСЛЕДНИЕ КОМАНДЫ"))
         hh.addStretch(1)
         more = button("Вся история", "link", 12, QFont.Normal)
         more.clicked.connect(lambda: self.win.open_profile("history"))
         hh.addWidget(more)
-        ll.addLayout(hh)
-        ll.addSpacing(14)
-        self.history = HistoryList(7)
-        ll.addWidget(self.history)
-        ll.addStretch(1)
-        ll.addWidget(hline())
-        ll.addSpacing(16)
-        vh = QHBoxLayout()
-        vh.addWidget(label("Громкость", 13, QFont.DemiBold))
-        vh.addStretch(1)
-        self.vol_lbl = label("—", 13, role="muted")
-        vh.addWidget(self.vol_lbl)
-        ll.addLayout(vh)
-        ll.addSpacing(10)
-        self.vol = VolumeMeter()
-        ll.addWidget(self.vol)
-        body.addWidget(left)
+        hl.addLayout(hh)
+        hl.addSpacing(14)
+        self.history = HistoryList(6)
+        hl.addWidget(self.history)
+
+        self.w_notes = widgets.NotesCard()
+        self.w_notes.changed.connect(self._notes_changed)
+        self._notes_timer = QTimer(self)
+        self._notes_timer.setSingleShot(True)
+        self._notes_timer.timeout.connect(self._save_notes)
+
+        self.w_tips, rl = card((24, 20, 24, 20))
+        rl.addWidget(widgets.caption("ЧТО МОЖНО СКАЗАТЬ"))
+        rl.addSpacing(6)
+        self.tips_hint = label("Начинайте с «Сеньор». Нажмите на пример, чтобы выполнить.",
+                               12, role="muted", wrap=True)
+        rl.addWidget(self.tips_hint)
+        rl.addSpacing(14)
+        for title, examples in TIPS:
+            rl.addWidget(label(title, 13, QFont.DemiBold))
+            rl.addSpacing(4)
+            for ex in examples:
+                b = button(f"«{ex}»", "link", 13, QFont.Normal)
+                b.clicked.connect(lambda _=False, e=ex: self.execute(e, typed=True))
+                rl.addWidget(b, 0, Qt.AlignLeft)
+            rl.addSpacing(10)
+
+        self.cards = {"clock": self.w_clock, "weather": self.w_weather, "system": self.w_system,
+                      "volume": self.w_volume, "history": self.w_history, "notes": self.w_notes,
+                      "tips": self.w_tips}
+        for w in (self.w_clock, self.w_weather, self.w_system, self.w_volume):
+            left.addWidget(w)
+        left.addStretch(1)
+        for w in (self.w_history, self.w_notes, self.w_tips):
+            right.addWidget(w)
+        right.addStretch(1)
 
         center = QVBoxLayout()
         center.setSpacing(0)
@@ -593,32 +640,25 @@ class HomeScreen(Backdrop):
         self.reply.setMinimumHeight(28)
         center.addWidget(self.reply)
         center.addStretch(3)
+        self.bg_status = label("", 12, role="faint")
+        self.bg_status.setAlignment(Qt.AlignCenter)
+        center.addWidget(self.bg_status)
+        center.addSpacing(10)
         self.input = field("Напишите команду и нажмите Enter…")
         self.input.setFont(font(15))
         self.input.setAlignment(Qt.AlignCenter)
         self.input.setFixedWidth(500)
         self.input.returnPressed.connect(self._typed)
         center.addWidget(self.input, 0, Qt.AlignHCenter)
-        body.addLayout(center, 1)
 
-        right, rl = card((26, 24, 26, 24))
-        right.setFixedWidth(340)
-        rl.addWidget(label("ЧТО МОЖНО СКАЗАТЬ", 11, QFont.DemiBold, "accent", spacing=1.8))
-        rl.addSpacing(6)
-        self.tips_hint = label("Начинайте с «Сеньор». Нажмите на пример, чтобы выполнить.",
-                               12, role="muted", wrap=True)
-        rl.addWidget(self.tips_hint)
-        rl.addSpacing(16)
-        for title, examples in TIPS:
-            rl.addWidget(label(title, 13, QFont.DemiBold))
-            rl.addSpacing(6)
-            for ex in examples:
-                b = button(f"«{ex}»", "link", 13, QFont.Normal)
-                b.clicked.connect(lambda _=False, e=ex: self.execute(e, typed=True))
-                rl.addWidget(b, 0, Qt.AlignLeft)
-            rl.addSpacing(12)
-        rl.addStretch(1)
-        body.addWidget(right)
+        body.addWidget(left_area)
+        body.addLayout(center, 1)
+        body.addWidget(right_area)
+        self.apply_widgets()
+        self._ai_warmed = False
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._bg_status)
+        self._status_timer.start(1000)
 
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._tick_clock)
@@ -635,6 +675,7 @@ class HomeScreen(Backdrop):
         name = settings["name"] or ""
         self.avatar.setText((name or email or "?")[:1].upper())
         self.history.set_items(settings["history"])
+        self.w_notes.set_text(settings["notes"] or "")
         self._tick_clock()
         self.heard.setText("")
         self.reply.setText("")
@@ -644,7 +685,6 @@ class HomeScreen(Backdrop):
             self.listener.level.connect(self.orb.push_level)
             self.listener.partial.connect(self._on_partial)
             self.listener.final.connect(self._on_final)
-            self.listener.sensitivity = settings["mic_sensitivity"] or "high"
             self.listener.failed.connect(self._on_failed)
             self.listener.ready.connect(self._on_ready)
             self.listener.start()
@@ -673,9 +713,43 @@ class HomeScreen(Backdrop):
         if self.settings is not None:
             who = self.settings["name"] or self.settings["address"]
             hello = greeting(now.hour)
-            self.hello.setText(f"{hello},\n{who}" if who else f"{hello}!")
-            self.today.setText(f"Сегодня {actions.WEEKDAYS[now.weekday()]}, "
-                               f"{now.day} {actions.MONTHS[now.month - 1]}")
+            self.w_clock.tick(f"{hello}, {who}" if who else f"{hello}!")
+
+    def apply_widgets(self):
+        """Показывает виджеты, выбранные в профиле → «Оформление»."""
+        flags = T.APPEARANCE.get("widgets", {})
+        for key, w in self.cards.items():
+            w.setVisible(bool(flags.get(key, True)))
+        self.w_clock.face.set_style(T.APPEARANCE.get("clock_style", "digital"))
+        self.clock.setVisible(not flags.get("clock", True))
+        if flags.get("weather", True):
+            self.w_weather.set_city(T.APPEARANCE.get("city", ""))
+
+    def _bg_status(self):
+        """Строка состояния фоновых загрузок (распознавание, ИИ) под центром экрана."""
+        parts = []
+        if asr.DOWNLOADS.active:
+            parts.append(f"Точное распознавание: {round(asr.DOWNLOADS.frac * 100)}%")
+        if ai.DOWNLOADS.active:
+            parts.append(f"ИИ-собеседник: {round(ai.DOWNLOADS.frac * 100)}%")
+        if parts:
+            self.bg_status.setText("Скачиваю в фоне — " + "  ·  ".join(parts) +
+                                   "  ·  команды уже работают")
+        elif ai.DOWNLOADS.error:
+            self.bg_status.setText(ai.DOWNLOADS.error)
+        else:
+            self.bg_status.setText("")
+        if ai.DOWNLOADS.done_kind and not self._ai_warmed:
+            self._ai_warmed = True
+            kind = ai.DOWNLOADS.done_kind
+            threading.Thread(target=lambda: MainWindow._warm_ai(kind), daemon=True).start()
+
+    def _notes_changed(self, _text):
+        self._notes_timer.start(800)
+
+    def _save_notes(self):
+        if self.settings is not None:
+            self.settings.set("notes", self.w_notes.edit.toPlainText())
 
     def _poll_volume(self):
         def work():
@@ -742,7 +816,7 @@ class HomeScreen(Backdrop):
     # ---------- речь ----------
     def _show_heard(self, text, faint):
         self.heard.setText(text)
-        self.heard.setStyleSheet(f"color: {FAINT if faint else TEXT};")
+        self.heard.setStyleSheet(f"color: {T.FAINT if faint else T.TEXT};")
 
     def _on_partial(self, text):
         if self.orb.state in ("idle", "armed") and text:
@@ -750,23 +824,50 @@ class HomeScreen(Backdrop):
             if self.armed:
                 self.arm_timer.start(self._listen_ms())   # вы говорите — не перебиваем
 
-    def _on_final(self, text, confs=None):
+    def _on_final(self, text, confs=None, audio=None):
         words = commands.tokens(text)
         if confs is not None and len(confs) != len(words):
             confs = None
-        i = commands.find_wake(words, self.settings.wake_words if self.settings else None, confs)
+        wake = self.settings.wake_words if self.settings else None
+        i = commands.find_wake(words, wake, confs)
         if i >= 0:
             rest = words[i + 1:]
             if rest:
                 self._disarm(silent=True)
-                self.execute(" ".join(rest))
+                self._voice_command(" ".join(rest), audio, strip_wake=True)
             elif not self.armed:
                 self._arm()
         elif self.armed:
             self._disarm(silent=True)
-            self.execute(text)
+            self._voice_command(text, audio, strip_wake=False)
         else:
             self._show_heard("", True)
+
+    def _voice_command(self, vosk_text, audio, strip_wake):
+        """Команду после обращения уточняем точным распознаванием (Whisper), если оно готово."""
+        if not audio or not asr.RECOGNIZER.available:
+            self.execute(vosk_text)
+            return
+        self._set_state("busy", "РАСПОЗНАЮ…")
+        wake = self.settings.wake_words if self.settings else None
+
+        def work():
+            text = ""
+            try:
+                text = asr.RECOGNIZER.transcribe(audio)
+            except Exception:  # noqa: BLE001
+                pass
+            if text and strip_wake:
+                w = commands.tokens(text)
+                j = commands.find_wake(w, wake, max_pos=2)
+                if j < 0 and w and commands.find_wake(w[:1] + ["x"], None) == 0:
+                    j = 0
+                if j >= 0:
+                    w = w[j + 1:]
+                text = " ".join(w)
+            self.bridge.recognized.emit(text.strip() or vosk_text)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _arm(self, quiet=False):
         self.armed = True
@@ -820,8 +921,29 @@ class HomeScreen(Backdrop):
         use_ai = ai_on and intent["action"] in ("ask", "unknown", "forget")
         self._set_state("busy", "ДУМАЮ…" if use_ai and intent["action"] != "forget" else None)
 
+        local_ai = use_ai and (s["ai_mode"] or "smart") != "api"
+        if local_ai and not ai.local_ready(s["ai_mode"] or "smart"):
+            if intent["action"] == "unknown":
+                use_ai = False
+            elif intent["action"] == "ask":
+                use_ai = False
+                intent = {"action": "chat", "reply": (
+                    f"ИИ ещё скачивается — {round(ai.DOWNLOADS.frac * 100)} процентов. "
+                    "Как только закончится, смогу ответить. Команды уже работают."),
+                    "typed": typed}
+
         def work():
             ui = ""
+            if intent["action"] == "weather":
+                try:
+                    d = widgets.fetch_weather(T.APPEARANCE.get("city", ""))
+                    text, _icon = widgets.WEATHER.get(int(d["code"]), ("", ""))
+                    reply = (f"В городе {d['city']} сейчас {round(d['temp'])} градусов, "
+                             f"{text.lower()}. Ветер {round(d['wind'])} метров в секунду.")
+                except Exception:  # noqa: BLE001
+                    reply = "Не получилось узнать погоду. Проверьте интернет."
+                self.bridge.action_done.emit(reply, "")
+                return
             if use_ai and intent["action"] == "forget":
                 ai.ENGINE.forget()
                 reply = "Хорошо, начнём разговор заново."
@@ -882,11 +1004,13 @@ class ProfileScreen(Backdrop):
     logout_requested = Signal()
 
     SECTIONS = [
+        ("look", "Оформление"),
         ("name", "Имя помощника"),
         ("address", "Обращение"),
         ("voice", "Голос"),
         ("wake", "Активация"),
         ("history", "История"),
+        ("apps", "Программы и игры"),
         ("ai", "ИИ-собеседник"),
         ("startup", "Запуск"),
         ("account", "Аккаунт"),
@@ -925,9 +1049,7 @@ class ProfileScreen(Backdrop):
         self.big_avatar = label("", 30, QFont.DemiBold)
         self.big_avatar.setAlignment(Qt.AlignCenter)
         self.big_avatar.setFixedSize(72, 72)
-        self.big_avatar.setStyleSheet(
-            f"background: rgba(91,140,255,0.18); border: 1px solid rgba(91,140,255,0.5);"
-            f"border-radius: 36px; color: {TEXT};")
+        self.big_avatar.setProperty("role", "bigavatar")
         nl.addWidget(self.big_avatar, 0, Qt.AlignLeft)
         nl.addSpacing(14)
         self.who = label("", 17, QFont.DemiBold, wrap=True)
@@ -985,7 +1107,7 @@ class ProfileScreen(Backdrop):
         lay.addWidget(label(text, 12, QFont.DemiBold, "muted", spacing=0.6))
         lay.addSpacing(4)
 
-    def _toggle_row(self, lay, title, sub, key):
+    def _toggle_row(self, lay, title, sub, key):  # key=None — обработчик подключат отдельно
         row = QHBoxLayout()
         col = QVBoxLayout()
         col.setSpacing(3)
@@ -994,7 +1116,8 @@ class ProfileScreen(Backdrop):
             col.addWidget(label(sub, 13, role="muted", wrap=True))
         row.addLayout(col, 1)
         t = Toggle()
-        t.toggled.connect(lambda v, k=key: self._set(k, v))
+        if key is not None:
+            t.toggled.connect(lambda v, k=key: self._set(k, v))
         row.addWidget(t, 0, Qt.AlignVCenter)
         lay.addLayout(row)
         lay.addSpacing(22)
@@ -1011,8 +1134,6 @@ class ProfileScreen(Backdrop):
         if key in ("voice_speed", "speak_replies", "voice_engine", "yandex_key", "yandex_voice"):
             self.speaker.configure(self.settings["voice_speed"], self.settings["speak_replies"],
                                    self.settings.cloud_voice)
-        if key == "mic_sensitivity" and self.win.home.listener is not None:
-            self.win.home.listener.sensitivity = value
         if key == "autostart":
             if not set_autostart(bool(value)):
                 self._flash("Автозапуск работает только в установленной программе")
@@ -1302,25 +1423,10 @@ class ProfileScreen(Backdrop):
         self.t_wake_reply = self._toggle_row(lay, "Отвечать голосом на обращение",
                                              "Например: «Слушаю вас» — текст задаётся в разделе "
                                              "«Обращение».", "speak_wake_reply")
-        self._caption(lay, "Чувствительность микрофона")
-        sens = QHBoxLayout()
-        sens.setSpacing(10)
-        sgroup = QButtonGroup(self)
-        self.sens_buttons = {}
-        for key, title in (("normal", "Обычная"), ("high", "Высокая"), ("whisper", "Слышит шёпот")):
-            b = button(title, "ghost", 14, QFont.Normal)
-            b.setCheckable(True)
-            b.setFixedWidth(160)
-            b.clicked.connect(lambda _=False, k=key: self._set("mic_sensitivity", k))
-            sgroup.addButton(b)
-            sens.addWidget(b)
-            self.sens_buttons[key] = b
-        sens.addStretch(1)
-        lay.addLayout(sens)
-        lay.addSpacing(6)
-        lay.addWidget(label("«Слышит шёпот» сильнее усиливает тихую речь — удобно ночью, "
-                            "но в шумной комнате возможны ложные срабатывания.", 12,
-                            role="faint", wrap=True))
+        lay.addWidget(label("Микрофон подстраивается сам: помощник слышит и обычную речь, и "
+                            "тихий голос, и шёпот. Команды после обращения разбирает точное "
+                            "распознавание Whisper — оно понимает даже названия игр.", 13,
+                            role="muted", wrap=True))
         lay.addSpacing(26)
         self.t_dialog = self._toggle_row(lay, "Режим разговора, как у Алисы",
                                          "После ответа помощник ещё слушает — можно продолжать "
@@ -1479,6 +1585,14 @@ class ProfileScreen(Backdrop):
             c.style().polish(c)
         self.ai_api.setVisible(mode == "api")
         self.ai_local.setVisible(mode != "api")
+        if mode != "api" and ai.DOWNLOADS.active and not getattr(self, "_ai_downloading", False):
+            self._ai_downloading = True
+            self.ai_download.setEnabled(False)
+            self.ai_bar.show()
+            if not hasattr(self, "_ai_poll"):
+                self._ai_poll = QTimer(self)
+                self._ai_poll.timeout.connect(self._poll_ai_download)
+            self._ai_poll.start(500)
         if mode != "api" and not getattr(self, "_ai_downloading", False):
             ready = ai.local_ready(mode)
             size = "~2 ГБ" if mode == "smart" else "~1 ГБ"
@@ -1494,15 +1608,19 @@ class ProfileScreen(Backdrop):
         self.ai_download.setEnabled(False)
         self.ai_bar.show()
         self.ai_bar.value = self.ai_bar.target = 0.0
+        ai.DOWNLOADS.start(mode)
+        if not hasattr(self, "_ai_poll"):
+            self._ai_poll = QTimer(self)
+            self._ai_poll.timeout.connect(self._poll_ai_download)
+        self._ai_poll.start(500)
 
-        def work():
-            try:
-                ai.download_local(mode, lambda f, t: self.ai_bridge.progress.emit(f, t))
-                self.ai_bridge.done.emit("")
-            except Exception as e:  # noqa: BLE001
-                self.ai_bridge.done.emit(f"Не удалось скачать: {e}")
-
-        threading.Thread(target=work, daemon=True).start()
+    def _poll_ai_download(self):
+        d = ai.DOWNLOADS
+        if d.active:
+            self._ai_progress(d.frac, d.text)
+            return
+        self._ai_poll.stop()
+        self._ai_done(d.error)
 
     def _ai_progress(self, frac, text):
         self.ai_bar.target = frac
@@ -1539,6 +1657,238 @@ class ProfileScreen(Backdrop):
         self.ai_test.setEnabled(True)
         self.ai_answer.setText(text)
         self.speaker.say(text, force=True, cache=False)
+
+    # ---------- оформление ----------
+    def _build_look(self, outer):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 16, 0)
+        lay.setSpacing(0)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+        self._title(lay, "Оформление", "Цвет, фон, прозрачность и виджеты главного экрана. "
+                                       "Всё применяется сразу.")
+        self._caption(lay, "Цвет")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        group = QButtonGroup(self)
+        self.swatches = {}
+        for name, color in T.PRESETS:
+            b = QPushButton()
+            b.setProperty("role", "swatch")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(name)
+            b.setStyleSheet(f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                            f"stop:0 {T._mix(color, '#FFFFFF', 0.35)}, stop:1 {color}); }}")
+            b.clicked.connect(lambda _=False, c=color: self._set_look(accent=c))
+            group.addButton(b)
+            row.addWidget(b)
+            self.swatches[color.lower()] = b
+        custom = button("Свой цвет…", "ghost", 13, QFont.Normal)
+        custom.clicked.connect(self._pick_color)
+        row.addSpacing(8)
+        row.addWidget(custom)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addSpacing(26)
+
+        self._caption(lay, "Фон")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        self.bg_cards = {}
+        for i, (key, title, desc) in enumerate(T.BACKGROUNDS):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            cl = QVBoxLayout(c)
+            cl.setContentsMargins(16, 12, 16, 12)
+            cl.setSpacing(2)
+            cl.addWidget(label(title, 15, QFont.DemiBold))
+            cl.addWidget(label(desc, 12, role="muted", wrap=True))
+            c.clicked.connect(lambda k=key: self._choose_bg(k))
+            grid.addWidget(c, i // 2, i % 2)
+            self.bg_cards[key] = c
+        lay.addLayout(grid)
+        lay.addSpacing(10)
+        self.glass_note = label("", 13, role="accent", wrap=True)
+        self.glass_note.hide()
+        lay.addWidget(self.glass_note)
+        self.restart_btn = button("Перезапустить сейчас", "ghost", 14)
+        self.restart_btn.setFixedWidth(240)
+        self.restart_btn.clicked.connect(self.win.restart)
+        self.restart_btn.hide()
+        lay.addWidget(self.restart_btn, 0, Qt.AlignLeft)
+        lay.addSpacing(18)
+
+        def slider(title, key, lo, hi):
+            self._caption(lay, title)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(lo, hi)
+            sl.setFixedWidth(420)
+            sl.valueChanged.connect(lambda v, k=key: self._set_look(**{k: v / 100}))
+            lay.addWidget(sl)
+            lay.addSpacing(20)
+            return sl
+        self.s_glass = slider("Прозрачность окна (для «Стекла»)", "glass", 15, 85)
+        self.s_panels = slider("Плотность панелей", "panels", 25, 95)
+
+        self._caption(lay, "Виджеты на главном экране")
+        lay.addSpacing(6)
+        self.widget_toggles = {}
+        for key, title, sub in (("clock", "Часы", "Крупное время, дата и приветствие"),
+                                ("weather", "Погода", "Температура и осадки за окном"),
+                                ("system", "Компьютер", "Загрузка процессора, памяти, батарея"),
+                                ("volume", "Громкость", "Текущая громкость системы"),
+                                ("history", "Последние команды", "Что вы просили недавно"),
+                                ("notes", "Заметки", "Записи, которые всегда под рукой"),
+                                ("tips", "Подсказки", "Примеры команд")):
+            t = self._toggle_row(lay, title, sub, None)
+            t.toggled.connect(lambda v, k=key: self._set_widget(k, v))
+            self.widget_toggles[key] = t
+        self._caption(lay, "Часы")
+        crow = QHBoxLayout()
+        crow.setSpacing(10)
+        cgroup = QButtonGroup(self)
+        self.clock_buttons = {}
+        for key, title in (("digital", "Цифровые"), ("analog", "Стрелочные")):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(150)
+            b.clicked.connect(lambda _=False, k=key: self._set_look(clock_style=k))
+            cgroup.addButton(b)
+            crow.addWidget(b)
+            self.clock_buttons[key] = b
+        crow.addStretch(1)
+        lay.addLayout(crow)
+        lay.addSpacing(22)
+        self._caption(lay, "Город для погоды (пусто — определить автоматически)")
+        self.f_city = field("например: Магадан")
+        self.f_city.editingFinished.connect(lambda: self._set_look(city=self.f_city.text().strip()))
+        lay.addWidget(self.f_city)
+        lay.addStretch(1)
+
+    def _refresh_look(self):
+        a = T.APPEARANCE
+        self._loading = True
+        acc = (a.get("accent") or "").lower()
+        for c, b in self.swatches.items():
+            b.setChecked(c == acc)
+        bg = a.get("background", "aurora")
+        for k, c in self.bg_cards.items():
+            c.setProperty("selected", "true" if k == bg else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+        self.s_glass.setValue(int(float(a.get("glass", 0.55)) * 100))
+        self.s_panels.setValue(int(float(a.get("panels", 0.72)) * 100))
+        for k, t in self.widget_toggles.items():
+            t.setChecked(bool(a.get("widgets", {}).get(k, True)))
+        for k, b in self.clock_buttons.items():
+            b.setChecked(k == a.get("clock_style", "digital"))
+        self.f_city.setText(a.get("city", ""))
+        self._loading = False
+
+    def _set_look(self, **changes):
+        if self._loading:
+            return
+        T.set_appearance(QApplication.instance(), **changes)
+        self.win.home.apply_widgets()
+        self._refresh_look()
+
+    def _set_widget(self, key, value):
+        if not self._loading:
+            self._set_look(widgets={key: bool(value)})
+
+    def _pick_color(self):
+        c = QColorDialog.getColor(QColor(T.ACCENT), self, "Свой цвет")
+        if c.isValid():
+            self._set_look(accent=c.name())
+
+    def _choose_bg(self, key):
+        was_glass = self.win.glass
+        self._set_look(background=key)
+        need = (key == "glass") != was_glass
+        self.glass_note.setVisible(need)
+        self.restart_btn.setVisible(need)
+        if need:
+            self.glass_note.setText("Чтобы прозрачность окна включилась, программу нужно "
+                                    "перезапустить." if key == "glass" else
+                                    "Чтобы отключить прозрачность окна, перезапустите программу.")
+
+    # ---------- программы и игры ----------
+    def _build_apps(self, lay):
+        self._title(lay, "Программы и игры", "Всё, что помощник умеет запускать голосом: "
+                                             "игры Steam, Epic Games и GOG, программы, ярлыки "
+                                             "рабочего стола и скачанные папки.")
+        row = QHBoxLayout()
+        self.apps_count = label("", 15, QFont.DemiBold)
+        row.addWidget(self.apps_count)
+        row.addStretch(1)
+        self.apps_scan = button("Обновить список", "ghost", 14)
+        self.apps_scan.setFixedWidth(200)
+        self.apps_scan.clicked.connect(self._rescan_apps)
+        row.addWidget(self.apps_scan)
+        lay.addLayout(row)
+        lay.addSpacing(12)
+        self.apps_filter = field("Поиск по названию…")
+        self.apps_filter.textChanged.connect(lambda _t: self._fill_apps())
+        lay.addWidget(self.apps_filter)
+        lay.addSpacing(14)
+        self.apps_list = QWidget()
+        self.apps_lay = QVBoxLayout(self.apps_list)
+        self.apps_lay.setContentsMargins(0, 0, 0, 0)
+        self.apps_lay.setSpacing(6)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.apps_list)
+        lay.addWidget(scroll, 1)
+        lay.addSpacing(8)
+        lay.addWidget(label("Скажите: «Сеньор, открой …» и название — по-русски, как слышится. "
+                            "Если игру только что поставили, нажмите «Обновить список» или "
+                            "скажите «обнови список программ».", 12, role="faint", wrap=True))
+        self._apps_timer = QTimer(self)
+        self._apps_timer.timeout.connect(self._apps_poll)
+
+    def _fill_apps(self):
+        while self.apps_lay.count():
+            it = self.apps_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        items = sites.all_apps()
+        self.apps_count.setText(f"Знаю {len(items)} программ и игр")
+        q = self.apps_filter.text().strip().lower()
+        shown = 0
+        for name, src in items:
+            if q and q not in name.lower():
+                continue
+            r = QWidget()
+            rl = QHBoxLayout(r)
+            rl.setContentsMargins(4, 4, 4, 4)
+            rl.addWidget(label(name, 14), 1)
+            rl.addWidget(label(src, 12, role="faint"))
+            self.apps_lay.addWidget(r)
+            shown += 1
+            if shown >= 400:
+                break
+        self.apps_lay.addStretch(1)
+
+    def _rescan_apps(self):
+        self.apps_scan.setEnabled(False)
+        self.apps_scan.setText("Ищу…")
+        sites.warm(force=True)
+        self._apps_t0 = sites._apps_time
+        self._apps_timer.start(700)
+
+    def _apps_poll(self):
+        if sites._apps_time != self._apps_t0:
+            self._apps_timer.stop()
+            self.apps_scan.setEnabled(True)
+            self.apps_scan.setText("Обновить список")
+            self._fill_apps()
 
     def _build_startup(self, lay):
         self._title(lay, "Запуск", "Когда и как открывается SenioreM.")
@@ -1637,8 +1987,6 @@ class ProfileScreen(Backdrop):
         self._refresh_name()
         for k, b in self.speed_buttons.items():
             b.setChecked(k == (settings["voice_speed"] or "normal"))
-        for k, b in self.sens_buttons.items():
-            b.setChecked(k == (settings["mic_sensitivity"] or "high"))
         self.voice_status.setText("")
         self.t_speak.setChecked(bool(settings["speak_replies"]))
         self.t_chime.setChecked(bool(settings["chime"]))
@@ -1662,6 +2010,10 @@ class ProfileScreen(Backdrop):
     def show_section(self, key):
         self.nav_buttons[key].setChecked(True)
         switch_page(self.pages, self.page_widgets[key], 180)
+        if key == "look":
+            self._refresh_look()
+        if key == "apps":
+            self._fill_apps()
         if key == "history" and self.settings is not None:
             self.full_history.set_items(self.settings["history"])
 
@@ -1675,6 +2027,9 @@ class MainWindow(QWidget):
         self.cfg = cfg
         self.setObjectName("root")
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.glass = T.APPEARANCE.get("background") == "glass"
+        if self.glass:
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowTitle("SenioreM")
         icon = config.resource_path("assets/icon.ico")
         if icon.exists():
@@ -1736,9 +2091,21 @@ class MainWindow(QWidget):
         s = self.settings
         self.speaker.configure(s["voice_speed"], s["speak_replies"], s.cloud_voice)
         self.speaker.prefetch([s["wake_reply"]] if s["wake_reply"] else [])
+        if not s["ai_auto_setup"]:            # ИИ включаем сразу, без похода в профиль
+            s.set("ai_auto_setup", True)
+            s.set("ai_enabled", True)
+            if s["ai_mode"] != "api":
+                s.set("ai_mode", ai.recommended_kind())
         mode = s["ai_mode"] or "smart"
-        if s["ai_enabled"] and mode != "api" and ai.local_ready(mode):
-            threading.Thread(target=lambda: self._warm_ai(mode), daemon=True).start()
+        if os.environ.get("SENIOREM_NO_DOWNLOADS"):
+            pass
+        elif s["ai_enabled"] and mode != "api":
+            if ai.local_ready(mode):
+                threading.Thread(target=lambda: self._warm_ai(mode), daemon=True).start()
+            else:
+                ai.DOWNLOADS.start(mode)
+        if not asr.RECOGNIZER.available and not os.environ.get("SENIOREM_NO_DOWNLOADS"):
+            asr.DOWNLOADS.start()
         switch_page(self.stack, self.home)
         self.home.start(email, s)
         if not self.greeted:
@@ -1905,7 +2272,19 @@ class MainWindow(QWidget):
     def appear(self):
         self.setWindowOpacity(0.0)
         self.showFullScreen()
+        if self.glass:
+            T.enable_glass(self)
         self._animate_opacity(0.0, 1.0, 320)
+
+    def restart(self):
+        """Перезапуск программы (например, чтобы включить прозрачное окно)."""
+        import subprocess
+        if getattr(sys, "frozen", False):
+            args = [sys.executable, "--restart"]
+        else:
+            args = [sys.executable, os.path.abspath(sys.argv[0]), "--restart"]
+        subprocess.Popen(args, close_fds=True)
+        self.force_close()
 
     def smooth_minimize(self):
         self._animate_opacity(self.windowOpacity(), 0.0, 180, self.showMinimized)
@@ -2011,6 +2390,20 @@ def run_selftest(out_path):
         i = commands.find_wake(words)
         intent = commands.parse(" ".join(words[i + 1:]) if i >= 0 else heard)
         log(f"intent: {intent}")
+        # точное распознавание (Whisper) той же фразы
+        import asr as _asr
+        t0 = time.time()
+        _asr.download()
+        _asr.RECOGNIZER.load()
+        log(f"OK whisper loaded {(time.time() - t0):.0f}s")
+        with wave.open(wav, "rb") as w:
+            pcm, rate = w.readframes(w.getnframes()), w.getframerate()
+        t0 = time.time()
+        wtext = _asr.RECOGNIZER.transcribe(pcm, rate)
+        log(f"whisper ({(time.time() - t0):.1f}s): {wtext!r}")
+        if not wtext:
+            ok = False
+            log("FAIL whisper empty")
         for speed in ("slow", "fast"):
             tts.synth_wav(voice, "Проверка скорости.", wav, speed)
         log("OK speeds")
@@ -2043,7 +2436,75 @@ def run_selftest(out_path):
     os._exit(0 if ok else 1)
 
 
+def run_uitest(out_dir):
+    """Снимки экранов для проверки дизайна (запускается в сборке на GitHub)."""
+    import tempfile
+    os.environ["SENIOREM_NO_DOWNLOADS"] = "1"
+    os.makedirs(out_dir, exist_ok=True)
+    os.environ["APPDATA"] = tempfile.mkdtemp()
+    app = QApplication(sys.argv)
+    apply_app_theme(app)
+    log = []
+
+    def pump(ms=400):
+        end = time.time() + ms / 1000
+        while time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
+
+    def shot(widget, name):
+        pump(500)
+        widget.grab().save(os.path.join(out_dir, name + ".png"))
+        log.append(name)
+
+    try:
+        splash = Splash()
+        splash.show()
+        splash._on_progress(0.62, "Загружаю распознавание речи")
+        pump(900)
+        shot(splash, "01-splash")
+        splash.close()
+        win = MainWindow(config.load_config(), {})
+        win.resize(1920, 1080)
+        win.show()
+        shot(win, "02-register")
+        win.store.register("tester", "secret1", "secret1")
+        win._enter("tester")
+        h = win.home
+        h.settings.set("address", "господин")
+        h.settings.add_history("громкость десять", "Готово, господин. Громкость 10 процентов.")
+        h.settings.add_history("открой осу", "Запускаю osu!.")
+        h.history.set_items(h.settings["history"])
+        h._show_heard("Расскажи анекдот", False)
+        h.reply.setText("Почему программисты путают Хэллоуин и Рождество? Потому что Oct 31 = Dec 25.")
+        h.orb.state = "armed"
+        h.orb.push_level(0.5)
+        pump(2500)
+        shot(win, "03-home-blue")
+        for i, (acc, bg) in enumerate((("#34D399", "aurora"), ("#A78BFA", "glow"),
+                                      ("#FB923C", "solid"))):
+            T.set_appearance(app, accent=acc, background=bg,
+                             widgets={"notes": True}, clock_style="analog" if i == 1 else "digital")
+            h.apply_widgets()
+            shot(win, f"04-home-{i}-{bg}")
+        T.set_appearance(app, accent="#5B8CFF", background="aurora", clock_style="digital")
+        h.apply_widgets()
+        for sec in ("look", "voice", "apps", "ai", "name", "wake"):
+            win.open_profile(sec)
+            shot(win, f"05-profile-{sec}")
+        win.request_close = lambda: None
+        log.append("OK")
+    except Exception:  # noqa: BLE001
+        log.append("FAIL " + traceback.format_exc())
+    with open(os.path.join(out_dir, "uitest.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(log))
+    os._exit(0 if log and log[-1] == "OK" else 1)
+
+
 def main():
+    if "--uitest" in sys.argv:
+        i = sys.argv.index("--uitest")
+        run_uitest(sys.argv[i + 1] if len(sys.argv) > i + 1 else "screens")
     if "--selftest" in sys.argv:
         i = sys.argv.index("--selftest")
         run_selftest(sys.argv[i + 1] if len(sys.argv) > i + 1 else "selftest.txt")
@@ -2064,7 +2525,7 @@ def main():
     apply_app_theme(app)
 
     lock = QLockFile(str(config.data_dir() / "app.lock"))
-    if not lock.tryLock(100):
+    if not lock.tryLock(15000 if "--restart" in sys.argv else 100):
         QMessageBox.information(None, "SenioreM", "SenioreM уже запущен.")
         return 0
 

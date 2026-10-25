@@ -80,14 +80,38 @@ def load_voice():
     return PiperVoice.load(str(onnx), config_path=str(js))
 
 
+def _syn_config(scale):
+    """Ровная, спокойная речь: меньше «дрожания» интонации и пауз (noise / noise_w)."""
+    from piper import SynthesisConfig
+    try:
+        return SynthesisConfig(length_scale=scale, noise_scale=0.5, noise_w_scale=0.55)
+    except TypeError:
+        return SynthesisConfig(length_scale=scale)
+
+
+def _pad(path, lead=0.12, tail=0.15):
+    """Тишина в начале и в конце: колонки и Bluetooth-наушники не «съедают» первый слог."""
+    with wave.open(path, "rb") as r:
+        params = r.getparams()
+        frames = r.readframes(r.getnframes())
+    bpf = params.sampwidth * params.nchannels
+    pre = b"\x00" * (int(params.framerate * lead) * bpf)
+    post = b"\x00" * (int(params.framerate * tail) * bpf)
+    with wave.open(path, "wb") as w:
+        w.setparams(params)
+        w.writeframes(pre + frames + post)
+
+
 def synth_wav(voice, text: str, path: str, speed: str = "normal"):
     """Синтезирует фразу в WAV. Поддерживает API piper-tts 1.3 и старее."""
+    import speechtext
+    text = speechtext.prepare(text)
     scale = SPEEDS.get(speed, 1.0)
     tmp = path + ".part"
     try:
-        from piper import SynthesisConfig
+        cfg = _syn_config(scale)
         with wave.open(tmp, "wb") as wf:
-            voice.synthesize_wav(text, wf, syn_config=SynthesisConfig(length_scale=scale))
+            voice.synthesize_wav(text, wf, syn_config=cfg)
     except ImportError:
         with wave.open(tmp, "wb") as wf:
             if hasattr(voice, "synthesize_wav"):
@@ -97,6 +121,7 @@ def synth_wav(voice, text: str, path: str, speed: str = "normal"):
                 wf.setsampwidth(2)
                 wf.setnchannels(1)
                 voice.synthesize(text, wf, length_scale=scale)
+    _pad(tmp)
     os.replace(tmp, path)
 
 
@@ -108,7 +133,7 @@ def wav_seconds(path: str) -> float:
 def cache_path(text: str, speed: str) -> str:
     d = config.local_dir() / "voice_cache"
     d.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha1(f"{VOICE_NAME}|{speed}|{text}".encode()).hexdigest()
+    key = hashlib.sha1(f"{VOICE_NAME}|v2|{speed}|{text}".encode()).hexdigest()
     return str(d / f"{key}.wav")
 
 
@@ -133,8 +158,10 @@ def yandex_synth(text: str, path: str, key: str, voice: str = "filipp", speed: s
     """Синтез голосом Яндекса в WAV (48 кГц). Ключ — API-ключ сервисного аккаунта Yandex Cloud."""
     import urllib.error
     import urllib.parse
+
+    import speechtext
     data = urllib.parse.urlencode({
-        "text": text, "lang": "ru-RU", "voice": voice, "format": "lpcm",
+        "text": speechtext.prepare(text), "lang": "ru-RU", "voice": voice, "format": "lpcm",
         "sampleRateHertz": "48000", "speed": YANDEX_SPEED.get(speed, "1.0"),
     }).encode("utf-8")
     req = urllib.request.Request(YANDEX_URL, data=data, method="POST",
@@ -153,4 +180,5 @@ def yandex_synth(text: str, path: str, key: str, voice: str = "filipp", speed: s
         w.setsampwidth(2)
         w.setframerate(48000)
         w.writeframes(pcm)
+    _pad(tmp)
     os.replace(tmp, path)
