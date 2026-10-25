@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLa
 
 import actions
 import asr
+import live
 import ai
 import commands
 import config
@@ -723,7 +724,8 @@ class HomeScreen(Backdrop):
         self.w_clock.face.set_style(T.APPEARANCE.get("clock_style", "digital"))
         self.clock.setVisible(not flags.get("clock", True))
         if flags.get("weather", True):
-            self.w_weather.set_city(T.APPEARANCE.get("city", ""))
+            self.w_weather.set_city(T.APPEARANCE.get("city", ""), T.APPEARANCE.get("city_lat"),
+                                    T.APPEARANCE.get("city_lon"))
 
     def _bg_status(self):
         """Строка состояния фоновых загрузок (распознавание, ИИ) под центром экрана."""
@@ -807,6 +809,15 @@ class HomeScreen(Backdrop):
                 self.arm_timer.start(self._listen_ms())
         self._rest_state()
 
+    def _followup_ms(self):
+        """Сколько слушать после ответа (0 — сразу перестать)."""
+        if self.settings is None:
+            return 10000
+        try:
+            return max(0, int(self.settings["followup_seconds"])) * 1000
+        except (TypeError, ValueError):
+            return 10000
+
     def _listen_ms(self):
         try:
             return int(self.settings["listen_seconds"]) * 1000
@@ -822,7 +833,7 @@ class HomeScreen(Backdrop):
         if self.orb.state in ("idle", "armed") and text:
             self._show_heard(text, True)
             if self.armed:
-                self.arm_timer.start(self._listen_ms())   # вы говорите — не перебиваем
+                self.arm_timer.start(getattr(self, "_arm_ms", self._listen_ms()))  # не перебиваем
 
     def _on_final(self, text, confs=None, audio=None):
         words = commands.tokens(text)
@@ -873,9 +884,11 @@ class HomeScreen(Backdrop):
         self.armed = True
         s = self.settings
         if quiet:                       # продолжение разговора — без звука и приветствия
-            self.arm_timer.start(self._listen_ms())
+            self._arm_ms = self._followup_ms()
+            self.arm_timer.start(self._arm_ms)
             self._rest_state()
             return
+        self._arm_ms = self._listen_ms()
         if s is None or s["chime"]:
             self.chime.play()
         self._show_heard("", True)
@@ -926,22 +939,27 @@ class HomeScreen(Backdrop):
             if intent["action"] == "unknown":
                 use_ai = False
             elif intent["action"] == "ask":
-                use_ai = False
-                intent = {"action": "chat", "reply": (
-                    f"ИИ ещё скачивается — {round(ai.DOWNLOADS.frac * 100)} процентов. "
-                    "Как только закончится, смогу ответить. Команды уже работают."),
-                    "typed": typed}
+                use_ai = False     # пока ИИ скачивается — ответ по поиску в интернете
 
         def work():
             ui = ""
             if intent["action"] == "weather":
                 try:
-                    d = widgets.fetch_weather(T.APPEARANCE.get("city", ""))
-                    text, _icon = widgets.WEATHER.get(int(d["code"]), ("", ""))
-                    reply = (f"В городе {d['city']} сейчас {round(d['temp'])} градусов, "
-                             f"{text.lower()}. Ветер {round(d['wind'])} метров в секунду.")
+                    reply = live.weather_phrase(T.APPEARANCE, intent.get("day", "now"))
                 except Exception:  # noqa: BLE001
                     reply = "Не получилось узнать погоду. Проверьте интернет."
+                self.bridge.action_done.emit(reply, "")
+                return
+            if intent["action"] == "rates":
+                try:
+                    reply = live.rate_phrase(intent.get("cur", "USD"))
+                except Exception:  # noqa: BLE001
+                    reply = "Не получилось узнать курс. Проверьте интернет."
+                self.bridge.action_done.emit(reply, "")
+                return
+            if intent["action"] == "ask" and not use_ai:
+                # ИИ выключен или ещё скачивается — отвечаем по поиску в интернете
+                reply = live.quick_answer(intent.get("text", text))
                 self.bridge.action_done.emit(reply, "")
                 return
             if use_ai and intent["action"] == "forget":
@@ -952,7 +970,8 @@ class HomeScreen(Backdrop):
                     if intent["action"] == "unknown" else None
                 if reply is None:
                     try:
-                        reply = ai.ENGINE.ask(text, s)
+                        ctx = live.build_context(text, T.APPEARANCE)
+                        reply = ai.ENGINE.ask(text, s, ctx)
                         ui = "ai"
                     except ai.AIError as e:
                         reply = str(e)
@@ -980,7 +999,7 @@ class HomeScreen(Backdrop):
         self.reply.setText(reply + ("\nЗвук на компьютере выключен — скажите или напишите "
                                     "«включи звук»." if muted and reply else ""))
         dialog = (self._voice_cmd and ui not in ("quit", "minimize")
-                  and (self.settings is None or self.settings["dialog_mode"]))
+                  and self._followup_ms() > 0)
         if reply and self.speaker.enabled:
             self._continue = dialog           # снова слушаем, когда договорит
             self.speaker.say(reply, cache=not from_ai)
@@ -1005,6 +1024,7 @@ class ProfileScreen(Backdrop):
 
     SECTIONS = [
         ("look", "Оформление"),
+        ("city", "Город и погода"),
         ("name", "Имя помощника"),
         ("address", "Обращение"),
         ("voice", "Голос"),
@@ -1428,11 +1448,28 @@ class ProfileScreen(Backdrop):
                             "распознавание Whisper — оно понимает даже названия игр.", 13,
                             role="muted", wrap=True))
         lay.addSpacing(26)
-        self.t_dialog = self._toggle_row(lay, "Режим разговора, как у Алисы",
-                                         "После ответа помощник ещё слушает — можно продолжать "
-                                         "без «Сеньор». Если молчать, через несколько секунд "
-                                         "разговор закончится.", "dialog_mode")
-        self._caption(lay, "Сколько секунд ждать, пока вы заговорите")
+        self._caption(lay, "После ответа")
+        lay.addWidget(label("Как у Алисы: после ответа помощник ещё немного слушает — можно "
+                            "продолжать разговор без «Сеньор». Или сразу перестаёт слушать.", 13,
+                            role="muted", wrap=True))
+        lay.addSpacing(10)
+        frow = QHBoxLayout()
+        frow.setSpacing(10)
+        fgroup = QButtonGroup(self)
+        self.follow_buttons = {}
+        for sec, title in ((0, "Сразу выключаться"), (5, "5 с"), (10, "10 с"), (20, "20 с"),
+                           (30, "30 с"), (60, "1 мин")):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setMinimumWidth(80 if sec else 190)
+            b.clicked.connect(lambda _=False, v=sec: self._set("followup_seconds", v))
+            fgroup.addButton(b)
+            frow.addWidget(b)
+            self.follow_buttons[sec] = b
+        frow.addStretch(1)
+        lay.addLayout(frow)
+        lay.addSpacing(26)
+        self._caption(lay, "После «Сеньор» ждать команду")
         row = QHBoxLayout()
         row.setSpacing(10)
         group = QButtonGroup(self)
@@ -1768,7 +1805,9 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(22)
         self._caption(lay, "Город для погоды (пусто — определить автоматически)")
         self.f_city = field("например: Магадан")
-        self.f_city.editingFinished.connect(lambda: self._set_look(city=self.f_city.text().strip()))
+        self.f_city.editingFinished.connect(lambda: self._set_look(
+            city=self.f_city.text().strip(), city_lat=None, city_lon=None)
+            if self.f_city.text().strip() != T.APPEARANCE.get("city", "") else None)
         lay.addWidget(self.f_city)
         lay.addStretch(1)
 
@@ -1818,6 +1857,103 @@ class ProfileScreen(Backdrop):
             self.glass_note.setText("Чтобы прозрачность окна включилась, программу нужно "
                                     "перезапустить." if key == "glass" else
                                     "Чтобы отключить прозрачность окна, перезапустите программу.")
+
+    # ---------- город ----------
+    def _build_city(self, lay):
+        self._title(lay, "Город и погода", "Для погоды и ответов на вопросы вроде «сколько сейчас "
+                                           "градусов» или «нужен ли зонт».")
+        self._caption(lay, "Сейчас")
+        self.city_now = label("", 20, QFont.DemiBold)
+        lay.addWidget(self.city_now)
+        lay.addSpacing(4)
+        self.city_weather = label("", 14, role="muted", wrap=True)
+        lay.addWidget(self.city_weather)
+        lay.addSpacing(26)
+        self._caption(lay, "Выбрать город")
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        self.f_city_search = field("например: Магадан")
+        self.f_city_search.returnPressed.connect(self._search_city)
+        row.addWidget(self.f_city_search, 1)
+        find = button("Найти", "ghost", 14)
+        find.setFixedWidth(120)
+        find.clicked.connect(self._search_city)
+        row.addWidget(find)
+        lay.addLayout(row)
+        lay.addSpacing(12)
+        self.city_results = QWidget()
+        self.city_res_lay = QVBoxLayout(self.city_results)
+        self.city_res_lay.setContentsMargins(0, 0, 0, 0)
+        self.city_res_lay.setSpacing(8)
+        lay.addWidget(self.city_results)
+        lay.addSpacing(16)
+        auto = button("Определять автоматически", "link", 14, QFont.Normal)
+        auto.clicked.connect(lambda: self._choose_city(None))
+        lay.addWidget(auto, 0, Qt.AlignLeft)
+        lay.addStretch(1)
+        self.city_bridge = AIBridge()          # переиспользуем сигналы: answer(str)
+        self.city_bridge.answer.connect(lambda t: self.city_weather.setText(t))
+        self.city_bridge.progress.connect(lambda _f, t: self._show_city_results(t))
+
+    def _refresh_city(self):
+        a = T.APPEARANCE
+        self.city_now.setText(a.get("city") or "Определяется автоматически по интернету")
+        self.city_weather.setText("Узнаю погоду…")
+
+        def work():
+            try:
+                txt = live.weather_phrase(T.APPEARANCE, "now")
+            except Exception:  # noqa: BLE001
+                txt = "Нет связи с сервисом погоды — проверьте интернет."
+            self.city_bridge.answer.emit(txt)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _search_city(self):
+        q = self.f_city_search.text().strip()
+        if not q:
+            return
+        self._show_city_results("…")
+
+        def work():
+            try:
+                res = live.search_cities(q)
+                self._city_found = res
+                self.city_bridge.progress.emit(0.0, "ok" if res else "none")
+            except Exception:  # noqa: BLE001
+                self.city_bridge.progress.emit(0.0, "error")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_city_results(self, status):
+        while self.city_res_lay.count():
+            it = self.city_res_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        if status == "…":
+            self.city_res_lay.addWidget(label("Ищу…", 13, role="muted"))
+            return
+        if status != "ok":
+            self.city_res_lay.addWidget(label("Город не найден." if status == "none" else
+                                              "Нет связи с интернетом.", 13, role="error"))
+            return
+        for r in getattr(self, "_city_found", []):
+            title = ", ".join(x for x in (r["name"], r["region"], r["country"]) if x)
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setStyleSheet("text-align: left; padding-left: 16px;")
+            b.clicked.connect(lambda _=False, rr=r: self._choose_city(rr))
+            self.city_res_lay.addWidget(b)
+
+    def _choose_city(self, r):
+        if r is None:
+            self._set_look(city="", city_lat=None, city_lon=None)
+        else:
+            self._set_look(city=r["name"], city_lat=r["lat"], city_lon=r["lon"])
+        while self.city_res_lay.count():
+            it = self.city_res_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.f_city_search.clear()
+        self._flash("Город сохранён")
+        self._refresh_city()
 
     # ---------- программы и игры ----------
     def _build_apps(self, lay):
@@ -1992,7 +2128,8 @@ class ProfileScreen(Backdrop):
         self.t_chime.setChecked(bool(settings["chime"]))
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
         self.t_autostart.setChecked(bool(settings["autostart"]))
-        self.t_dialog.setChecked(bool(settings["dialog_mode"]))
+        for sec, b in self.follow_buttons.items():
+            b.setChecked(sec == int(settings["followup_seconds"]))
         self.f_ya_key.setText(settings["yandex_key"] or "")
         self._refresh_voice()
         for sec, b in self.listen_buttons.items():
@@ -2012,6 +2149,8 @@ class ProfileScreen(Backdrop):
         switch_page(self.pages, self.page_widgets[key], 180)
         if key == "look":
             self._refresh_look()
+        if key == "city":
+            self._refresh_city()
         if key == "apps":
             self._fill_apps()
         if key == "history" and self.settings is not None:
@@ -2390,6 +2529,15 @@ def run_selftest(out_path):
         i = commands.find_wake(words)
         intent = commands.parse(" ".join(words[i + 1:]) if i >= 0 else heard)
         log(f"intent: {intent}")
+        # живые данные из интернета
+        for name, fn in (("weather", lambda: live.weather_phrase({"city": "Магадан"}, "now")),
+                         ("tomorrow", lambda: live.weather_phrase({"city": "Магадан"}, "tomorrow")),
+                         ("rate", lambda: live.rate_phrase("USD")),
+                         ("search", lambda: live.quick_answer("столица Австралии"))):
+            try:
+                log(f"live {name}: {fn()}")
+            except Exception as e:  # noqa: BLE001
+                log(f"WARN live {name}: {e!r}")
         # точное распознавание (Whisper) той же фразы
         import asr as _asr
         t0 = time.time()
@@ -2423,6 +2571,15 @@ def run_selftest(out_path):
             t0 = _t.time()
             ans = _ai.ENGINE.ask("Привет! Какого цвета небо днём? Ответь одной фразой.", s)
             log(f"ai answer ({(_t.time() - t0):.1f}s): {ans}")
+            try:
+                ctx = live.build_context("Сколько сейчас градусов на улице и какой курс доллара?",
+                                         {"city": "Магадан"})
+                t0 = _t.time()
+                ans2 = _ai.ENGINE.ask("Сколько сейчас градусов на улице и какой курс доллара?",
+                                      s, ctx)
+                log(f"ai live ({(_t.time() - t0):.1f}s): {ans2}")
+            except Exception as e:  # noqa: BLE001
+                log(f"WARN ai live: {e!r}")
             if not ans or len(ans) < 3:
                 ok = False
                 log("FAIL ai empty answer")
@@ -2489,7 +2646,7 @@ def run_uitest(out_dir):
             shot(win, f"04-home-{i}-{bg}")
         T.set_appearance(app, accent="#5B8CFF", background="aurora", clock_style="digital")
         h.apply_widgets()
-        for sec in ("look", "voice", "apps", "ai", "name", "wake"):
+        for sec in ("look", "city", "voice", "apps", "ai", "name", "wake"):
             win.open_profile(sec)
             shot(win, f"05-profile-{sec}")
         win.request_close = lambda: None
