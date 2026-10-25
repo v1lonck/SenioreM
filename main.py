@@ -2951,7 +2951,10 @@ class ProfileScreen(Backdrop):
         self.comp_cards = {}
         for i, (key, title, desc) in enumerate(figures()):
             c = ThumbCard(title, desc, 150, 190)
-            c.set_pixmap(thumb(key, 300, 380))
+            try:
+                c.set_pixmap(thumb(key, 300, 380))
+            except Exception:  # noqa: BLE001 — испорченный набор: карточка без картинки
+                pass
             c.clicked.connect(lambda k=key: self._set_comp(companion=k))
             self.comp_grid.addWidget(c, i // 4, i % 4)
             self.comp_cards[key] = c
@@ -4295,7 +4298,18 @@ def main():
 
     def open_main(models):
         startup_mark("модели загружены — открываю главное окно")
-        win = MainWindow(cfg, models)
+        try:
+            win = MainWindow(cfg, models)
+        except Exception:  # noqa: BLE001 — не закрываемся молча: пишем ошибку и показываем её
+            err = traceback.format_exc()
+            with open(config.data_dir() / "error.log", "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + err + "\n")
+            startup_mark("ОШИБКА при открытии главного окна: " + err.strip().splitlines()[-1])
+            QMessageBox.warning(None, "SenioreM", "Не получилось открыть главное окно.\n\n"
+                                + err.strip().splitlines()[-1] + "\n\nПодробности — в файле "
+                                "error.log в папке %APPDATA%\\SenioreM.")
+            app.quit()
+            return
         holder["win"] = win
         win.appear()
         startup_mark("главное окно открыто")
