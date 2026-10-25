@@ -219,7 +219,11 @@ class Speaker(QThread):
 
     def __init__(self, voice=None, parent=None):
         super().__init__(parent)
-        self.q = queue.Queue()
+        self.q = queue.Queue()            # фразы, которые нужно сказать
+        self._ready = queue.Queue()       # уже озвученные (готовый звук), по порядку
+        self._gen = 0                     # номер «разговора»: после «стоп» старое не звучит
+        self._pending = 0
+        self._count_lock = threading.Lock()
         self._stop_now = threading.Event()
         self._engine = None
         self._piper = voice
@@ -241,7 +245,10 @@ class Speaker(QThread):
         """cache=False — для одноразовых фраз (ответы ИИ): файл удаляется после озвучки.
         cloud — разово другой голос (для «Послушать»): None — Руслан, dict — Яндекс."""
         if text and (self.enabled or force):
-            self.q.put((text, speed or self.speed, cache, self.cloud if cloud == "same" else cloud))
+            with self._count_lock:
+                self._pending += 1
+            self.q.put((self._gen, text, speed or self.speed, cache,
+                        self.cloud if cloud == "same" else cloud))
 
     def prefetch(self, texts):
         """Заранее готовит частые фразы, чтобы они звучали мгновенно."""
@@ -254,37 +261,93 @@ class Speaker(QThread):
         threading.Thread(target=work, daemon=True).start()
 
     def interrupt(self):
-        while not self.q.empty():
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                break
+        self._gen += 1                      # всё, что было в очереди, больше не звучит
+        for qq in (self.q, self._ready):
+            while True:
+                try:
+                    item = qq.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not None:
+                    self._drop(item)
         self._stop_now.set()
         self._stop_playback()
+
+    def _drop(self, item):
+        """Фраза отменена: убираем её из счёта и удаляем одноразовый файл."""
+        if len(item) == 4 and item[1] == "wav" and item[3]:
+            try:
+                os.remove(item[2])
+            except OSError:
+                pass
+        self._done_one()
+
+    def _done_one(self):
+        with self._count_lock:
+            self._pending = max(0, self._pending - 1)
+            left = self._pending
+        if left == 0:
+            self.speaking.emit(False)
 
     def shutdown(self):
         self.interrupt()
         self.q.put(None)
         self.wait(3000)
 
-    def run(self):
-        _co_init()
+    def _synth_loop(self):
+        """Готовит звук для следующих фраз, пока звучит текущая — поэтому между
+        предложениями нет долгих пауз."""
         while True:
             item = self.q.get()
             if item is None:
+                self._ready.put(None)
+                return
+            gen, text, speed, cache, cloud = item
+            if gen != self._gen:
+                self._done_one()
+                continue
+            try:
+                kind, value, temp = self._prepare(text, speed, cache, cloud)
+            except Exception:  # noqa: BLE001
+                import traceback
+                _log("Ошибка озвучки:\n" + traceback.format_exc())
+                kind, value, temp = "sapi", text, False
+            if gen != self._gen:
+                self._drop((gen, kind, value, temp))
+                continue
+            self._ready.put((gen, kind, value, temp, text))
+
+    def run(self):
+        _co_init()
+        threading.Thread(target=self._synth_loop, daemon=True).start()
+        while True:
+            item = self._ready.get()
+            if item is None:
                 break
-            text, speed, cache, cloud = item
+            gen, kind, value, temp, text = item
+            if gen != self._gen:
+                self._drop((gen, kind, value, temp))
+                continue
             self._stop_now.clear()
             self.speaking.emit(True)
             self.said.emit(text)
             try:
-                self._speak(text, speed, cache, cloud)
+                if kind == "wav":
+                    self._play_wav(value)
+                elif not self._stop_now.is_set():
+                    self._speak_sapi(value)
             except Exception:  # noqa: BLE001
                 import traceback
                 _log("Ошибка озвучки:\n" + traceback.format_exc())
-            time.sleep(0.15)  # чтобы микрофон не поймал «хвост» речи
-            if self.q.empty():
-                self.speaking.emit(False)
+            finally:
+                if kind == "wav" and temp:
+                    try:
+                        os.remove(value)
+                    except OSError:
+                        pass
+            if self.q.empty() and self._ready.empty():
+                time.sleep(0.12)  # чтобы микрофон не поймал «хвост» речи
+            self._done_one()
 
     # ---------- озвучка ----------
     def _wav(self, text, speed, cache=True, cloud=None):
@@ -292,7 +355,7 @@ class Speaker(QThread):
         tag = f"ya-{cloud['voice']}" if cloud else ""
         path = tts.cache_path(tag + text, speed)
         if not cache:
-            path = path[:-4] + ".once.wav"
+            path = path[:-4] + f".once{threading.get_ident()}{time.monotonic_ns()}.wav"
         if not os.path.exists(path):
             if cloud:
                 tts.yandex_synth(text, path, cloud["key"], cloud["voice"], speed)
@@ -302,34 +365,17 @@ class Speaker(QThread):
                         tts.synth_wav(self._piper, text, path, speed)
         return path
 
-    def _speak(self, text, speed, cache=True, cloud=None):
+    def _prepare(self, text, speed, cache=True, cloud=None):
+        """-> ("wav", путь, удалить_после) или ("sapi", текст, False)."""
         if cloud:
             try:
-                path = self._wav(text, speed, cache, cloud)
-                try:
-                    self._play_wav(path)
-                finally:
-                    if not cache:
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
-                return
+                return "wav", self._wav(text, speed, cache, cloud), not cache
             except Exception as e:  # noqa: BLE001 — нет интернета или ключ неверный
                 _log(f"Голос Яндекса не сработал: {e}")
                 self.problem.emit(f"Голос Яндекса недоступен ({e}) — говорит Руслан.")
         if self._piper is not None:
             try:
-                path = self._wav(text, speed, cache)
-                try:
-                    self._play_wav(path)
-                finally:
-                    if not cache:
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
-                return
+                return "wav", self._wav(text, speed, cache), not cache
             except Exception:  # noqa: BLE001
                 import traceback
                 _log("Голос Piper не сработал:\n" + traceback.format_exc())
@@ -338,8 +384,7 @@ class Speaker(QThread):
             self._warned = True
             self.problem.emit("Голос ещё не скачан — пока говорит голос Windows. "
                               "Перезапустите программу при подключённом интернете.")
-        if not self._stop_now.is_set():
-            self._speak_sapi(text)
+        return "sapi", text, False
 
     def _play_wav(self, path):
         import tts
