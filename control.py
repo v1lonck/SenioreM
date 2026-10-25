@@ -328,6 +328,7 @@ $dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([
 $sb = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
 $res = @()
 $langs = @([Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages)
+[Console]::Error.WriteLine("ocr langs: " + ($langs | ForEach-Object { $_.LanguageTag }) -join ",")
 foreach ($lang in $langs) {
   $eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
   if ($eng -eq $null) { continue }
@@ -342,6 +343,9 @@ $res | ConvertTo-Json -Compress
 """
 
 
+OCR_ERR = ""
+
+
 def ocr_words(left, top, width, height):
     """Слова на экране в прямоугольнике: [{t, x, y, w, h, line}] (координаты экрана)."""
     d = tempfile.gettempdir()
@@ -353,6 +357,8 @@ def ocr_words(left, top, width, height):
                         img, str(left), str(top), str(width), str(height)],
                        capture_output=True, timeout=25, creationflags=NO_WINDOW)
     out = r.stdout.decode("utf-8", "ignore").strip()
+    global OCR_ERR
+    OCR_ERR = r.stderr.decode("utf-8", "ignore").strip()[-600:]
     if not out:
         return []
     data = json.loads(out)
