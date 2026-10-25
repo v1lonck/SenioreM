@@ -108,7 +108,8 @@ jobs:
           $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt | ForEach-Object { "$_" }
           Get-Content selftest.txt | Select-Object -Last 12 | ForEach-Object { Write-Output "::notice::$_" }
-          if ($p.ExitCode -ne 0) { Write-Output "::error::Самопроверка не прошла"; exit 1 }
+          $last = (Get-Content selftest.txt | Select-Object -Last 1)
+          if ($last -ne "RESULT PASS") { Write-Output "::error::Самопроверка не прошла"; exit 1 }
 
       - name: Снимки экранов (проверка дизайна)
         shell: pwsh
@@ -121,7 +122,8 @@ jobs:
           gh release view ci-screens *> $null
           if ($LASTEXITCODE -ne 0) { gh release create ci-screens --prerelease --title "Снимки экранов сборки" --notes "Автоматические снимки интерфейса для проверки." }
           Get-ChildItem screens\*.png, screens\uitest.txt | ForEach-Object { gh release upload ci-screens $_.FullName --clobber }
-          if ($p.ExitCode -ne 0) { Write-Output "::error::Проверка интерфейса не прошла"; exit 1 }
+          $last = (Get-Content screens\uitest.txt | Select-Object -Last 1)
+          if ($last -ne "OK") { Write-Output "::error::Проверка интерфейса не прошла"; exit 1 }
 
       - name: Inno Setup
         run: choco install innosetup -y --no-progress
