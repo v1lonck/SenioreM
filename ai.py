@@ -114,6 +114,31 @@ def _post(url, payload, key="", timeout=120):
         return json.load(r)
 
 
+def _stream(url, payload, key="", timeout=120):
+    """Ответ по кусочкам (как печатает): -> генератор строк."""
+    payload = dict(payload, stream=True)
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "SenioreM",
+               "Accept": "text/event-stream"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        for raw in r:
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if body == "[DONE]":
+                break
+            try:
+                delta = json.loads(body)["choices"][0].get("delta", {}).get("content") or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if delta:
+                yield delta
+
+
 def clean_reply(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     text = re.sub(r"```.*?```", "", text, flags=re.S)
@@ -210,24 +235,48 @@ class AI:
                 f"Если не знаешь — честно скажи. Не используй списки, разметку, "
                 f"эмодзи и ссылки. Если просят что-то сделать на компьютере, а ты не можешь, "
                 f"подскажи голосовую команду, например «{name}, открой телеграм» или "
-                f"«{name}, громкость 30».{who} Сейчас {now:%d.%m.%Y}, {now:%H:%M}.")
+                f"«{name}, громкость 30».{who} Сегодня {now:%d.%m.%Y}.")
 
-    def ask(self, text, settings, context=""):
-        """-> ответ строкой. settings — профиль; context — свежие данные из интернета."""
+    @staticmethod
+    def _ask_stream(url, payload, on_sentence):
+        buf, full = "", ""
+        for piece in _stream(url, payload):
+            buf += piece
+            full += piece
+            # отдаём законченные фразы сразу — помощник начинает говорить, пока ИИ дописывает
+            while True:
+                m = re.search(r"[.!?…](\s|$)", buf)
+                if not m or m.end() < 12:
+                    break
+                sent, buf = buf[:m.end()], buf[m.end():]
+                sent = clean_reply(sent)
+                if sent:
+                    on_sentence(sent)
+        tail = clean_reply(buf)
+        if tail:
+            on_sentence(tail)
+        return clean_reply(full)
+
+    def ask(self, text, settings, context="", on_sentence=None):
+        """-> ответ строкой. settings — профиль; context — свежие данные из интернета.
+        on_sentence(фраза) — вызывается по мере готовности каждой фразы (чтобы сразу озвучивать)."""
         with self.lock:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
             system = self._system(name, settings["address"])
-            if context:
-                system += ("\n\nСвежие данные из интернета (точные и актуальные — отвечай по ним, "
-                           "называй конкретные числа; не говори, что у тебя нет доступа к "
-                           "интернету):\n" + context)
+            # системное сообщение не меняется между вопросами — сервер ИИ не пересчитывает его
+            # каждый раз (это главное ускорение); время и свежие данные — в конце
             msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
-            msgs.append({"role": "user", "content": text})
+            extra = f"(Сейчас {datetime.datetime.now():%H:%M}.)"
+            if context:
+                extra += ("\nСвежие данные из интернета (точные — отвечай по ним, называй конкретные "
+                          "числа; не говори, что у тебя нет доступа к интернету):\n" + context)
+            msgs.append({"role": "user", "content": text + "\n\n" + extra})
             mode = settings["ai_mode"] or "smart"
-            payload = {"messages": msgs, "temperature": 0.5, "max_tokens": 260, "stream": False}
+            payload = {"messages": msgs, "temperature": 0.5, "max_tokens": 220, "stream": False,
+                       "cache_prompt": True}
             try:
                 if mode == "api":
                     base = (settings["ai_api_url"] or "").strip().rstrip("/")
@@ -235,12 +284,19 @@ class AI:
                         raise AIError("Укажите адрес API в профиле → «ИИ-собеседник».")
                     if not base.endswith("/chat/completions"):
                         base += "/chat/completions"
+                    payload.pop("cache_prompt", None)
                     payload["model"] = (settings["ai_api_model"] or "").strip() or "gpt-4o-mini"
                     data = _post(base, payload, (settings["ai_api_key"] or "").strip(), 60)
                 else:
                     self.start_local(mode)
-                    data = _post(f"http://127.0.0.1:{self.port}/v1/chat/completions", payload)
-                reply = clean_reply(data["choices"][0]["message"]["content"])
+                    url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
+                    data = None
+                    if on_sentence is not None:
+                        reply = self._ask_stream(url, payload, on_sentence)
+                    else:
+                        data = _post(url, payload)
+                if data is not None:
+                    reply = clean_reply(data["choices"][0]["message"]["content"])
             except AIError:
                 raise
             except urllib.error.HTTPError as e:

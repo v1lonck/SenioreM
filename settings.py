@@ -38,6 +38,8 @@ DEFAULTS = {
     "companion_anim": True,
     "companion_size": 150,
     "history": [],
+    "scenarios": None,              # свои фразы и действия (None — сценарии по умолчанию)
+    "vpn": {},                      # {"app": {"name", "target"}, "admin", "click", "button"}
 }
 
 NAME_PRESETS = ["Сеньор", "Компьютер", "Помощник", "Макс", "Шеф", "Друг"]

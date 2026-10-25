@@ -26,6 +26,8 @@ import theme as T
 import sites
 import timers
 import control
+import scenarios
+import system
 from chat import ChatScreen
 import widgets
 import tts
@@ -44,6 +46,7 @@ class AIBridge(QObject):
     progress = Signal(float, str)
     done = Signal(str)
     answer = Signal(str)
+    admin_done = Signal(bool, str)
 
 
 class Bridge(QObject):
@@ -52,6 +55,7 @@ class Bridge(QObject):
     action_done = Signal(str, str)      # ответ, действие окна
     volume = Signal(int)                # текущая громкость системы
     recognized = Signal(str)            # текст, уточнённый точным распознаванием
+    ai_sentence = Signal(str)           # очередная готовая фраза ответа ИИ (озвучиваем сразу)
 
 
 # ================================================================== вход
@@ -810,6 +814,7 @@ class HomeScreen(Backdrop):
         self.chime = Chime()
         self.bridge = Bridge()
         self.bridge.action_done.connect(self._on_action_done)
+        self.bridge.ai_sentence.connect(self._on_ai_sentence)
         self.bridge.volume.connect(self._on_volume)
         self.bridge.recognized.connect(lambda t: self.execute(t))
         self.speaker.speaking.connect(self._on_speaking)
@@ -1050,7 +1055,7 @@ class HomeScreen(Backdrop):
             self.bg_status.setText("")
         # ИИ занимает 1–2.5 ГБ памяти: после 10 минут без вопросов выгружаем его
         eng = ai.ENGINE
-        if eng.running() and time.time() - max(eng.last_time, getattr(eng, "started", 0)) > 600:
+        if eng.running() and time.time() - max(eng.last_time, getattr(eng, "started", 0)) > 1200:
             eng.stop()
         if ai.DOWNLOADS.done_kind and not self._ai_warmed:
             self._ai_warmed = True
@@ -1298,7 +1303,8 @@ class HomeScreen(Backdrop):
         """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
         if not typed:
             text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
-        intent = timers.parse(text) or control.parse(text) or commands.parse(text)
+        intent = (scenarios.match(text, self.settings) or timers.parse(text) or system.parse(text)
+                  or control.parse(text) or commands.parse(text))
         intent["typed"] = typed
         # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
         intent["followup"] = (not typed and sink is None and getattr(self, "_followup_cmd", False))
@@ -1364,8 +1370,16 @@ class HomeScreen(Backdrop):
                 if reply is None:
                     try:
                         ctx = live.build_context(text, T.APPEARANCE)
-                        reply = ai.ENGINE.ask(text, s, ctx)
-                        ui = "ai"
+                        speak_now = self.speaker.enabled and (sink is None or s["chat_speak"])
+                        self._streamed = ""
+                        sent = []
+
+                        def on_sentence(x):
+                            sent.append(x)
+                            self.bridge.ai_sentence.emit(x)
+                        reply = ai.ENGINE.ask(text, s, ctx,
+                                              on_sentence=on_sentence if speak_now else None)
+                        ui = "ai_streamed" if sent else "ai"
                     except ai.AIError as e:
                         reply = str(e)
             else:
@@ -1376,10 +1390,20 @@ class HomeScreen(Backdrop):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _on_ai_sentence(self, sentence):
+        """ИИ дописал фразу — сразу говорим её, не дожидаясь всего ответа."""
+        self._streamed = (getattr(self, "_streamed", "") + " " + sentence).strip()
+        if getattr(self, "_sink", None) is None:
+            self.reply.setText(self._streamed)
+            self._set_state("speaking")
+        self._last_spoken = self._streamed
+        self.speaker.say(sentence, force=True, cache=False)
+
     def _on_action_done(self, reply, ui):
         muted = ui.endswith("|muted")
         ui = ui.replace("|muted", "")
-        from_ai = ui == "ai"
+        streamed = ui == "ai_streamed"
+        from_ai = ui in ("ai", "ai_streamed")
         if from_ai:
             ui = ""
         if self.settings is not None:
@@ -1391,7 +1415,7 @@ class HomeScreen(Backdrop):
         sink, self._sink = getattr(self, "_sink", None), None
         if sink is not None:                       # ответ — в чат
             sink(reply)
-            if reply and self.settings is not None and self.settings["chat_speak"]:
+            if reply and not streamed and self.settings is not None and self.settings["chat_speak"]:
                 self._last_spoken = reply
                 self.speaker.say(reply, cache=not from_ai)
             self._rest_state()
@@ -1408,7 +1432,10 @@ class HomeScreen(Backdrop):
         self._last_spoken = reply
         if reply and self.speaker.enabled:
             self._continue = dialog           # снова слушаем, когда договорит
-            self.speaker.say(reply, cache=not from_ai)
+            if not streamed:                  # потоковый ответ уже озвучивается по фразам
+                self.speaker.say(reply, cache=not from_ai)
+            elif not self.speaking and dialog:
+                self._arm(quiet=True)
         elif dialog:
             self._arm(quiet=True)
         self._rest_state()
@@ -1430,6 +1457,7 @@ class ProfileScreen(Backdrop):
 
     SECTIONS = [
         ("look", "Оформление"),
+        ("scenarios", "Сценарии и VPN"),
         ("city", "Город и погода"),
         ("name", "Имя помощника"),
         ("address", "Обращение"),
@@ -2027,6 +2055,7 @@ class ProfileScreen(Backdrop):
         self.ai_bridge.progress.connect(self._ai_progress)
         self.ai_bridge.done.connect(self._ai_done)
         self.ai_bridge.answer.connect(self._ai_answer)
+        self.ai_bridge.admin_done.connect(lambda ok, m: self._admin_done(ok, m))
 
     def _choose_ai(self, key):
         self._set("ai_mode", key)
@@ -2499,6 +2528,11 @@ class ProfileScreen(Backdrop):
             self.apps_scan.setText("Обновить список")
             self._fill_apps()
 
+    def _build_scenarios(self, lay):
+        from scenario_ui import ScenariosPage
+        self.scen_page = ScenariosPage(self)
+        lay.addWidget(self.scen_page)
+
     def _build_companion(self, lay):
         from companion import FIGURES, FigurePreview
         self._title(lay, "Компаньон", "Фигурка над панелью задач в правом нижнем углу. Когда "
@@ -2569,7 +2603,42 @@ class ProfileScreen(Backdrop):
         self.t_autostart = self._toggle_row(lay, "Запускать вместе с Windows",
                                             "Помощник будет готов сразу после включения компьютера.",
                                             "autostart")
+        self.t_admin = self._toggle_row(
+            lay, "Работать с правами администратора",
+            "Тогда VPN, обход блокировок и другие программы, которым нужны права администратора, "
+            "запускаются сразу — без окна «Разрешить изменения». Windows один раз спросит "
+            "разрешение. Нажать «Да» в этом окне за вас не может ни одна программа — так устроена "
+            "защита Windows, поэтому права выдаются SenioreM заранее.", None)
+        self.t_admin.toggled.connect(self._admin_changed)
+        self.admin_status = label("", 13, role="accent", wrap=True)
+        lay.addWidget(self.admin_status)
         lay.addStretch(1)
+
+    def _admin_changed(self, on):
+        if self._loading:
+            return
+        import elevate
+        if not on:
+            elevate.disable()
+            self.admin_status.setText("Выключено. После перезапуска SenioreM будет работать как обычно.")
+            return
+        self.admin_status.setText("Подтвердите разрешение в окне Windows…")
+
+        def work():
+            ok, msg = elevate.enable()
+            self.ai_bridge.admin_done.emit(ok, msg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _admin_done(self, ok, msg):
+        self.admin_status.setText(msg)
+        if not ok:
+            self._loading = True
+            self.t_admin.setChecked(False)
+            self._loading = False
+            return
+        import elevate
+        if elevate.relaunch():
+            QTimer.singleShot(600, self.win.force_close)
 
     def _build_account(self, lay):
         self._title(lay, "Аккаунт", "Логин, пароль и выход.")
@@ -2666,6 +2735,13 @@ class ProfileScreen(Backdrop):
         self.t_chime.setChecked(bool(settings["chime"]))
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
         self.t_autostart.setChecked(bool(settings["autostart"]))
+        try:
+            import elevate
+            self.t_admin.setChecked(elevate.enabled())
+            self.admin_status.setText("Сейчас SenioreM работает с правами администратора."
+                                      if elevate.is_admin() else "")
+        except Exception:  # noqa: BLE001
+            pass
         for sec, b in self.follow_buttons.items():
             b.setChecked(sec == int(settings["followup_seconds"]))
         self.f_ya_key.setText(settings["yandex_key"] or "")
@@ -2680,6 +2756,7 @@ class ProfileScreen(Backdrop):
         self._refresh_ai()
         self.full_history.set_items(settings["history"])
         self._refresh_comp()
+        self.scen_page.load(settings)
         self._loading = False
         self._refresh_preview()
 
@@ -2814,7 +2891,7 @@ class MainWindow(QWidget):
             return
         if self.companion is None:
             from companion import CompanionWindow
-            self.companion = CompanionWindow(on_click=self.smooth_restore)
+            self.companion = CompanionWindow(on_click=self.bring_to_front)
             self.speaker.speaking.connect(self.companion.set_speaking)
             self.speaker.said.connect(lambda t: self.companion.say(t, 4 + len(t) / 14))
         self.companion.configure(kind, bool(s["companion_anim"]), int(s["companion_size"] or 150))
@@ -2995,6 +3072,14 @@ class MainWindow(QWidget):
 
     def smooth_minimize(self):
         self._animate_opacity(self.windowOpacity(), 0.0, 180, self.showMinimized)
+
+    def bring_to_front(self):
+        """Нажали на персонажа: окно уже открыто — просто показываем, без мигания."""
+        if self.isMinimized() or not self.isVisible():
+            self.smooth_restore()
+            return
+        self.raise_()
+        self.activateWindow()
 
     def smooth_restore(self):
         self.setWindowOpacity(0.0)
@@ -3268,7 +3353,15 @@ def run_uitest(out_dir):
         T.set_appearance(app, accent="#38BDF8", background="space", clock_style="digital",
                          orb_style="jarvis")
         h.apply_widgets()
-        for sec in ("look", "city", "voice", "apps", "ai", "name", "wake"):
+        win.settings.set("scenarios", [
+            {"id": "game", "name": "Игровой режим", "phrases": ["игровой режим", "давай поиграем"],
+             "steps": [{"type": "app", "name": "Steam", "target": ["url", "steam://open/main"], "admin": False},
+                       {"type": "app", "name": "zapret-discord-youtube", "target": ["path", "C:\\zapret"],
+                        "admin": True},
+                       {"type": "vpn"}, {"type": "command", "text": "громкость 40"}]},
+            {"id": "home", "name": "Я дома", "phrases": ["я дома"],
+             "steps": [{"type": "site", "url": "https://music.yandex.ru"}]}])
+        for sec in ("look", "scenarios", "city", "voice", "apps", "ai", "name", "wake", "startup"):
             win.open_profile(sec)
             shot(win, f"05-profile-{sec}")
         win.open_profile("look")
@@ -3370,12 +3463,18 @@ def main():
         except Exception:  # noqa: BLE001
             pass
 
+    try:
+        import elevate
+        if elevate.maybe_restart_elevated():   # режим администратора: перезапуск через задачу
+            return 0
+    except Exception:  # noqa: BLE001
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName("SenioreM")
     apply_app_theme(app)
 
     lock = QLockFile(str(config.data_dir() / "app.lock"))
-    if not lock.tryLock(15000 if "--restart" in sys.argv else 100):
+    if not lock.tryLock(15000 if ("--restart" in sys.argv or "--elevated" in sys.argv) else 100):
         QMessageBox.information(None, "SenioreM", "SenioreM уже запущен.")
         return 0
 

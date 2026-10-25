@@ -272,7 +272,7 @@ def _uia_client():
 CLICKABLE = {50000, 50005, 50011, 50007, 50019, 50002, 50013, 50020, 50003, 50006, 50021, 50031}
 
 
-def find_uia(hwnd, text, limit_s=2.5):
+def find_uia(hwnd, text, limit_s=2.5, min_score=0.78):
     """Элемент окна с похожей надписью (кнопка, ссылка, пункт меню). -> (x, y, имя) или None."""
     import comtypes
     try:
@@ -303,7 +303,7 @@ def find_uia(hwnd, text, limit_s=2.5):
                 best, best_sc = ((r.left + r.right) / 2, (r.top + r.bottom) / 2, name), sc
         except Exception:  # noqa: BLE001
             continue
-    return best if best_sc >= 0.78 else None
+    return best if best_sc >= min_score else None
 
 
 OCR_PS = r"""
@@ -376,9 +376,10 @@ def ocr_words(left, top, width, height):
     return data
 
 
-def find_ocr(rect, text):
+def find_ocr(rect, text, min_score=0.72, words=None):
     left, top, right, bottom = rect
-    words = ocr_words(left, top, right - left, bottom - top)
+    if words is None:
+        words = ocr_words(left, top, right - left, bottom - top)
     if not words:
         return None
     import sites
@@ -401,7 +402,36 @@ def find_ocr(rect, text):
             x2 = max(g["x"] + g["w"] for g in group)
             y2 = max(g["y"] + g["h"] for g in group)
             best, best_sc = ((x1 + x2) / 2, (y1 + y2) / 2, phrase), sc
-    return best if best_sc >= 0.72 else None
+    return best if best_sc >= min_score else None
+
+
+def click_in(win, texts, min_score=0.85):
+    """Нажать в окне первую найденную кнопку из списка надписей. -> надпись или None."""
+    _focus(win)
+    hit = None
+    for t in texts:
+        try:
+            hit = find_uia(win.hwnd, t, limit_s=1.5, min_score=min_score)
+        except Exception:  # noqa: BLE001
+            hit = None
+        if hit:
+            break
+    if hit is None:
+        try:
+            rect = _rect(win.hwnd)
+            words = ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+            for t in texts:
+                hit = find_ocr(rect, t, min_score=min_score, words=words)
+                if hit:
+                    break
+        except Exception:  # noqa: BLE001
+            hit = None
+    if hit is None:
+        return None
+    x, y, name = hit
+    _focus(win)
+    click_at(x, y)
+    return name
 
 
 def click_text(text):

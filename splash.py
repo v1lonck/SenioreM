@@ -475,7 +475,7 @@ class Splash(QWidget):
         except Exception:  # noqa: BLE001
             pass
         subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                          "/CLOSEAPPLICATIONS"])
+                          "/CLOSEAPPLICATIONS", "/nosplash=1"])
         os._exit(0)   # сразу освобождаем файлы программы для установщика
 
     def _update_failed(self, msg):

@@ -172,6 +172,11 @@ def _start(hit, why):
         return f"{title} уже открыта — разворачиваю."
     if state == "open":
         return f"{title} уже открыта — переключаю на неё."
+    try:
+        import scenarios
+        scenarios.remember_if_vpn(title, target)
+    except Exception:  # noqa: BLE001
+        pass
     return f"{sites.launch(target, title, why)} {title}."
 
 
@@ -456,6 +461,12 @@ def run(intent: dict, cfg: dict):
         import control
         if a in control.ACTIONS:
             return control.run(intent), ""
+        import system
+        if a in system.ACTIONS:
+            return system.run(intent), ""
+        import scenarios
+        if a in scenarios.ACTIONS:
+            return scenarios.run(intent, cfg), ""
         if a == "desktop":
             try:
                 import comtypes
