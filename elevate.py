@@ -160,7 +160,41 @@ def maybe_restart_elevated():
     через задачу. -> True, если текущий процесс должен завершиться."""
     if sys.platform != "win32" or "--elevated" in sys.argv or is_admin() or not enabled():
         return False
-    if relaunch():
+    if relaunch() and _elevated_started():
+        return True
+    try:
+        import config
+        config.startup_mark("перезапуск с правами администратора не удался — работаю без них")
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _elevated_started(wait=8.0):
+    """Проверяем, что копия с правами администратора действительно запустилась —
+    иначе программа просто закрылась бы и ничего не открылось."""
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
         time.sleep(0.3)
         return True
+    me = os.getpid()
+    exe = os.path.basename(sys.executable).lower()
+    end = time.time() + wait
+    started = psutil.Process(me).create_time()
+    while time.time() < end:
+        for p in psutil.process_iter(["pid", "name"]):
+            try:
+                if p.info["pid"] == me or (p.info["name"] or "").lower() != exe:
+                    continue
+                if p.create_time() < started:
+                    continue
+                try:
+                    if "--elevated" in (p.cmdline() or []):
+                        return True
+                except psutil.AccessDenied:
+                    return True          # процесс администратора: командную строку не видно — это он
+            except Exception:  # noqa: BLE001
+                continue
+        time.sleep(0.3)
     return False
