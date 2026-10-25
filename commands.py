@@ -163,6 +163,10 @@ SMALL_TALK = [
 ]
 
 
+SELF_WORDS = {"себя", "окно", "программу", "сеньор", "сеньора", "синьор", "сеньер", "приложение",
+              "помощника", "все", "всё", "все окна"}
+
+
 def parse(text: str) -> dict:
     t = normalize(text)
     w = [SLANG.get(x, x) for x in t.split()]
@@ -304,6 +308,12 @@ def parse(text: str) -> dict:
     if _has(t, "предыдущ"):
         return {"action": "media", "key": "prev"}
 
+    m = re.search(r"\b(сверни|разверни|переключись на|переключи на|перейди в|перейди на)\s+(.+)$", t)
+    if m:
+        target = m.group(2).strip()
+        if target not in SELF_WORDS and not target.startswith(("себя", "окно", "все", "всё")):
+            return {"action": "app_window", "mode": "min" if m.group(1) == "сверни" else "show",
+                    "name": target}
     if _has(t, "сверни"):
         return {"action": "window", "mode": "minimize"}
     if _has(t, "разверни", "покажись", "вернись", "покажи окно"):

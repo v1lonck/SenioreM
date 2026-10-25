@@ -159,6 +159,22 @@ def open_app(app, cfg):
 
 
 
+def _start(hit, why):
+    """Запустить найденную программу — или показать её, если она уже открыта."""
+    import sites
+    title, target = hit
+    try:
+        import procs
+        state = procs.bring_up(title, target)
+    except Exception:  # noqa: BLE001
+        state = None
+    if state == "minimized":
+        return f"{title} уже открыта — разворачиваю."
+    if state == "open":
+        return f"{title} уже открыта — переключаю на неё."
+    return f"{sites.launch(target, title, why)} {title}."
+
+
 def open_by_name(name, cfg):
     """Порядок: приложение из меню «Пуск» -> скачанная программа или папка (Загрузки,
     Рабочий стол, Документы) -> сайт -> первый результат поиска.
@@ -173,16 +189,16 @@ def open_by_name(name, cfg):
         # известный сайт (ютуб, вк…): приложение — только при точном совпадении названия
         prog = sites.find_program(name, threshold=0.95)
         if prog:
-            return f"{sites.launch(prog[1])} {prog[0]}."
+            return _start(prog, f"открой {name}")
         webbrowser.open(site[0])
         return f"Открываю {pretty}."
     if "сайт" not in name:
         prog = sites.find_program(name)
         if prog:
-            return f"{sites.launch(prog[1])} {prog[0]}."
+            return _start(prog, f"открой {name}")
         local = sites.find_local(name)
         if local:
-            return f"{sites.launch(local[1])} {local[0]}."
+            return _start(local, f"открой {name}")
     site = sites.find_site(name)
     if site:
         webbrowser.open(site[0])
@@ -190,7 +206,7 @@ def open_by_name(name, cfg):
     if re.search(r"\bигр", name) or len(sites.all_apps()) and _looks_like_game(pretty):
         return (f"Не нашёл «{pretty}» среди игр и программ на компьютере. Если она только что "
                 f"установлена — скажите «обнови список программ».")
-    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote("\\" + pretty))
+    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote(pretty))   # обычный поиск, без «мне повезёт»
     return f"Открываю {pretty}."
 
 
@@ -308,6 +324,15 @@ def close_app(intent):
         return "Открытых окон нет."
 
     import sites
+    # 1) по списку программ: «закрой озу» -> osu! -> процессы из папки osu!
+    try:
+        import procs
+        hit = sites.find_program(name, threshold=0.85)
+        n, exes = procs.close(name, hit[1] if hit else None)
+        if n:
+            return f"Закрыл {hit[0] if hit else name}."
+    except Exception as e:  # noqa: BLE001
+        _log_err(f"close {name}: {e!r}")
     keys = sites.keys_for(name) | {name, _translit(name), ALIASES.get(name, "")}
     if app == "youtube":
         keys = {"youtube"}
@@ -328,16 +353,45 @@ def close_app(intent):
         found = bool(_close_pids(pids, names)) or found
     return f"Закрыл {name}." if found else f"Не нашёл открытую программу «{name}»."
 
+def app_window(intent):
+    """«Сверни осу», «разверни телеграм», «переключись на дискорд»."""
+    import procs
+    import sites
+    name = (intent.get("name") or "").strip()
+    hit = sites.find_program(name, threshold=0.85)
+    wins, _ = procs.find(name, hit[1] if hit else None)
+    title = hit[0] if hit else name
+    if not wins:
+        if intent.get("mode") == "show" and hit:
+            return _start(hit, f"разверни {name}")
+        return f"{title} сейчас не открыта."
+    if intent.get("mode") == "min":
+        for w in wins:
+            ctypes.windll.user32.ShowWindow(w.hwnd, 6)      # SW_MINIMIZE
+        return f"Свернул {title}."
+    procs.activate(wins[0].hwnd)
+    return f"Показываю {title}."
+
+
 def try_launch(text):
-    """Одно-два слова, ТОЧНО совпавшие с программой на компьютере («осу», «запрет»), — запускаем.
+    """Одно-два слова, ТОЧНО совпавшие с названием программы («осу», «запрет»), — запускаем.
     Случайные слова из разговора программы не запускают."""
-    if not text or len(text.split()) > 2:
+    if not text or len(text.split()) > 2 or len(text.replace(" ", "")) < 3:
         return None
     import sites
-    hit = sites.find_program(text, threshold=0.92) or sites.find_local(text, threshold=0.92)
+    hit = sites.find_program(text, threshold=0.97) or sites.find_local(text, threshold=0.97)
     if hit:
-        return f"{sites.launch(hit[1])} {hit[0]}."
+        return _start(hit, f"название без «открой»: {text}")
     return None
+
+
+def _log_err(text):
+    try:
+        import config
+        with open(config.data_dir() / "error.log", "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------- главный вход ----------------
@@ -385,6 +439,8 @@ def run(intent: dict, cfg: dict):
             return f"Готово. Я знаю {len(sites.all_apps())} программ и игр.", ""
         if a == "close":
             return close_app(intent), ""
+        if a == "app_window":
+            return app_window(intent), ""
         if a == "search":
             q = intent.get("query") or ""
             if not q:
@@ -431,7 +487,7 @@ def run(intent: dict, cfg: dict):
         if a == "empty":
             return "", ""
         # Неизвестная короткая фраза — может, это название программы («запрет», «осу»)
-        launched = try_launch(intent.get("text", ""))
+        launched = None if intent.get("followup") else try_launch(intent.get("text", ""))
         if launched:
             return launched, ""
         if intent.get("typed"):

@@ -8,7 +8,7 @@ import time
 import traceback
 import webbrowser
 
-from PySide6.QtCore import QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainterPath,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout,
@@ -33,7 +33,7 @@ from splash import Splash
 from settings import (NAME_PRESETS, WAKE_REPLY_PRESETS, Settings, greeting, personalize,
                       set_autostart)
 from theme import (Backdrop, Clickable, ConfirmDialog,
-                   LogoMark, PlayButton, Toggle,
+                   LogoMark, PlayButton, ThumbCard, Toggle,
                    apply_app_theme, button, card, field, font, hline, label, set_role,
                    switch_page, window_controls)
 from voice import Chime, Listener, Speaker
@@ -311,80 +311,111 @@ class AuthScreen(Backdrop):
 
 # ================================================================== главный экран
 ORB_STYLES = [
-    ("sphere", "Сфера", "Светящийся шар и волны"),
-    ("waves", "Волны", "Кольца расходятся от центра"),
-    ("particles", "Частицы", "Рой частиц на орбитах"),
+    ("jarvis", "Джарвис", "Кольца интерфейса и светящееся ядро"),
+    ("hologram", "Голограмма", "Вращающаяся сфера из точек"),
+    ("siri", "Волна", "Переливающиеся волны голоса"),
+    ("sphere", "Сфера", "Светящийся шар и круги"),
     ("equalizer", "Эквалайзер", "Столбики по кругу"),
-    ("blob", "Капля", "Живая переливающаяся форма"),
-    ("rings", "Кольца", "Вращающиеся дуги"),
 ]
+ORB_ALIASES = {"rings": "jarvis", "particles": "hologram", "waves": "siri", "blob": "sphere"}
+
+
+def _fib_sphere(n):
+    pts = []
+    golden = math.pi * (3 - math.sqrt(5))
+    for i in range(n):
+        y = 1 - 2 * (i + 0.5) / n
+        r = math.sqrt(max(0.0, 1 - y * y))
+        a = golden * i
+        pts.append((r * math.cos(a), y, r * math.sin(a)))
+    return pts
 
 
 class Orb(QWidget):
     """Круг-индикатор. Когда вы говорите — расширяется от вашего голоса; когда отвечает
-    помощник — движется. Вид выбирается в профиле → «Оформление» → «Круг»."""
+    помощник — движется. Анимация считается по реальному времени (а не по числу кадров),
+    поэтому остаётся плавной, даже если компьютер занят."""
 
-    def __init__(self, size=340):
+    def __init__(self, size=340, preview=None):
         super().__init__()
         self.setFixedSize(size, size)
-        self.state = "loading"
-        self._level = 0.0
+        self.preview = preview        # стиль для предпросмотра в настройках
+        self.state = "speaking" if preview else "loading"
+        self._level = 0.0         # сглаженная громкость вашего голоса
         self._target = 0.0
+        self._target_t = 0.0
         self._heat = 0.0          # 0 — спокойный, 1 — яркий
-        self._talk = 0.0          # «громкость» речи помощника (для анимации)
+        self._talk = 0.0          # «громкость» речи помощника
         self._t = 0.0
         self._ripples = []        # [радиус 0..1, прозрачность]
         self._last_ripple = 0.0
-        import random
-        rnd = random.Random(7)
-        self._parts = [(rnd.uniform(0.35, 0.95), rnd.uniform(0, 6.283), rnd.uniform(0.3, 1.2),
-                        rnd.uniform(1.2, 3.2)) for _ in range(70)]
-        self._bars = [0.0] * 48
+        self._spin = 0.0          # накопленный угол вращения (плавно ускоряется)
+        self._bars = [0.0] * 56
+        self._sphere = _fib_sphere(240)
+        self._clock = time.perf_counter()
         timer = QTimer(self)
+        timer.setTimerType(Qt.PreciseTimer)
         timer.timeout.connect(self._tick)
-        timer.start(33)
+        timer.start(33 if preview else 16)
+        self._timer = timer
 
     def push_level(self, v):
-        self._target = max(self._target, v)
+        self._target = max(v, self._target * 0.6)
+        self._target_t = self._t
         if v > 0.10 and self._t - self._last_ripple > 0.22:
             self._ripples.append([0.0, min(1.0, 0.35 + v)])
             self._last_ripple = self._t
 
+    @staticmethod
+    def _ease(cur, goal, dt, tau):
+        return cur + (goal - cur) * (1.0 - math.exp(-dt / tau))
+
     def _tick(self):
+        now = time.perf_counter()
+        dt = min(0.1, max(0.0, now - self._clock))
+        self._clock = now
         w = self.window()
-        if w is not None and w.isMinimized():
-            return                                  # свёрнуто — не тратим процессор
-        dt = 0.033
+        if w is not None and (w.isMinimized() or not w.isVisible()) or not self.isVisible():
+            return                                  # не видно — не тратим процессор
         self._t += dt
-        self._level += (self._target - self._level) * 0.35
-        self._target *= 0.78
+        if self.preview:                            # в настройках: «говорит» и «слушает» по очереди
+            ph = (self._t % 6.0)
+            self.state = "speaking" if ph < 3 else "armed"
+            if ph >= 3:
+                self.push_level(0.25 + 0.35 * abs(math.sin(self._t * 6) * math.sin(self._t * 1.7)))
+        # голос: быстро нарастает, мягко затухает; если уровень давно не приходил — гасим
+        if self._t - self._target_t > 0.12:
+            self._target = self._ease(self._target, 0.0, dt, 0.12)
+        tau = 0.045 if self._target > self._level else 0.16
+        self._level = self._ease(self._level, self._target, dt, tau)
         speaking = self.state == "speaking"
-        if speaking:
-            tt = self._t
-            want = 0.35 + 0.3 * abs(math.sin(tt * 7.3) * math.sin(tt * 2.9 + 1.0))
-        else:
-            want = 0.0
-        self._talk += (want - self._talk) * 0.3
+        tt = self._t
+        want = (0.4 + 0.35 * abs(math.sin(tt * 7.3) * math.sin(tt * 2.9 + 1.0))) if speaking else 0.0
+        self._talk = self._ease(self._talk, want, dt, 0.09)
         active = self.state in ("armed", "busy") or self._level > 0.06
-        goal = 1.0 if active else (0.7 if speaking else 0.0)
-        self._heat += (goal - self._heat) * 0.1
+        goal = 1.0 if active else (0.75 if speaking else 0.0)
+        self._heat = self._ease(self._heat, goal, dt, 0.3)
+        energy = max(self._level, self._talk)
+        self._spin += dt * (0.35 + 0.9 * self._heat + 2.2 * energy)
+        if (active or speaking or energy > 0.02) and not self.preview:
+            T.mark_focus()                          # фон замирает, пока идёт разговор
         for r in self._ripples:
-            r[0] += 0.02
-            r[1] *= 0.94
+            r[0] += dt * 0.65
+            r[1] *= math.exp(-dt * 2.0)
         self._ripples = [r for r in self._ripples if r[0] < 1.0 and r[1] > 0.02]
         if speaking and self._t - self._last_ripple > 0.45:
             self._ripples.append([0.0, 0.5])
             self._last_ripple = self._t
-        energy = max(self._level, self._talk)
         for i in range(len(self._bars)):
             n = 0.5 + 0.5 * math.sin(self._t * (3 + i % 5) + i * 1.7)
             goal_b = 0.08 + energy * (0.35 + 0.65 * n)
-            self._bars[i] += (goal_b - self._bars[i]) * 0.35
+            self._bars[i] = self._ease(self._bars[i], goal_b, dt, 0.06)
         self.update()
 
     @staticmethod
     def _mix(a, b, t):
         a, b = QColor(a), QColor(b)
+        t = max(0.0, min(1.0, t))
         return QColor(int(a.red() + (b.red() - a.red()) * t),
                       int(a.green() + (b.green() - a.green()) * t),
                       int(a.blue() + (b.blue() - a.blue()) * t))
@@ -394,12 +425,12 @@ class Orb(QWidget):
             return QColor(T.ERROR)
         if self.state == "speaking":
             return self._mix(T.ACCENT_SOFT, "#FFFFFF", breathe * 0.4)
-        return self._mix(T._mix(T.LINE, "#FFFFFF", 0.12), T.ACCENT, self._heat)
+        return self._mix(T._mix(T.LINE, "#FFFFFF", 0.18), T.ACCENT, max(self._heat, 0.35))
 
-    def _glow(self, p, c, R, core):
+    def _glow(self, p, c, R, core, strength=1.0):
         g = QRadialGradient(c, R)
         glow = QColor(core)
-        glow.setAlpha(int(30 + 70 * self._heat + 70 * max(self._level, self._talk)))
+        glow.setAlpha(int(min(255, (30 + 70 * self._heat + 80 * max(self._level, self._talk)) * strength)))
         g.setColorAt(0.0, glow)
         g.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.setPen(Qt.NoPen)
@@ -413,12 +444,176 @@ class Orb(QWidget):
         R = min(self.width(), self.height()) / 2 - 4
         breathe = (math.sin(self._t * 2.2) + 1) / 2
         core = self._core(breathe)
-        self._glow(p, c, R, core)
-        style = T.APPEARANCE.get("orb_style", "sphere")
-        getattr(self, "_draw_" + style, self._draw_sphere)(p, c, R, core, breathe)
+        style = self.preview or T.APPEARANCE.get("orb_style", "jarvis")
+        style = ORB_ALIASES.get(style, style)
+        getattr(self, "_draw_" + style, self._draw_jarvis)(p, c, R, core, breathe)
+
+    # ---- Джарвис: кольца интерфейса, деления, ядро-реактор
+    def _draw_jarvis(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        self._glow(p, c, R * (0.75 + 0.2 * energy), core, 0.9)
+        acc = QColor(T.ACCENT)
+        soft = QColor(T.ACCENT_SOFT)
+        spin = self._spin
+        p.setBrush(Qt.NoBrush)
+        # внешнее тонкое кольцо с делениями
+        r_out = R * (0.9 + 0.03 * energy)
+        col = QColor(soft)
+        col.setAlphaF(0.35 + 0.35 * self._heat)
+        p.setPen(QPen(col, 1.2))
+        p.drawEllipse(c, r_out, r_out)
+        ticks = []
+        for i in range(72):
+            a = i / 72 * 2 * math.pi + spin * 0.15
+            long_ = i % 6 == 0
+            r1 = r_out - R * (0.06 if long_ else 0.03)
+            ticks.append(QLineF(c.x() + r1 * math.cos(a), c.y() + r1 * math.sin(a),
+                                c.x() + r_out * math.cos(a), c.y() + r_out * math.sin(a)))
+        col.setAlphaF(0.3 + 0.45 * self._heat)
+        p.setPen(QPen(col, 1.4))
+        p.drawLines(ticks)
+        # сегментированные кольца, вращаются в разные стороны
+        rings = ((0.76, 1.0, 7, 30, 3.0), (0.64, -1.6, 3, 80, 5.0), (0.53, 2.3, 12, 18, 2.0))
+        for k, (rad, sp, segs, gap, width) in enumerate(rings):
+            rr = R * rad * (1 + 0.06 * energy * math.sin(self._t * 3 + k))
+            rect = QRectF(c.x() - rr, c.y() - rr, rr * 2, rr * 2)
+            col = self._mix(acc, soft, k / 2)
+            col.setAlphaF(0.45 + 0.5 * max(self._heat, energy))
+            pen = QPen(col, width * (1 + 0.8 * energy))
+            pen.setCapStyle(Qt.FlatCap)
+            p.setPen(pen)
+            span = 360 / segs
+            start = math.degrees(spin * sp)
+            for s in range(segs):
+                p.drawArc(rect, int((start + s * span) * 16), int((span - gap / segs * 3) * 16))
+        # «сканер» — яркая дуга
+        rr = R * 0.84
+        col = QColor(soft)
+        col.setAlphaF(0.5 + 0.5 * energy)
+        pen = QPen(col, 2.5)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(QRectF(c.x() - rr, c.y() - rr, rr * 2, rr * 2), int(-math.degrees(spin * 1.8) * 16),
+                  int((40 + 80 * energy) * 16))
+        # ядро-реактор
+        r = R * (0.3 + 0.12 * self._level + 0.05 * self._talk + 0.015 * breathe)
+        g = QRadialGradient(c, r)
+        g.setColorAt(0.0, QColor("#FFFFFF"))
+        g.setColorAt(0.35, self._mix(core, "#FFFFFF", 0.55))
+        mid = QColor(core)
+        mid.setAlphaF(0.85)
+        g.setColorAt(0.7, mid)
+        g.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(g))
+        p.drawEllipse(c, r, r)
+        # треугольные «лопасти» вокруг ядра (как у реактора)
+        col = QColor(soft)
+        col.setAlphaF(0.55 + 0.4 * self._heat)
+        p.setPen(QPen(col, 1.6))
+        for i in range(3):
+            a0 = math.degrees(-spin * 0.6) + i * 120
+            rr = R * 0.4
+            p.drawArc(QRectF(c.x() - rr, c.y() - rr, rr * 2, rr * 2), int(a0 * 16), int(70 * 16))
+
+    # ---- голограмма: сфера из точек в 3D
+    def _draw_hologram(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        self._glow(p, c, R * 0.85, core, 0.7)
+        ay = self._spin * 0.8
+        ax = 0.45 + 0.15 * math.sin(self._t * 0.4)
+        cy_, sy_ = math.cos(ay), math.sin(ay)
+        cx_, sx_ = math.cos(ax), math.sin(ax)
+        base = R * (0.5 + 0.08 * breathe * (1 - energy) + 0.12 * self._level)
+        t = self._t
+        pts = []
+        for x, y, z in self._sphere:
+            bump = 1.0
+            if energy > 0.01:
+                bump += energy * 0.22 * math.sin(x * 4 + t * 5) * math.sin(y * 5 - t * 4) \
+                    + self._talk * 0.08 * math.sin(z * 7 + t * 9)
+            X, Y, Z = x * bump, y * bump, z * bump
+            X, Z = X * cy_ + Z * sy_, -X * sy_ + Z * cy_
+            Y, Z = Y * cx_ - Z * sx_, Y * sx_ + Z * cx_
+            pts.append((Z, X, Y))
+        pts.sort()
+        p.setPen(Qt.NoPen)
+        soft = QColor(T.ACCENT_SOFT)
+        acc = QColor(T.ACCENT)
+        for Z, X, Y in pts:
+            depth = (Z + 1.3) / 2.6                   # 0 — сзади, 1 — спереди
+            persp = 1 / (1.9 - 0.6 * Z)
+            px = c.x() + X * base * persp * 1.3
+            py = c.y() + Y * base * persp * 1.3
+            col = self._mix(acc, soft, depth)
+            col.setAlphaF(0.12 + 0.8 * depth * (0.55 + 0.45 * max(self._heat, energy)))
+            p.setBrush(col)
+            s = 0.8 + 2.2 * depth * (1 + 0.6 * energy)
+            p.drawEllipse(QPointF(px, py), s, s)
+        # экваториальное кольцо
+        col = QColor(soft)
+        col.setAlphaF(0.25 + 0.3 * self._heat)
+        p.setPen(QPen(col, 1.2))
+        p.setBrush(Qt.NoBrush)
+        rr = base * 1.3 * 0.75
+        p.drawEllipse(c, rr * 1.25, rr * 1.25 * abs(math.sin(ax)) + 2)
+
+    # ---- волна: несколько полупрозрачных лент
+    def _draw_siri(self, p, c, R, core, breathe):
+        energy = max(self._level, self._talk)
+        self._glow(p, c, R * 0.95, core, 0.8)
+        h, s_, v, _ = QColor(T.ACCENT).getHsv()
+        h = h if h >= 0 else 220
+        cols = [QColor.fromHsv(h, max(120, s_), 255), QColor.fromHsv((h + 50) % 360, 200, 255),
+                QColor.fromHsv((h + 310) % 360, 190, 255), QColor.fromHsv((h + 160) % 360, 120, 255)]
+        width = R * 1.6
+        x0 = c.x() - width / 2
+        amp_base = R * (0.06 + 0.5 * energy + 0.04 * breathe * (1 - energy))
+        t = self._t
+        p.setPen(Qt.NoPen)
+        p.setCompositionMode(QPainter.CompositionMode_Plus)
+        for k, col in enumerate(cols):
+            freq = 1.6 + 0.5 * k
+            ph = t * (2.2 + 0.7 * k) + k * 1.9
+            amp = amp_base * (0.55 + 0.45 * math.sin(t * 1.3 + k * 2.1)) * (1 - 0.15 * k)
+            top, bot = [], []
+            for i in range(65):
+                u = i / 64
+                env = math.sin(math.pi * u) ** 2          # к краям — ноль
+                y = amp * env * math.sin(u * freq * 2 * math.pi + ph)
+                top.append(QPointF(x0 + u * width, c.y() - abs(y) - 0.6))
+                bot.append(QPointF(x0 + u * width, c.y() + abs(y) * 0.85 + 0.6))
+            path = QPainterPath()
+            path.moveTo(top[0])
+            for pt in top[1:]:
+                path.lineTo(pt)
+            for pt in reversed(bot):
+                path.lineTo(pt)
+            path.closeSubpath()
+            g = QLinearGradient(c.x(), c.y() - amp, c.x(), c.y() + amp)
+            c1 = QColor(col)
+            c1.setAlphaF(0.55)
+            c2 = QColor(col)
+            c2.setAlphaF(0.12)
+            g.setColorAt(0, c1)
+            g.setColorAt(0.5, c2)
+            g.setColorAt(1, c1)
+            p.setBrush(QBrush(g))
+            p.drawPath(path)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        line = QColor("#FFFFFF")
+        line.setAlphaF(0.35 + 0.4 * energy)
+        p.setPen(QPen(line, 1.2))
+        p.drawLine(QPointF(x0 + width * 0.08, c.y()), QPointF(x0 + width * 0.92, c.y()))
+        col = QColor(T.ACCENT_SOFT)
+        col.setAlphaF(0.25 + 0.3 * self._heat)
+        p.setPen(QPen(col, 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, R * 0.88, R * 0.88)
 
     # ---- сфера (классика)
     def _draw_sphere(self, p, c, R, core, breathe):
+        self._glow(p, c, R, core)
         for rad, alpha in self._ripples:
             col = QColor(core)
             col.setAlphaF(max(0.0, alpha * (1 - rad)))
@@ -447,110 +642,68 @@ class Orb(QWidget):
         p.setBrush(QBrush(cg))
         p.drawEllipse(c, r, r)
 
-    # ---- волны
-    def _draw_waves(self, p, c, R, core, breathe):
-        energy = max(self._level, self._talk)
-        speed = 0.25 + 1.2 * energy
-        for i in range(7):
-            ph = (self._t * speed * 0.35 + i / 7) % 1.0
-            rr = R * (0.18 + 0.8 * ph)
-            col = QColor(core)
-            col.setAlphaF(max(0.0, (1 - ph) * (0.25 + 0.6 * self._heat + 0.5 * energy)))
-            p.setPen(QPen(col, 1.5 + 3 * (1 - ph) * energy))
-            p.setBrush(Qt.NoBrush)
-            if self.state == "speaking":
-                path = QPainterPath()
-                for k in range(73):
-                    a = k / 72 * 2 * math.pi
-                    wob = 1 + 0.05 * self._talk * math.sin(a * 6 + self._t * 6 + i)
-                    pt = QPointF(c.x() + rr * wob * math.cos(a), c.y() + rr * wob * math.sin(a))
-                    path.moveTo(pt) if k == 0 else path.lineTo(pt)
-                p.drawPath(path)
-            else:
-                p.drawEllipse(c, rr, rr)
-        r = R * (0.16 + 0.3 * self._level + 0.05 * breathe)
-        p.setPen(Qt.NoPen)
-        p.setBrush(core)
-        p.drawEllipse(c, r, r)
-
-    # ---- частицы
-    def _draw_particles(self, p, c, R, core, breathe):
-        energy = max(self._level, self._talk)
-        spin = 0.25 + 1.6 * self._talk + 0.6 * self._heat
-        p.setPen(Qt.NoPen)
-        for rad, ang, spd, size in self._parts:
-            a = ang + self._t * spd * spin
-            rr = R * rad * (0.55 + 0.45 * (0.3 + 0.7 * self._level) + 0.05 * math.sin(self._t * 2 + ang))
-            if self.state == "speaking":
-                rr *= 1 + 0.12 * self._talk * math.sin(self._t * 8 + ang * 3)
-            pt = QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a) * 0.92)
-            col = QColor(core)
-            col.setAlphaF(0.35 + 0.6 * rad * (0.4 + 0.6 * max(self._heat, energy)))
-            p.setBrush(col)
-            p.drawEllipse(pt, size * (1 + energy), size * (1 + energy))
-        r = R * (0.12 + 0.1 * energy + 0.03 * breathe)
-        p.setBrush(self._mix(core, "#FFFFFF", 0.35))
-        p.drawEllipse(c, r, r)
-
     # ---- эквалайзер
     def _draw_equalizer(self, p, c, R, core, breathe):
+        self._glow(p, c, R * 0.8, core, 0.8)
         n = len(self._bars)
         inner = R * 0.36
+        width = max(2.0, R * 0.026)
         for i, v in enumerate(self._bars):
-            a = i / n * 2 * math.pi - math.pi / 2 + self._t * 0.15
+            a = i / n * 2 * math.pi - math.pi / 2 + self._spin * 0.1
             length = R * 0.55 * min(1.0, v + 0.02 * breathe)
             x1, y1 = c.x() + inner * math.cos(a), c.y() + inner * math.sin(a)
             x2, y2 = c.x() + (inner + length) * math.cos(a), c.y() + (inner + length) * math.sin(a)
             col = self._mix(core, T.ACCENT_SOFT, i / n)
             col.setAlphaF(0.55 + 0.45 * self._heat)
-            pen = QPen(col, max(2.0, R * 0.028))
+            pen = QPen(col, width)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
         p.setPen(QPen(T.qcolor(T.ACCENT, 120), 1.2))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(c, inner * 0.92, inner * 0.92)
-
-    # ---- живая капля
-    def _draw_blob(self, p, c, R, core, breathe):
-        energy = max(self._level, self._talk)
-        base = R * (0.42 + 0.25 * self._level)
-        path = QPainterPath()
-        for k in range(97):
-            a = k / 96 * 2 * math.pi
-            wob = (0.06 + 0.22 * energy) * (math.sin(a * 3 + self._t * 1.7) * 0.5 +
-                                             math.sin(a * 5 - self._t * 2.3) * 0.3 +
-                                             math.sin(a * 2 + self._t * 0.9) * 0.2)
-            rr = base * (1 + wob + 0.02 * breathe)
-            pt = QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a))
-            path.moveTo(pt) if k == 0 else path.lineTo(pt)
-        path.closeSubpath()
-        g = QRadialGradient(QPointF(c.x() - base * 0.3, c.y() - base * 0.35), base * 1.6)
+        r = inner * (0.55 + 0.25 * max(self._level, self._talk))
+        g = QRadialGradient(c, r)
         g.setColorAt(0, self._mix(core, "#FFFFFF", 0.5))
-        g.setColorAt(0.6, core)
-        g.setColorAt(1, self._mix(core, "#000000", 0.35))
-        p.setPen(QPen(T.qcolor(T.ACCENT_SOFT, 120), 1.5))
-        p.setBrush(QBrush(g))
-        p.drawPath(path)
-
-    # ---- вращающиеся кольца
-    def _draw_rings(self, p, c, R, core, breathe):
-        energy = max(self._level, self._talk)
-        for i, (rad, spd, span) in enumerate(((0.82, 0.6, 250), (0.66, -0.9, 200),
-                                              (0.50, 1.3, 150), (0.36, -1.8, 110))):
-            ang = (self._t * spd * (1 + 2.5 * self._talk + self._heat)) * 57.3
-            col = self._mix(core, T.ACCENT_SOFT, i / 4)
-            col.setAlphaF(0.4 + 0.5 * max(self._heat, energy))
-            pen = QPen(col, R * (0.025 + 0.03 * energy))
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            rr = R * rad * (1 + 0.08 * self._level)
-            p.drawArc(QRectF(c.x() - rr, c.y() - rr, rr * 2, rr * 2), int(ang * 16),
-                      int((span + 60 * energy) * 16))
-        r = R * (0.14 + 0.12 * energy + 0.02 * breathe)
+        g.setColorAt(1, QColor(0, 0, 0, 0))
         p.setPen(Qt.NoPen)
-        p.setBrush(self._mix(core, "#FFFFFF", 0.3))
+        p.setBrush(QBrush(g))
         p.drawEllipse(c, r, r)
+
+
+class OrbCard(QWidget):
+    """Живой предпросмотр стиля круга в настройках."""
+    clicked = Signal()
+
+    def __init__(self, style, title, size=150):
+        super().__init__()
+        self.setFixedSize(size, size + 34)
+        self.setCursor(Qt.PointingHandCursor)
+        self.title = title
+        self.selected = False
+        self.orb = Orb(size - 20, preview=style)
+        self.orb.setParent(self)
+        self.orb.move(10, 6)
+        self.orb.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def set_selected(self, v):
+        self.selected = bool(v)
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        p.setBrush(T.qcolor(T.ACCENT, 26) if self.selected else QColor(255, 255, 255, 8))
+        p.setPen(QPen(QColor(T.ACCENT), 2.2) if self.selected else QPen(QColor(255, 255, 255, 26), 1))
+        p.drawRoundedRect(r, 16, 16)
+        p.setPen(QColor(T.TEXT) if self.selected else QColor(T.MUTED))
+        p.setFont(font(13, QFont.DemiBold))
+        p.drawText(QRectF(0, self.height() - 34, self.width(), 26), Qt.AlignCenter, self.title)
 
 
 STATE_TEXT = {
@@ -1048,13 +1201,15 @@ class HomeScreen(Backdrop):
             elif not self.armed:
                 self._arm()
         elif self.armed:
+            followup = getattr(self, "_arm_quiet", False)
             self._disarm(silent=True)
-            self._voice_command(text, audio, strip_wake=False)
+            self._voice_command(text, audio, strip_wake=False, followup=followup)
         else:
             self._show_heard("", True)
 
-    def _voice_command(self, vosk_text, audio, strip_wake):
+    def _voice_command(self, vosk_text, audio, strip_wake, followup=False):
         """Команду после обращения уточняем точным распознаванием (Whisper), если оно готово."""
+        self._followup_cmd = followup
         if not audio or not asr.RECOGNIZER.available:
             self.execute(vosk_text)
             return
@@ -1081,6 +1236,7 @@ class HomeScreen(Backdrop):
 
     def _arm(self, quiet=False):
         self.armed = True
+        self._arm_quiet = quiet
         s = self.settings
         if quiet:                       # продолжение разговора — без звука и приветствия
             self._arm_ms = self._followup_ms()
@@ -1120,6 +1276,9 @@ class HomeScreen(Backdrop):
         """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
         intent = timers.parse(text) or commands.parse(text)
         intent["typed"] = typed
+        # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
+        intent["followup"] = (not typed and sink is None and getattr(self, "_followup_cmd", False))
+        self._followup_cmd = False
         self._sink = sink
         self._continue = False
         self._voice_cmd = not typed and sink is None
@@ -1176,7 +1335,7 @@ class HomeScreen(Backdrop):
                 reply = "Хорошо, начнём разговор заново."
             elif use_ai:
                 reply = actions.try_launch(intent.get("text", "")) \
-                    if intent["action"] == "unknown" else None
+                    if intent["action"] == "unknown" and not intent.get("followup") else None
                 if reply is None:
                     try:
                         ctx = live.build_context(text, T.APPEARANCE)
@@ -1933,6 +2092,7 @@ class ProfileScreen(Backdrop):
 
     # ---------- оформление ----------
     def _build_look(self, outer):
+        import backgrounds
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1942,20 +2102,77 @@ class ProfileScreen(Backdrop):
         lay.setSpacing(0)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
-        self._title(lay, "Оформление", "Цвет, фон, прозрачность и виджеты главного экрана. "
-                                       "Всё применяется сразу.")
-        self._caption(lay, "Готовые темы")
-        trow = QGridLayout()
-        trow.setHorizontalSpacing(10)
-        trow.setVerticalSpacing(10)
+        self._title(lay, "Оформление", "Выберите тему одним нажатием или настройте фон, круг и "
+                                       "цвет по отдельности. Всё применяется сразу.")
+
+        def grid(cols=3):
+            g = QGridLayout()
+            g.setHorizontalSpacing(14)
+            g.setVerticalSpacing(14)
+            g.setAlignment(Qt.AlignLeft)
+            return g
+
+        # ---- темы: всё сразу (цвет + фон + круг)
+        self._caption(lay, "Темы")
+        tg = grid()
+        self.theme_cards = []
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
-            b = button(tname, "ghost", 14)
-            b.setMinimumHeight(48)
-            b.setStyleSheet(f"QPushButton {{ border-left: 4px solid {acc}; }}")
-            b.clicked.connect(lambda _=False, a=acc, g=bg, c=clock, o=orb: self._apply_theme(a, g, c, o))
-            trow.addWidget(b, 0, i)
-        lay.addLayout(trow)
-        lay.addSpacing(26)
+            card_ = ThumbCard(tname, dict((k, t) for k, t, _ in ORB_STYLES).get(orb, ""), 232, 132)
+            card_.set_pixmap(backgrounds.thumbnail(bg, 464, 264, acc))
+            card_.clicked.connect(lambda a=acc, g=bg, c=clock, o=orb: self._apply_theme(a, g, c, o))
+            tg.addWidget(card_, i // 3, i % 3)
+            self.theme_cards.append((card_, acc, bg, orb))
+        lay.addLayout(tg)
+        lay.addSpacing(30)
+
+        # ---- фон
+        self._caption(lay, "Фон")
+        bgg = grid()
+        self.bg_cards = {}
+        for i, (key, title, desc) in enumerate(T.BACKGROUNDS):
+            c = ThumbCard(title, desc, 232, 132)
+            c.clicked.connect(lambda k=key: self._choose_bg(k))
+            bgg.addWidget(c, i // 3, i % 3)
+            self.bg_cards[key] = c
+        lay.addLayout(bgg)
+        lay.addSpacing(8)
+        self.glass_note = label("", 13, role="accent", wrap=True)
+        self.glass_note.hide()
+        lay.addWidget(self.glass_note)
+        self.restart_btn = button("Перезапустить сейчас", "ghost", 14)
+        self.restart_btn.setFixedWidth(240)
+        self.restart_btn.clicked.connect(self.win.restart)
+        self.restart_btn.hide()
+        lay.addWidget(self.restart_btn, 0, Qt.AlignLeft)
+        self.glass_box = QWidget()
+        gl = QVBoxLayout(self.glass_box)
+        gl.setContentsMargins(0, 10, 0, 0)
+        gl.addWidget(label("Прозрачность стекла", 13, role="muted"))
+        self.s_glass = QSlider(Qt.Horizontal)
+        self.s_glass.setRange(15, 85)
+        self.s_glass.setFixedWidth(420)
+        self.s_glass.valueChanged.connect(lambda v: self._set_look(glass=v / 100))
+        gl.addWidget(self.s_glass)
+        lay.addWidget(self.glass_box)
+        lay.addSpacing(30)
+
+        # ---- круг
+        self._caption(lay, "Круг в центре")
+        og = grid()
+        self.orb_cards = {}
+        for i, (key, title, desc) in enumerate(ORB_STYLES):
+            c = OrbCard(key, title)
+            c.clicked.connect(lambda k=key: self._set_look(orb_style=k))
+            og.addWidget(c, 0, i)
+            self.orb_cards[key] = c
+        lay.addLayout(og)
+        lay.addSpacing(8)
+        lay.addWidget(label("Когда вы говорите, круг расширяется от голоса, а когда отвечает "
+                            "помощник — оживает. Пока идёт разговор, фон замирает, чтобы круг "
+                            "двигался идеально плавно.", 12, role="faint", wrap=True))
+        lay.addSpacing(30)
+
+        # ---- цвет
         self._caption(lay, "Цвет")
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -1973,142 +2190,74 @@ class ProfileScreen(Backdrop):
             group.addButton(b)
             row.addWidget(b)
             self.swatches[color.lower()] = b
-        custom = button("Свой цвет…", "ghost", 13, QFont.Normal)
+        custom = button("Свой…", "ghost", 13, QFont.Normal)
         custom.clicked.connect(self._pick_color)
         row.addSpacing(8)
         row.addWidget(custom)
         row.addStretch(1)
         lay.addLayout(row)
-        lay.addSpacing(26)
+        lay.addSpacing(30)
 
-        self._caption(lay, "Фон")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
-        self.bg_cards = {}
-        for i, (key, title, desc) in enumerate(T.BACKGROUNDS):
-            c = Clickable()
-            c.setProperty("role", "option")
-            c.setCursor(Qt.PointingHandCursor)
-            cl = QVBoxLayout(c)
-            cl.setContentsMargins(16, 12, 16, 12)
-            cl.setSpacing(2)
-            cl.addWidget(label(title, 15, QFont.DemiBold))
-            cl.addWidget(label(desc, 12, role="muted", wrap=True))
-            c.clicked.connect(lambda k=key: self._choose_bg(k))
-            grid.addWidget(c, i // 3, i % 3)
-            self.bg_cards[key] = c
-        lay.addLayout(grid)
-        lay.addSpacing(10)
-        self.glass_note = label("", 13, role="accent", wrap=True)
-        self.glass_note.hide()
-        lay.addWidget(self.glass_note)
-        self.restart_btn = button("Перезапустить сейчас", "ghost", 14)
-        self.restart_btn.setFixedWidth(240)
-        self.restart_btn.clicked.connect(self.win.restart)
-        self.restart_btn.hide()
-        lay.addWidget(self.restart_btn, 0, Qt.AlignLeft)
-        lay.addSpacing(18)
-
-        def slider(title, key, lo, hi):
-            self._caption(lay, title)
-            sl = QSlider(Qt.Horizontal)
-            sl.setRange(lo, hi)
-            sl.setFixedWidth(420)
-            sl.valueChanged.connect(lambda v, k=key: self._set_look(**{k: v / 100}))
-            lay.addWidget(sl)
-            lay.addSpacing(20)
-            return sl
-        self._caption(lay, "Круг в центре")
-        ogrid = QGridLayout()
-        ogrid.setHorizontalSpacing(12)
-        ogrid.setVerticalSpacing(12)
-        self.orb_cards = {}
-        for i, (key, title, desc) in enumerate(ORB_STYLES):
-            c = Clickable()
-            c.setProperty("role", "option")
-            c.setCursor(Qt.PointingHandCursor)
-            cl = QVBoxLayout(c)
-            cl.setContentsMargins(16, 12, 16, 12)
-            cl.setSpacing(2)
-            cl.addWidget(label(title, 15, QFont.DemiBold))
-            cl.addWidget(label(desc, 12, role="muted", wrap=True))
-            c.clicked.connect(lambda k=key: self._set_look(orb_style=k))
-            ogrid.addWidget(c, i // 3, i % 3)
-            self.orb_cards[key] = c
-        lay.addLayout(ogrid)
-        lay.addSpacing(10)
-        lay.addWidget(label("Когда вы говорите, круг расширяется от вашего голоса, а когда "
-                            "отвечает помощник — движется.", 12, role="faint", wrap=True))
-        lay.addSpacing(22)
-        self.t_eco = self._toggle_row(lay, "Экономный режим",
-                                      "Фон без анимации, меньше нагрузка на компьютер и батарею.",
-                                      None)
-        self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
-        self.s_glass = slider("Прозрачность окна (для «Стекла»)", "glass", 15, 85)
-        self.s_panels = slider("Плотность панелей", "panels", 25, 95)
-
-        self._caption(lay, "Виджеты на главном экране")
-        lay.addSpacing(6)
-        self.widget_toggles = {}
-        for key, title, sub in (("clock", "Часы", "Крупное время, дата и приветствие"),
-                                ("weather", "Погода", "Температура и осадки за окном"),
-                                ("system", "Компьютер", "Загрузка процессора, памяти, батарея"),
-                                ("volume", "Громкость", "Текущая громкость системы"),
-                                ("history", "Последние команды", "Что вы просили недавно"),
-                                ("notes", "Заметки", "Записи, которые всегда под рукой"),
-                                ("tips", "Подсказки", "Примеры команд")):
-            t = self._toggle_row(lay, title, sub, None)
-            t.toggled.connect(lambda v, k=key: self._set_widget(k, v))
-            self.widget_toggles[key] = t
-        self._caption(lay, "Часы")
+        # ---- главный экран: часы и виджеты
+        self._caption(lay, "Главный экран")
         crow = QHBoxLayout()
         crow.setSpacing(10)
         cgroup = QButtonGroup(self)
         self.clock_buttons = {}
-        for key, title in (("digital", "Цифровые"), ("analog", "Стрелочные")):
+        for key, title in (("digital", "Цифровые часы"), ("analog", "Стрелочные часы")):
             b = button(title, "ghost", 14, QFont.Normal)
             b.setCheckable(True)
-            b.setFixedWidth(150)
+            b.setFixedWidth(190)
             b.clicked.connect(lambda _=False, k=key: self._set_look(clock_style=k))
             cgroup.addButton(b)
             crow.addWidget(b)
             self.clock_buttons[key] = b
         crow.addStretch(1)
         lay.addLayout(crow)
-        lay.addSpacing(22)
-        self._caption(lay, "Город для погоды (пусто — определить автоматически)")
-        self.f_city = field("например: Магадан")
-        self.f_city.editingFinished.connect(lambda: self._set_look(
-            city=self.f_city.text().strip(), city_lat=None, city_lon=None)
-            if self.f_city.text().strip() != T.APPEARANCE.get("city", "") else None)
-        lay.addWidget(self.f_city)
+        lay.addSpacing(12)
+        wg = grid()
+        self.widget_toggles = {}
+        for i, (key, title) in enumerate((("clock", "Часы"), ("weather", "Погода"),
+                                          ("system", "Компьютер"), ("volume", "Громкость"),
+                                          ("history", "Последние команды"), ("notes", "Заметки"),
+                                          ("tips", "Подсказки"))):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(190)
+            b.toggled.connect(lambda v, k=key: self._set_widget(k, v))
+            wg.addWidget(b, i // 4, i % 4)
+            self.widget_toggles[key] = b
+        lay.addLayout(wg)
+        lay.addSpacing(26)
+        self.t_eco = self._toggle_row(lay, "Экономный режим",
+                                      "Фон без анимации — меньше нагрузка на компьютер и батарею.",
+                                      None)
+        self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         lay.addStretch(1)
 
     def _refresh_look(self):
+        import backgrounds
         a = T.APPEARANCE
         self._loading = True
         acc = (a.get("accent") or "").lower()
         for c, b in self.swatches.items():
             b.setChecked(c == acc)
-        orb = a.get("orb_style", "sphere")
+        orb = ORB_ALIASES.get(a.get("orb_style", "jarvis"), a.get("orb_style", "jarvis"))
         for k, c in self.orb_cards.items():
-            c.setProperty("selected", "true" if k == orb else "false")
-            c.style().unpolish(c)
-            c.style().polish(c)
+            c.set_selected(k == orb)
         self.t_eco.setChecked(bool(a.get("eco")))
-        bg = a.get("background", "aurora")
+        bg = T.bg_style()
         for k, c in self.bg_cards.items():
-            c.setProperty("selected", "true" if k == bg else "false")
-            c.style().unpolish(c)
-            c.style().polish(c)
+            c.set_pixmap(backgrounds.thumbnail(k, 464, 264))
+            c.set_selected(k == bg)
+        for c, tacc, tbg, torb in self.theme_cards:
+            c.set_selected(tacc.lower() == acc and tbg == bg and torb == orb)
+        self.glass_box.setVisible(bg == "glass")
         self.s_glass.setValue(int(float(a.get("glass", 0.55)) * 100))
-        self.s_panels.setValue(int(float(a.get("panels", 0.72)) * 100))
         for k, t in self.widget_toggles.items():
             t.setChecked(bool(a.get("widgets", {}).get(k, True)))
         for k, b in self.clock_buttons.items():
             b.setChecked(k == a.get("clock_style", "digital"))
-        self.f_city.setText(a.get("city", ""))
         self._loading = False
 
     def _set_look(self, **changes):
@@ -2273,6 +2422,11 @@ class ProfileScreen(Backdrop):
         lay.addWidget(label("Скажите: «Сеньор, открой …» и название — по-русски, как слышится. "
                             "Если игру только что поставили, нажмите «Обновить список» или "
                             "скажите «обнови список программ».", 12, role="faint", wrap=True))
+        lay.addSpacing(14)
+        self._caption(lay, "Что SenioreM запускал")
+        self.launch_log = label("", 12, role="muted", wrap=True)
+        self.launch_log.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.launch_log)
         self._apps_timer = QTimer(self)
         self._apps_timer.timeout.connect(self._apps_poll)
 
@@ -2284,6 +2438,11 @@ class ProfileScreen(Backdrop):
                 it.widget().deleteLater()
         items = sites.all_apps()
         self.apps_count.setText(f"Знаю {len(items)} программ и игр")
+        log = sites.LAUNCH_LOG[-6:]
+        self.launch_log.setText("\n".join(f"{t}  {n}  —  {why or 'команда'}" for t, n, _tg, why
+                                           in reversed(log))
+                                or "С момента запуска SenioreM ничего не запускал. Полный список — "
+                                   "в файле launches.log в папке %APPDATA%\\SenioreM.")
         q = self.apps_filter.text().strip().lower()
         shown = 0
         for name, src in items:
@@ -2955,6 +3114,30 @@ def run_selftest(out_path):
         for speed in ("slow", "fast"):
             tts.synth_wav(voice, "Проверка скорости.", wav, speed)
         log("OK speeds")
+        # уже открытая программа: найти окно, свернуть, развернуть, закрыть (на блокноте)
+        try:
+            import procs
+            import subprocess as _sp
+            np_path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "notepad.exe")
+            np = _sp.Popen([np_path])
+            time.sleep(3)
+            tgt = ("path", np_path)
+            wins, rest = procs.find("блокнот", tgt)
+            log(f"procs find: {wins} rest={rest}")
+            if wins:
+                import ctypes as _ct
+                _ct.windll.user32.ShowWindow(wins[0].hwnd, 6)
+                time.sleep(0.7)
+                log(f"procs bring_up after minimize: {procs.bring_up('блокнот', tgt)}")
+                time.sleep(0.5)
+                log(f"procs bring_up again: {procs.bring_up('блокнот', tgt)}")
+            n, names = procs.close("блокнот", tgt)
+            time.sleep(1.5)
+            log(f"procs close: {n} {names}; still running: {np.poll() is None}")
+            if np.poll() is None:
+                np.kill()
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN procs: {e!r}")
         if os.environ.get("SENIOREM_SELFTEST_AI"):
             import time as _t
             import ai as _ai
@@ -3038,17 +3221,24 @@ def run_uitest(out_dir):
         h.orb.push_level(0.5)
         pump(2500)
         shot(win, "03-home-blue")
-        for i, (acc, bg) in enumerate((("#34D399", "aurora"), ("#A78BFA", "glow"),
-                                      ("#FB923C", "solid"))):
-            T.set_appearance(app, accent=acc, background=bg,
-                             widgets={"notes": True}, clock_style="analog" if i == 1 else "digital")
+        for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
+            T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
+            t0 = time.perf_counter()
+            win.grab()
+            log.append(f"frame {bg}: {(time.perf_counter() - t0) * 1000:.0f} ms")
             shot(win, f"04-home-{i}-{bg}")
-        T.set_appearance(app, accent="#5B8CFF", background="aurora", clock_style="digital")
+        T.set_appearance(app, accent="#38BDF8", background="space", clock_style="digital",
+                         orb_style="jarvis")
         h.apply_widgets()
         for sec in ("look", "city", "voice", "apps", "ai", "name", "wake"):
             win.open_profile(sec)
             shot(win, f"05-profile-{sec}")
+        win.open_profile("look")
+        pump(800)
+        look = win.profile.page_widgets["look"].findChild(QScrollArea).widget()
+        look.grab().save(os.path.join(out_dir, "05-profile-look-full.png"))
+        win._back_home()
         win.settings.set("companion", "girl")
         win.open_profile("companion")
         shot(win, "06-profile-companion")
@@ -3075,11 +3265,26 @@ def run_uitest(out_dir):
         win.chat.receive("Павел Дуров — российский предприниматель, основатель ВКонтакте и Telegram.")
         shot(win, "08-chat")
         win._back_home()
-        for st in ("waves", "particles", "equalizer", "blob", "rings"):
+        from PySide6.QtCore import QPoint as _QP2, QRect as _QR
+        for st, _t, _d in ORB_STYLES:
             T.set_appearance(app, orb_style=st)
-            h.orb.state = "speaking"
-            pump(600)
-            shot(win, f"09-orb-{st}")
+            for mode in ("speaking", "armed"):
+                h.orb.state = mode
+                for _ in range(20):
+                    if mode == "armed":
+                        h.orb.push_level(0.55)
+                    pump(40)
+                tl = h.orb.mapTo(win, _QP2(0, 0))
+                win.grab(_QR(tl.x() - 30, tl.y() - 30, h.orb.width() + 60,
+                             h.orb.height() + 60)).save(os.path.join(out_dir, f"09-orb-{st}-{mode}.png"))
+            log.append(f"09-orb-{st}")
+        t0, frames = time.perf_counter(), 0
+        h.orb.state = "speaking"
+        while time.perf_counter() - t0 < 3.0:
+            app.processEvents()
+            frames += 1
+            time.sleep(0.004)
+        log.append(f"orb loop: {frames / 3.0:.0f} it/s")
         T.set_appearance(app, orb_style="sphere")
         import timers as _tm
         mgr = _tm.manager()

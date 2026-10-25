@@ -11,6 +11,7 @@ import threading
 import time
 import wave
 
+import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 IS_WIN = sys.platform == "win32"
@@ -81,7 +82,7 @@ class Listener(QThread):
                 pass
 
         try:
-            stream = sd.RawInputStream(samplerate=16000, blocksize=1600, dtype="int16",
+            stream = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
                                        channels=1, callback=callback)
         except Exception:  # noqa: BLE001
             self.failed.emit("Микрофон не найден. Подключите микрофон и перезапустите программу.")
@@ -114,10 +115,11 @@ class Listener(QThread):
                     continue
 
                 # ---- автоусиление: тихая речь и шёпот подтягиваются до нормальной громкости
-                samples = array.array("h", data)
-                if not samples:
+                samples = np.frombuffer(data, dtype=np.int16)
+                if not samples.size:
                     continue
-                rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768.0
+                f = samples.astype(np.float32)
+                rms = float(np.sqrt(np.mean(f * f))) / 32768.0
                 floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
                 floor = max(0.0005, min(floor, 0.05))
                 max_gain = MAX_GAIN
@@ -127,10 +129,8 @@ class Listener(QThread):
                     want = max(1.0, gain * 0.98)           # в тишине шум не раздуваем
                 gain += (want - gain) * (0.5 if want < gain else 0.12)
                 if gain > 1.05:
-                    g = gain
-                    samples = array.array("h", (max(-32768, min(32767, int(x * g))) for x in samples))
-                    data = samples.tobytes()
-                    rms *= g
+                    data = np.clip(f * gain, -32768, 32767).astype(np.int16).tobytes()
+                    rms *= gain
                 self.level.emit(min(1.0, rms * 7))
                 utter += data
                 if len(utter) > MAX_UTTERANCE:
