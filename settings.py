@@ -20,6 +20,11 @@ DEFAULTS = {
     "listen_seconds": 8,
     "wake_words": "",               # дополнительные слова-обращения
     "autostart": False,
+    "ai_enabled": False,
+    "ai_mode": "smart",             # smart | fast | api
+    "ai_api_url": "",
+    "ai_api_key": "",
+    "ai_api_model": "",
     "history": [],
 }
 
