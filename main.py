@@ -999,7 +999,7 @@ class HomeScreen(Backdrop):
         self._upd_timer = QTimer(self)
         self._upd_timer.timeout.connect(self._check_update)
         self._upd_timer.start(30 * 60 * 1000)
-        QTimer.singleShot(90 * 1000, self._check_update)
+        QTimer.singleShot(15 * 1000, self._check_update)
 
     def _refresh_downloads(self):
         import stats
@@ -1039,15 +1039,26 @@ class HomeScreen(Backdrop):
         self._upd_busy = True
         self._upd_version = version
         self._upd_dl = Updater(url, version)
-        self._upd_dl.progress.connect(lambda f, _t: None)
+        self._upd_dl.progress.connect(self._update_progress)
         self._upd_dl.ready.connect(self._update_downloaded)
-        self._upd_dl.failed.connect(lambda _m: setattr(self, "_upd_busy", False))
+        self._upd_dl.failed.connect(self._update_failed)
         self._upd_dl.start()
+        self.upd_btn.setText(f"⬇  Скачиваю версию {version}…")
+        self.upd_btn.setEnabled(False)
+        self.upd_btn.show()
+
+    def _update_progress(self, frac, _text):
+        self.upd_btn.setText(f"⬇  Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
+
+    def _update_failed(self, _msg):
+        self._upd_busy = False
+        self.upd_btn.hide()
 
     def _update_downloaded(self, path):
         self._upd_busy = False
         self._upd_ready = path
         self.upd_btn.setText(f"⬆  Обновить до {self._upd_version}")
+        self.upd_btn.setEnabled(True)
         self.upd_btn.show()
 
     def _install_update(self):
@@ -3318,6 +3329,13 @@ class MainWindow(QWidget):
             pass
         self.apply_companion()
         self._auto_import_companions()
+        # уборка в фоне: старая история чата и команд, кэш голоса, большие журналы
+        import housekeeping
+        try:
+            housekeeping.trim_settings(s)
+        except Exception:  # noqa: BLE001
+            pass
+        threading.Thread(target=housekeeping.run, daemon=True).start()
         if not self.greeted:
             self.greeted = True
             who = s["name"] or s["address"]
@@ -3329,6 +3347,17 @@ class MainWindow(QWidget):
         try:
             ai.ENGINE.start_local(mode)
         except Exception:  # noqa: BLE001 — запустится при первом вопросе
+            pass
+        # есть видеокарта — докачиваем для неё движок и переключаемся: ответы в разы быстрее
+        try:
+            if ai.gpu_usable() and ai.server_exe(gpu=True) is None and ai.download_gpu():
+                if ai.ENGINE.lock.acquire(timeout=60):
+                    try:
+                        ai.ENGINE.stop()
+                        ai.ENGINE.start_local(mode)
+                    finally:
+                        ai.ENGINE.lock.release()
+        except Exception:  # noqa: BLE001
             pass
 
     def apply_companion(self):
@@ -3805,7 +3834,22 @@ def run_selftest(out_path):
             s = _S(address="", ai_mode="fast")
             t0 = _t.time()
             _ai.ENGINE.start_local("fast", timeout=300)
-            log(f"OK ai server {(_t.time() - t0):.1f}s")
+            log(f"OK ai server {(_t.time() - t0):.1f}s (gpu={_ai.ENGINE.gpu}, threads={_ai._threads()})")
+            # проверка движка для видеокарты: на сервере сборки её нет — должен сработать запасной путь
+            try:
+                os.environ["SENIOREM_FORCE_GPU"] = "1"
+                _ai._GPU = None
+                t1 = _t.time()
+                got = _ai.download_gpu()
+                log(f"gpu engine download: {got} {(_t.time() - t1):.0f}s")
+                _ai.ENGINE.stop()
+                _ai.ENGINE.start_local("fast", timeout=300)
+                log(f"ai after gpu try: gpu={_ai.ENGINE.gpu} failed_flag={_ai._gpu_failed_flag().exists()}")
+            except Exception as e:  # noqa: BLE001
+                log(f"gpu try error: {e!r}")
+            finally:
+                os.environ.pop("SENIOREM_FORCE_GPU", None)
+                _ai._GPU = None
             t0 = _t.time()
             ans = _ai.ENGINE.ask("Привет! Какого цвета небо днём? Ответь одной фразой.", s)
             log(f"ai answer ({(_t.time() - t0):.1f}s): {ans}")

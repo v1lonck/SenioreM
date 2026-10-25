@@ -96,6 +96,16 @@ jobs:
             if (-not $pick) { Write-Output "::error::не нашёл сборку llama.cpp для Windows"; exit 1 }
             $want["llama-server-win-x64.zip"] = $pick.browser_download_url
           }
+          if (-not ($have -contains "llama-server-win-vulkan.zip")) {
+            # сборка llama.cpp для видеокарт (Vulkan: NVIDIA, AMD, Intel) — ИИ отвечает в разы быстрее
+            try {
+              $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
+              foreach ($rel in $rels) {
+                $vk = @($rel.assets | Where-Object { $_.name -match 'bin-win-vulkan-x64\.zip$' }) | Select-Object -First 1
+                if ($vk) { "llama.cpp vulkan: $($rel.tag_name) -> $($vk.name)"; $want["llama-server-win-vulkan.zip"] = $vk.browser_download_url; break }
+              }
+            } catch { Write-Output "::warning::llama.cpp vulkan — $($_.Exception.Message)" }
+          }
           $failed = $false
           foreach ($name in $want.Keys) {
             if ($have -contains $name) { "есть: $name"; continue }
