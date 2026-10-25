@@ -241,6 +241,22 @@ begin
   end;
 end;
 
+{ Можно ли писать в папку программы без прав администратора? (Временно занятый файл —
+  например, его проверяет антивирус — не повод просить права.) }
+function CanWriteAppDir: Boolean;
+var
+  D, F: String;
+begin
+  D := InstallDir('');
+  Result := True;
+  if not DirExists(D) then
+    Exit;
+  F := D + '\write.check';
+  Result := SaveStringToFile(F, '1', False);
+  if Result then
+    DeleteFile(F);
+end;
+
 function InitializeSetup: Boolean;
 var
   Code: Integer;
@@ -250,7 +266,7 @@ begin
   { Права администратора нужны, только если SenioreM работает в режиме администратора
     или старые файлы ставились с правами администратора и иначе их не заменить. }
   if (not IsAdmin) and (FileExists(ExpandConstant('{userappdata}\SenioreM\admin_mode'))
-                       or (not CanReplaceInstalled)) then
+                       or (not CanWriteAppDir)) then
     if ShellExec('runas', ExpandConstant('{srcexe}'),
                  '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
                  '/nosplash=' + ExpandConstant('{param:nosplash|0}'),

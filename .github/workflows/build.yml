@@ -188,7 +188,17 @@ jobs:
           Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
           # повторная установка поверх (обновление) — тоже должна пройти сама
           $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/nosplash=1" -PassThru
-          if (-not $p.WaitForExit(180000)) { Write-Output "::error::тихое обновление зависло"; Stop-Process $p -Force; exit 1 }
+          if (-not $p.WaitForExit(150000)) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("installer-stuck.png")
+            gh release upload ci-screens installer-stuck.png --clobber
+            Get-Process | Where-Object { $_.ProcessName -match 'SenioreM|consent|taskkill|is-' } | Format-Table Id, ProcessName, StartTime
+            Write-Output "::error::тихое обновление зависло — снимок installer-stuck.png"
+            Stop-Process $p -Force; exit 1
+          }
           "обновление поверх: код $($p.ExitCode)"
           Start-Sleep 5
           Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
