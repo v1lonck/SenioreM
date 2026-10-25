@@ -2117,7 +2117,8 @@ class ProfileScreen(Backdrop):
         tg = grid()
         self.theme_cards = []
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
-            card_ = ThumbCard(tname, dict((k, t) for k, t, _ in ORB_STYLES).get(orb, ""), 232, 132)
+            card_ = ThumbCard(tname, "Круг: " + dict((k, t) for k, t, _ in ORB_STYLES).get(orb, ""),
+                              232, 132)
             card_.set_pixmap(backgrounds.thumbnail(bg, 464, 264, acc))
             card_.clicked.connect(lambda a=acc, g=bg, c=clock, o=orb: self._apply_theme(a, g, c, o))
             tg.addWidget(card_, i // 3, i % 3)
@@ -2479,23 +2480,18 @@ class ProfileScreen(Backdrop):
                     "помощник отвечает — она говорит вместе с ним и показывает текст.")
         row = QHBoxLayout()
         row.setSpacing(28)
-        self.comp_preview = FigurePreview(190)
+        self.comp_preview = FigurePreview(200)
         row.addWidget(self.comp_preview, 0, Qt.AlignTop)
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
         self.comp_cards = {}
+        from companion import thumb
         for i, (key, title, desc) in enumerate(FIGURES):
-            c = Clickable()
-            c.setProperty("role", "option")
-            c.setCursor(Qt.PointingHandCursor)
-            cl = QVBoxLayout(c)
-            cl.setContentsMargins(14, 10, 14, 10)
-            cl.setSpacing(2)
-            cl.addWidget(label(title, 15, QFont.DemiBold))
-            cl.addWidget(label(desc, 12, role="muted", wrap=True))
+            c = ThumbCard(title, desc, 156, 196)
+            c.set_pixmap(thumb(key, 312, 392))
             c.clicked.connect(lambda k=key: self._set_comp(companion=k))
-            grid.addWidget(c, i // 2, i % 2)
+            grid.addWidget(c, i // 4, i % 4)
             self.comp_cards[key] = c
         row.addLayout(grid, 1)
         lay.addLayout(row)
@@ -2532,11 +2528,10 @@ class ProfileScreen(Backdrop):
 
     def _refresh_comp(self):
         s = self.settings
-        kind = s["companion"] or "none"
+        from companion import norm_kind
+        kind = norm_kind(s["companion"] or "none")
         for k, c in self.comp_cards.items():
-            c.setProperty("selected", "true" if k == kind else "false")
-            c.style().unpolish(c)
-            c.style().polish(c)
+            c.set_selected(k == kind)
         self.comp_preview.kind = kind
         self.comp_preview.painter.animated = bool(s["companion_anim"])
         self.t_comp_anim.setChecked(bool(s["companion_anim"]))
@@ -3239,24 +3234,27 @@ def run_uitest(out_dir):
         look = win.profile.page_widgets["look"].findChild(QScrollArea).widget()
         look.grab().save(os.path.join(out_dir, "05-profile-look-full.png"))
         win._back_home()
-        win.settings.set("companion", "girl")
+        win.settings.set("companion", "aki")
         win.open_profile("companion")
         shot(win, "06-profile-companion")
+        win.apply_companion()
+        win.companion.say("Привет! Я Аки. Чем помочь?", 20)
+        win.companion.set_speaking(True)
+        pump(600)
+        win.companion.grab().save(os.path.join(out_dir, "06-companion-window.png"))
+        win.companion.set_speaking(False)
         from PySide6.QtGui import QImage, QPainter as _QP
         from PySide6.QtCore import QRectF as _R
         import companion as _cmp
         figs = [k for k, _, _ in _cmp.FIGURES if k != "none"]
-        img = QImage(220 * len(figs), 440, QImage.Format_ARGB32)
-        img.fill(QColor(T.BG))
+        img = QImage(240 * len(figs), 960, QImage.Format_ARGB32)
+        img.fill(QColor("#141A26"))
         fp = _cmp.FigurePainter()
         qp = _QP(img)
         for i, k in enumerate(figs):
-            fp.speaking = False
-            fp.mouth = 0
-            fp.paint(qp, _R(i * 220 + 10, 10, 200, 200), k)
-            fp.speaking = True
-            fp.mouth = 0.9
-            fp.paint(qp, _R(i * 220 + 10, 230, 200, 200), k)
+            for row, (spk, mo, bl) in enumerate(((False, 0.0, 0.0), (True, 0.9, 1.0))):
+                fp.speaking, fp.mouth, fp._blink = spk, mo, bl * 0.5
+                fp.paint(qp, _R(i * 240 + 10, row * 480 + 10, 220, 460), k)
         qp.end()
         img.save(os.path.join(out_dir, "07-companions.png"))
         log.append("07-companions")

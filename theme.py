@@ -25,15 +25,15 @@ PRESETS = [
     ("Оранжевый", "#FB923C"), ("Золотой", "#FBBF24"), ("Серебро", "#CBD5E1"),
 ]
 BACKGROUNDS = [
-    ("space", "Космос", "Туманность, планета и падающие звёзды"),
-    ("galaxy", "Галактика", "Медленно вращается спиральная галактика"),
+    ("space", "Космос", "Туманность и планета"),
+    ("galaxy", "Галактика", "Вращается спиральная галактика"),
     ("warp", "Гиперпрыжок", "Полёт сквозь звёзды"),
     ("aurora", "Северное сияние", "Сияние над горами"),
     ("grid", "Ретро", "Неоновое солнце и сетка 80-х"),
     ("waves", "Волны", "Светящиеся волны"),
     ("glow", "Свечение", "Спокойный фон без анимации"),
-    ("oled", "Чёрный", "Полностью чёрный — меньше всего нагрузки"),
-    ("glass", "Стекло", "Сквозь окно виден рабочий стол"),
+    ("oled", "Чёрный", "Минимум нагрузки"),
+    ("glass", "Стекло", "Виден рабочий стол"),
 ]
 BG_ALIASES = {"stars": "space", "particles": "space", "solid": "glow"}
 THEMES = [
@@ -45,6 +45,8 @@ THEMES = [
     ("OLED", "#CBD5E1", "oled", "digital", "sphere"),
 ]
 ANIMATED = ("space", "galaxy", "warp", "aurora", "waves", "grid")
+# медленные фоны не нужно перерисовывать часто — экономим процессор
+BG_FRAME_MS = {"space": 80, "galaxy": 90, "aurora": 80, "waves": 55, "grid": 50, "warp": 42}
 
 
 def bg_style():
@@ -433,10 +435,21 @@ class Backdrop(QWidget):
         import time as _time
         now = _time.monotonic()
         dt, self._clock = min(0.2, now - self._clock), now
-        if APPEARANCE.get("eco") or focused():
+        if APPEARANCE.get("eco"):
             return
+        if focused():
+            if not getattr(self, "_was_focused", False):
+                self._was_focused = True
+                self.update()                 # перерисуем кадр без падающих звёзд
+            return
+        if getattr(self, "_was_focused", False):
+            self._was_focused = False
+        style = bg_style()
+        ms = BG_FRAME_MS.get(style, 70)
+        if self._timer.interval() != ms:
+            self._timer.setInterval(ms)
         w = self.window()
-        if bg_style() in ANIMATED and self.isVisible() and \
+        if style in ANIMATED and self.isVisible() and \
                 not (w is not None and (w.isMinimized() or not w.isVisible())):
             self._t += dt
             self.update()
@@ -509,7 +522,7 @@ class Backdrop(QWidget):
     def paintEvent(self, e):
         w, h = max(1, self.width()), max(1, self.height())
         dpr = self.devicePixelRatioF()
-        key = (w, h, dpr, self._t, bg_style(), ACCENT, BG, APPEARANCE.get("glass"))
+        key = (w, h, dpr, self._t, bg_style(), ACCENT, BG, APPEARANCE.get("glass"), focused())
         if self._frame is None or self._frame_key != key:
             pix = QPixmap(int(w * dpr), int(h * dpr))
             pix.setDevicePixelRatio(dpr)
