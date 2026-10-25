@@ -165,9 +165,20 @@ jobs:
           (Get-FileHash Output\SenioreM-Setup.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline -Encoding ascii Output\SenioreM-Setup.exe.sha256
 
       - name: Проверка установщика (запуск как двойным щелчком)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -PassThru
-          if (-not $p.WaitForExit(180000)) { Write-Output "::error::установщик не завершился за 3 минуты (ждёт нажатия?)"; Stop-Process $p -Force; exit 1 }
+          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/showwizard=1" -PassThru
+          if (-not $p.WaitForExit(120000)) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("installer-stuck.png")
+            gh release upload ci-screens installer-stuck.png --clobber
+            Write-Output "::error::установщик не завершился за 2 минуты (ждёт нажатия?) — снимок installer-stuck.png"
+            Stop-Process $p -Force; exit 1
+          }
           "установщик завершился, код $($p.ExitCode)"
           $exe = Join-Path $env:LOCALAPPDATA "Programs\SenioreM\SenioreM.exe"
           if (-not (Test-Path $exe)) { $exe = "C:\SenioreM\SenioreM.exe" }
