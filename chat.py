@@ -152,11 +152,10 @@ class ChatScreen(Backdrop):
 
     # ---------- данные ----------
     def load(self, settings, name):
+        self.settings = None                      # чтобы переключатель не сохранял при загрузке
+        self.t_speak.setChecked(bool(settings["chat_speak"]))
         self.settings = settings
         self.title.setText(f"Чат · {name}")
-        self.t_speak.blockSignals(True)
-        self.t_speak.setChecked(bool(settings["chat_speak"]))
-        self.t_speak.blockSignals(False)
         self._clear_widgets()
         for m in (settings["chat"] or [])[-60:]:
             self._add(m["text"], m["me"], m.get("t", 0), save=False)
@@ -175,6 +174,7 @@ class ChatScreen(Backdrop):
         while self.lay.count() > 1:
             it = self.lay.takeAt(0)
             if it.widget():
+                it.widget().hide()
                 it.widget().deleteLater()
 
     def clear(self):
@@ -226,6 +226,7 @@ class ChatScreen(Backdrop):
 
     def receive(self, reply):
         if self._typing is not None:
+            self._typing.hide()
             self._typing.deleteLater()
             self._typing = None
         self._add(reply or "…", False)
