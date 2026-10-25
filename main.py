@@ -3765,13 +3765,36 @@ def _err_log(text):
         pass
 
 
+startup_mark = config.startup_mark
+
+
 def _install_error_log():
     log = config.data_dir() / "error.log"
 
     def hook(t, v, tb):
         with open(log, "a", encoding="utf-8") as f:
-            f.write("".join(traceback.format_exception(t, v, tb)) + "\n")
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") +
+                    "".join(traceback.format_exception(t, v, tb)) + "\n")
+        startup_mark(f"ОШИБКА: {t.__name__}: {v}")
     sys.excepthook = hook
+    threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+    # «тихие» падения внутри библиотек (распознавание, голос, ИИ) — тоже в журнал
+    try:
+        import faulthandler
+        global _CRASH_FILE
+        _CRASH_FILE = open(config.data_dir() / "crash.log", "a", encoding="utf-8")
+        _CRASH_FILE.write(f"--- запуск {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
+        _CRASH_FILE.flush()
+        faulthandler.enable(_CRASH_FILE)
+    except Exception:  # noqa: BLE001
+        pass
+    # журнал запуска не растёт бесконечно
+    try:
+        p = config.data_dir() / "startup.log"
+        if p.is_file() and p.stat().st_size > 200_000:
+            p.write_text(p.read_text(encoding="utf-8", errors="ignore")[-50_000:], encoding="utf-8")
+    except OSError:
+        pass
 
 
 def run_selftest(out_path):
@@ -4215,6 +4238,7 @@ def main():
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
     _install_error_log()
+    startup_mark("старт " + " ".join(sys.argv[1:]) + f" (версия {config.load_config().get('version', '?')})")
     if sys.platform == "win32":
         try:
             import ctypes
@@ -4228,6 +4252,7 @@ def main():
         if code is not None:
             os._exit(code)
         if elevate.maybe_restart_elevated():   # режим администратора: перезапуск через задачу
+            startup_mark("перезапуск с правами администратора — этот процесс закрывается")
             return 0
     except Exception:  # noqa: BLE001
         pass
@@ -4237,8 +4262,10 @@ def main():
 
     lock = QLockFile(str(config.data_dir() / "app.lock"))
     if not lock.tryLock(15000 if ("--restart" in sys.argv or "--elevated" in sys.argv) else 100):
+        startup_mark("уже запущен другой SenioreM — закрываюсь")
         QMessageBox.information(None, "SenioreM", "SenioreM уже запущен.")
         return 0
+    startup_mark("окно загрузки")
 
     cfg = config.load_config()
     holder = {}
@@ -4256,6 +4283,7 @@ def main():
                 quit_flag.unlink()
             except OSError:
                 pass
+            startup_mark("закрываюсь по просьбе установщика (quit.flag)")
             try:
                 ai.ENGINE.stop()
             except Exception:  # noqa: BLE001
@@ -4266,9 +4294,11 @@ def main():
     quit_timer.start(700)
 
     def open_main(models):
+        startup_mark("модели загружены — открываю главное окно")
         win = MainWindow(cfg, models)
         holder["win"] = win
         win.appear()
+        startup_mark("главное окно открыто")
 
     ai.AI.kill_stale()
     try:

@@ -498,6 +498,7 @@ class Splash(QWidget):
         self.status.setText(text)
 
     def _run_installer(self, path):
+        self._mark("ставлю обновление — программа закроется и откроется снова")
         import os
         import subprocess
         self.status.setText("Устанавливаю обновление — через несколько секунд SenioreM откроется снова")
@@ -518,13 +519,20 @@ class Splash(QWidget):
         if kind == "loaded":
             QTimer.singleShot(1500, lambda: self._on_loaded(model))
 
+    def _mark(self, text):
+        config.startup_mark("загрузка: " + text)
+
     def _on_progress(self, frac, text):
+        if text != getattr(self, "_last_mark", ""):
+            self._last_mark = text
+            self._mark(text)
         if self._updating:
             return
         self.bar.target = frac
         self.status.setText(text)
 
     def _on_failed(self, msg):
+        self._mark("ОШИБКА: " + msg)
         if self._updating:
             return
         self.status.setText(msg)
@@ -550,5 +558,6 @@ class Splash(QWidget):
         self._fade(0.0, 260, self.close)
 
     def _cancel(self):
+        self._mark("закрыто крестиком на окне загрузки")
         self.cancelled.emit()
         self.close()
