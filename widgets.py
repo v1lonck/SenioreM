@@ -50,12 +50,14 @@ class ClockFace(QWidget):
             self._digital(p, now)
 
     def _digital(self, p, now):
+        from PySide6.QtGui import QFontMetrics
         w, h = self.width(), self.height()
         sec = now.second + now.microsecond / 1e6
-        # бегущая дуга секунд
-        d = min(h - 8, 136)
+        # бегущая дуга секунд справа
+        d = min(h - 16, 96)
         r = QRectF(w - d - 4, (h - d) / 2, d, d)
         p.setPen(QPen(T.qcolor(T.LINE), 3))
+        p.setBrush(Qt.NoBrush)
         p.drawEllipse(r)
         pen = QPen(QColor(T.ACCENT), 3)
         pen.setCapStyle(Qt.RoundCap)
@@ -65,20 +67,34 @@ class ClockFace(QWidget):
         cx, cy, rad = r.center().x(), r.center().y(), d / 2
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(T.ACCENT_SOFT))
-        p.drawEllipse(QPointF(cx + rad * math.cos(ang), cy - rad * math.sin(ang)), 5, 5)
+        p.drawEllipse(QPointF(cx + rad * math.cos(ang), cy - rad * math.sin(ang)), 4.5, 4.5)
         p.setPen(QColor(T.TEXT))
-        p.setFont(font(15, QFont.DemiBold))
+        p.setFont(font(14, QFont.DemiBold))
         p.drawText(r, Qt.AlignCenter, f"{now.second:02d}")
-        # время крупно
-        g = QLinearGradient(0, 0, 0, h)
+        # время — крупно, размер подбираем под ширину
+        area = QRectF(0, 0, w - d - 18, h)
+        size = 80
+        while size > 30:
+            f = font(size, QFont.Light, display=True, spacing=-1.5)
+            if QFontMetrics(f).horizontalAdvance("00:00") <= area.width():
+                break
+            size -= 2
+        p.setFont(f)
+        g = QLinearGradient(0, h * 0.2, 0, h * 0.8)
         g.setColorAt(0, QColor("#FFFFFF"))
         g.setColorAt(1, QColor(T.ACCENT_SOFT))
+        hh, mm = f"{now:%H}", f"{now:%M}"
+        fm = QFontMetrics(f)
+        x = area.left()
         p.setPen(QPen(QBrush(g), 1))
-        f = font(76, QFont.Light, display=True, spacing=-2)
-        p.setFont(f)
-        colon = ":" if now.microsecond < 500_000 else " "
-        p.drawText(QRectF(0, 0, w - d - 12, h), Qt.AlignVCenter | Qt.AlignLeft,
-                   f"{now:%H}{colon}{now:%M}")
+        p.drawText(QRectF(x, 0, area.width(), h), Qt.AlignVCenter | Qt.AlignLeft, hh)
+        x += fm.horizontalAdvance(hh)
+        blink = 255 if now.microsecond < 500_000 else 90
+        p.setPen(T.qcolor(T.ACCENT_SOFT, blink))
+        p.drawText(QRectF(x, 0, area.width(), h), Qt.AlignVCenter | Qt.AlignLeft, ":")
+        x += fm.horizontalAdvance(":")
+        p.setPen(QPen(QBrush(g), 1))
+        p.drawText(QRectF(x, 0, area.width(), h), Qt.AlignVCenter | Qt.AlignLeft, mm)
 
     def _analog(self, p, now):
         w, h = self.width(), self.height()
