@@ -398,15 +398,21 @@ def watch_new_processes(seconds=90):
         try:
             import psutil
             import sites
+            import config
+            config.low_priority_thread()
             me = os.getpid()
-            seen = {p.pid for p in psutil.process_iter()}
+            seen = set(psutil.pids())
             end = time.time() + seconds
             while time.time() < end:
-                time.sleep(0.4)
-                for p in psutil.process_iter(["pid", "name", "ppid"]):
-                    if p.info["pid"] in seen:
+                time.sleep(1.0)               # раз в секунду и только новые процессы — почти без нагрузки
+                fresh = [pid for pid in psutil.pids() if pid not in seen]
+                seen.update(fresh)
+                for pid in fresh:
+                    try:
+                        p = psutil.Process(pid)
+                        p.info = {"pid": pid, "name": p.name(), "ppid": p.ppid()}
+                    except Exception:  # noqa: BLE001
                         continue
-                    seen.add(p.info["pid"])
                     name = (p.info["name"] or "").lower()
                     if not name or name in WATCH_IGNORE or name in SYSTEM:
                         continue
