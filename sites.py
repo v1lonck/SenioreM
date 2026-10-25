@@ -702,6 +702,8 @@ def refresh_local(force=False):
 def warm(force=False):
     """Заранее собирает список программ и игр в фоне, чтобы «открой …» срабатывало мгновенно."""
     def work():
+        import config
+        config.low_priority_thread()
         refresh_apps()
         if force or time.time() - _apps_time > 500:
             refresh_apps(force=True)

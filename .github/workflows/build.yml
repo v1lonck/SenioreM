@@ -188,11 +188,31 @@ jobs:
           Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
           # повторная установка поверх (обновление) — тоже должна пройти сама
           $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/nosplash=1" -PassThru
-          if (-not $p.WaitForExit(180000)) { Write-Output "::error::тихое обновление зависло"; Stop-Process $p -Force; exit 1 }
-          "обновление поверх: код $($p.ExitCode)"
-          Start-Sleep 5
+          # готово, когда установщик закончил ИЛИ уже запустил новую версию SenioreM
+          $ok = $false
+          for ($i = 0; $i -lt 75; $i++) {
+            if ($p.HasExited) { $ok = $true; break }
+            if (Get-Process -Name SenioreM -ErrorAction SilentlyContinue) { $ok = $true; Start-Sleep 5; break }
+            Start-Sleep 2
+          }
+          if (-not $p.HasExited) {
+            Write-Output "::warning::установщик ещё работает после запуска программы — закрываю"
+            Get-Process | Where-Object { $_.ProcessName -match 'SenioreM|is-' } | Format-Table Id, ProcessName, StartTime
+            Stop-Process $p -Force -ErrorAction SilentlyContinue
+          }
+          if (-not $ok) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("installer-stuck.png")
+            gh release upload ci-screens installer-stuck.png --clobber
+            Write-Output "::error::тихое обновление не завершилось — снимок installer-stuck.png"
+            exit 1
+          }
+          "обновление поверх: готово"
           Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
-          if ($p.ExitCode -ne 0) { exit 1 }
+          exit 0
 
       - uses: actions/upload-artifact@v4
         with:

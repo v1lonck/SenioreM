@@ -154,7 +154,8 @@ def _threads():
         phys = 0
     if not phys:
         phys = max(2, (os.cpu_count() or 4) // 2)
-    return max(2, min(12, phys))
+    # одно ядро оставляем свободным — для игр, браузера и самой программы
+    return max(2, min(12, phys - 1 if phys >= 4 else phys))
 
 
 def local_ready(kind) -> bool:

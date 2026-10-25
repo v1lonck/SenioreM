@@ -73,6 +73,8 @@ def trim_logs():
 
 
 def run(settings=None):
+    import config
+    config.low_priority_thread()
     out = {}
     try:
         if settings is not None:

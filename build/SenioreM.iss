@@ -213,15 +213,60 @@ begin
     Result := False;
 end;
 
+{ Закрываем запущенный SenioreM: сначала просим сам (файл-флажок), потом taskkill.
+  Ждём, пока его файлы освободятся. Без окон и без запроса прав. }
+procedure KillApp;
+var
+  Code, I: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
+  if CanReplaceInstalled then
+    Exit;                                  { SenioreM не запущен — ничего не ждём }
+  ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
+  SaveStringToFile(ExpandConstant('{userappdata}\SenioreM\quit.flag'), '1', False);
+  for I := 1 to 12 do
+  begin
+    Sleep(250);
+    if CanReplaceInstalled then
+      Exit;
+  end;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
+  for I := 1 to 20 do
+  begin
+    if CanReplaceInstalled then
+      Exit;
+    Sleep(250);
+  end;
+end;
+
+{ Можно ли писать в папку программы без прав администратора? (Временно занятый файл —
+  например, его проверяет антивирус — не повод просить права.) }
+function CanWriteAppDir: Boolean;
+var
+  D, F: String;
+begin
+  D := InstallDir('');
+  Result := True;
+  if not DirExists(D) then
+    Exit;
+  F := D + '\write.check';
+  Result := SaveStringToFile(F, '1', False);
+  if Result then
+    DeleteFile(F);
+end;
+
 function InitializeSetup: Boolean;
 var
   Code: Integer;
 begin
   Result := True;
-  { SenioreM работает с правами администратора — обычный установщик не сможет заменить его
-    файлы. Перезапускаем установку с правами администратора (Windows спросит один раз). }
+  KillApp;
+  { Права администратора нужны, только если SenioreM работает в режиме администратора
+    или старые файлы ставились с правами администратора и иначе их не заменить. }
   if (not IsAdmin) and (FileExists(ExpandConstant('{userappdata}\SenioreM\admin_mode'))
-                       or (not CanReplaceInstalled)) then
+                       or (not CanWriteAppDir)) then
     if ShellExec('runas', ExpandConstant('{srcexe}'),
                  '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
                  '/nosplash=' + ExpandConstant('{param:nosplash|0}'),
@@ -230,49 +275,6 @@ begin
       Result := False;
       Exit;
     end;
-end;
-
-{ Перед установкой закрываем запущенный SenioreM и движок ИИ, иначе их файлы заняты
-  («Отказано в доступе» при замене файлов). }
-procedure KillApp;
-var
-  Code, Code2, I: Integer;
-begin
-  { SenioreM не запущен (его файл можно заменить) — ничего не ждём, ставим сразу }
-  if CanReplaceInstalled then
-  begin
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
-         ewWaitUntilTerminated, Code2);
-    Exit;
-  end;
-  { сначала просим SenioreM закрыться самому (работает, даже если он запущен от администратора) }
-  ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
-  SaveStringToFile(ExpandConstant('{userappdata}\SenioreM\quit.flag'), '1', False);
-  for I := 1 to 12 do
-  begin
-    Sleep(250);
-    if CanReplaceInstalled then
-      Break;
-  end;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
-       ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
-       ewWaitUntilTerminated, Code2);
-  { SenioreM работает с правами администратора — обычный установщик закрыть его не может
-    («Отказано в доступе»). Тогда закрываем с правами администратора (Windows спросит). }
-  if ((Code = 1) or (Code2 = 1)) and not CanReplaceInstalled then
-  begin
-    ShellExec('runas', ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '',
-              SW_HIDE, ewWaitUntilTerminated, Code);
-    ShellExec('runas', ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '',
-              SW_HIDE, ewWaitUntilTerminated, Code2);
-  end;
-  for I := 1 to 8 do
-  begin
-    if CanReplaceInstalled then
-      Break;
-    Sleep(250);
-  end;
 end;
 
 function WantSplash: Boolean;
