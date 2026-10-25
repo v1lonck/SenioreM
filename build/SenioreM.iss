@@ -34,7 +34,7 @@ OutputDir=..\Output
 OutputBaseFilename=SenioreM-Setup
 SetupIconFile=..\assets\icon.ico
 ChangesAssociations=yes
-UninstallDisplayIcon={app}\SenioreM.exe
+UninstallDisplayIcon={app}\SenioreM.ico
 UninstallDisplayName=SenioreM
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -56,6 +56,8 @@ ru.FinishedLabel=SenioreM установлен, ярлык — на рабоче
 
 [Files]
 Source: "install_logo.bmp"; Flags: dontcopy
+; значок ярлыка отдельным файлом — Windows показывает его сразу, без задержки кэша значков
+Source: "..\assets\icon.ico"; DestDir: "{app}"; DestName: "SenioreM.ico"; Flags: ignoreversion
 Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
@@ -63,8 +65,8 @@ Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 Type: filesandordirs; Name: "{localappdata}\Programs\SenioreM"; Check: OldDirDiffers
 
 [Icons]
-Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
-Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
+Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.ico"; Comment: "SenioreM — голосовой помощник"
+Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.ico"; Comment: "SenioreM — голосовой помощник"
 
 [Run]
 ; сразу после установки запускаем программу
