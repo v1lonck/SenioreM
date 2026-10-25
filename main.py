@@ -3164,6 +3164,7 @@ def run_selftest(out_path):
                     rect = _ctl._rect(wins[0].hwnd)
                     words = _ctl.ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
                     log(f"ocr words: {len(words)} {[w['t'] for w in words[:8]]}")
+                    log(f"ocr stderr: {_ctl.OCR_ERR!r}")
                     log(f"ocr find Edit: {_ctl.find_ocr(rect, 'Edit')}")
                 except Exception as e:  # noqa: BLE001
                     log(f"WARN control: {e!r}")
