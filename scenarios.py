@@ -36,6 +36,7 @@ VPN_HINTS = ("vpn", "впн", "hiddify", "v2ray", "nekoray", "nekobox", "happ", 
 CONNECT_WORDS = ("Подключить", "Подключиться", "Connect", "Включить", "Старт", "Start", "Запустить",
                  "Turn on", "Вкл", "ON", "Tap to connect")
 ACTIONS = ("scenario", "vpn", "vpn_off")
+UNSAFE = ("delete_folder", "delete_selected", "delete_confirm", "uninstall", "startup_off", "quit")
 
 
 def new_id():
@@ -71,8 +72,15 @@ def match(text, settings):
             p = _norm(ph)
             if not p:
                 continue
-            if t == p or t.startswith(p + " ") or (len(p) >= 6 and p in t) or \
-                    SequenceMatcher(None, t, p).ratio() >= 0.86:
+            # совпадение только по своей фразе: точно, в начале команды или целыми словами;
+            # похожее звучание — лишь при очень близкой фразе (одна-две буквы разницы)
+            fill = {"пожалуйста", "сейчас", "мне", "ка", "давай", "включи", "запусти", "режим",
+                    "а", "ну", "вот", "уже", "и"}
+            whole = re.search(rf"(^|\s){re.escape(p)}(\s|$)", t) is not None and \
+                all(w in fill for w in re.sub(rf"(^|\s){re.escape(p)}(\s|$)", " ", t).split())
+            close = len(p) >= 8 and abs(len(t) - len(p)) <= 2 and \
+                SequenceMatcher(None, t, p).ratio() >= 0.93
+            if t == p or whole or close:
                 return {"action": "scenario", "scenario": sc,
                         "vpn": dict(settings["vpn"] or {})}
     return None
@@ -235,10 +243,10 @@ def run_steps(sc, cfg, depth=0):
                 text = st.get("text", "")
                 intent = (timers.parse(text) or system.parse(text) or control.parse(text)
                           or commands.parse(text))
-                if intent["action"] in ACTIONS:
-                    continue
+                if intent["action"] in ACTIONS or intent["action"] in UNSAFE:
+                    continue                        # удаление и т.п. в сценариях не выполняем
                 if intent["action"].startswith("timer_"):
-                    continue                        # таймеры ставятся только из главного окна
+                    continue                        # таймеры и выключение — только из главного окна                        # таймеры ставятся только из главного окна
                 reply, _ui = actions.run(intent, {})
                 done.append(text)
                 time.sleep(0.4)

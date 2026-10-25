@@ -169,15 +169,23 @@ class AuthStore:
         return name
 
     # ---------- вход / выход ----------
+    _fails = {}
+
     def login(self, email: str, password: str) -> str:
         email = self._check_login(email)
         if not password:
             raise AuthError("Введите пароль.")
+        n, until = self._fails.get(email, (0, 0.0))
+        if time.time() < until:
+            raise AuthError(f"Слишком много попыток. Подождите {int(until - time.time()) + 1} сек.")
         user = self.users.get(email)
         if not user:
             raise AuthError("Аккаунт не найден — зарегистрируйтесь.")
         if not hmac.compare_digest(user["hash"], _hash_password(password, user["salt"])):
+            n += 1
+            self._fails[email] = (n, time.time() + (30 * (n - 4) if n >= 5 else 0))
             raise AuthError("Неверный пароль.")
+        self._fails.pop(email, None)
         self.set_session(email)
         return email
 

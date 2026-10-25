@@ -1,7 +1,7 @@
 """Котёнок и лисёнок — оригинальные персонажи SenioreM. Позы: стоит, сидит, лежит."""
 import math
 
-from drawkit import Canvas, hexc
+from drawkit import Canvas
 
 W, H, FLOOR = 300, 250, 238
 
