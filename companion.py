@@ -11,14 +11,47 @@ from PySide6.QtWidgets import QWidget
 import theme as T
 
 FIGURES = [
-    ("none", "Нет", "Без компаньона"),
-    ("girl", "Девушка", "Аниме-девушка с большими глазами"),
+    ("aki", "Аки", "Серебряные волосы и худи"),
+    ("mia", "Мия", "Розовые волосы и наушники"),
+    ("rei", "Рэй", "Хвостик, очки и бомбер"),
     ("cat", "Котик", "Пушистый кот"),
     ("fox", "Лисичка", "Рыжая лиса"),
-    ("robot", "Робот", "Робот с экраном вместо лица"),
-    ("slime", "Слайм", "Желейный слайм"),
-    ("ghost", "Привидение", "Доброе привидение"),
+    ("robot", "Робот", "Экран вместо лица"),
+    ("none", "Нет", "Без компаньона"),
 ]
+IMAGE_KINDS = ("aki", "mia", "rei")       # нарисованы заранее: assets/companions/<имя>_e*_m*.png
+KIND_ALIASES = {"girl": "aki", "slime": "mia", "ghost": "rei"}
+ASPECT = 820 / 400                         # высота / ширина картинки персонажа
+
+
+def norm_kind(kind):
+    return KIND_ALIASES.get(kind, kind)
+
+
+def tall(kind):
+    return norm_kind(kind) in IMAGE_KINDS
+
+
+_FRAMES = {}
+
+
+def _frames(kind, height):
+    """9 кадров (глаза × рот), уменьшенных заранее до нужной высоты — рисовать их почти бесплатно."""
+    key = (kind, int(height))
+    if key not in _FRAMES:
+        from PySide6.QtGui import QPixmap
+        import config
+        out = {}
+        for e in range(3):
+            for m in range(3):
+                pix = QPixmap(str(config.resource_path(f"assets/companions/{kind}_e{e}_m{m}.png")))
+                if not pix.isNull():
+                    pix = pix.scaledToHeight(int(height), Qt.SmoothTransformation)
+                out[(e, m)] = pix
+        if len(_FRAMES) > 12:
+            _FRAMES.clear()
+        _FRAMES[key] = out
+    return _FRAMES[key]
 
 
 def _c(hex_, a=255):
@@ -64,6 +97,10 @@ class FigurePainter:
 
     # ------------------------------------------------------------------ общий рисунок
     def paint(self, p, rect, kind):
+        kind = norm_kind(kind)
+        if kind in IMAGE_KINDS:
+            self._paint_image(p, rect, kind)
+            return
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         s = min(rect.width(), rect.height()) / 200.0
@@ -80,7 +117,33 @@ class FigurePainter:
         p.translate(100, 190)
         p.rotate(self.sway() * 0.6)
         p.translate(-100, -190)
-        getattr(self, "_" + kind, self._girl)(p)
+        getattr(self, "_" + kind, self._cat)(p)
+        p.restore()
+
+    def _paint_image(self, p, rect, kind):
+        h = min(rect.height(), rect.width() * ASPECT)
+        frames = _frames(kind, h)
+        op = self.eye_open()
+        e = 0 if op > 0.7 else (1 if op > 0.25 else 2)
+        m = 0 if self.mouth < 0.18 else (1 if self.mouth < 0.55 else 2)
+        pix = frames.get((e, m))
+        if pix is None or pix.isNull():
+            return
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        w = pix.width() / pix.devicePixelRatio()
+        x = rect.center().x() - w / 2
+        y = rect.bottom() - h
+        feet = QPointF(rect.center().x(), rect.bottom())
+        # дыхание и лёгкое покачивание вокруг ступней
+        breath = 1 + (0.006 * math.sin(self.t * 2.0) if self.animated else 0)
+        p.translate(feet)
+        p.rotate(self.sway() * 0.35)
+        p.scale(1.0, breath)
+        if self.speaking:
+            p.translate(0, -1.2 * abs(math.sin(self.t * 7)))
+        p.translate(-feet.x(), -feet.y())
+        p.drawPixmap(QPointF(x, y), pix)
         p.restore()
 
     def _eyes(self, p, lx, rx, y, w, h, iris, glossy=True):
@@ -389,8 +452,9 @@ class CompanionWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.painter = FigurePainter()
-        self.kind = "girl"
+        self.kind = "aki"
         self.size_px = 150
+        self.fig_w = self.fig_h = 150
         self.on_click = on_click
         self.text = ""
         self._text_until = 0.0
@@ -403,10 +467,16 @@ class CompanionWindow(QWidget):
         self._timer.start(40)
 
     def configure(self, kind, animated, size):
-        self.kind = kind
+        self.kind = norm_kind(kind)
         self.painter.animated = animated
         self.size_px = int(size)
-        w, h = int(self.size_px * 2.1), int(self.size_px * 1.55)
+        if tall(self.kind):                 # персонаж в полный рост
+            self.fig_h = int(self.size_px * 2.0)
+            self.fig_w = int(self.fig_h / ASPECT) + 8
+            w, h = self.fig_w + int(self.size_px * 1.6), self.fig_h + 10
+        else:
+            self.fig_w = self.fig_h = self.size_px
+            w, h = int(self.size_px * 2.1), int(self.size_px * 1.55)
         self.setFixedSize(w, h)
         self.place()
 
@@ -439,17 +509,21 @@ class CompanionWindow(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        fig = QRectF(self.width() - self.size_px - 6, self.height() - self.size_px - 4,
-                     self.size_px, self.size_px)
+        fig = QRectF(self.width() - self.fig_w - 6, self.height() - self.fig_h - 4,
+                     self.fig_w, self.fig_h)
         self.painter.paint(p, fig, self.kind)
         if self.text:
             p.setFont(T.font(13))
             fm = p.fontMetrics()
-            maxw = int(self.width() - self.size_px * 0.55)
+            maxw = int(self.width() - self.fig_w * 0.55)
             br = fm.boundingRect(0, 0, maxw - 24, 200, Qt.TextWordWrap, self.text)
             bw, bh = br.width() + 24, br.height() + 16
-            x = max(4, fig.left() - bw + self.size_px * 0.35)
-            y = max(4, fig.top() - bh * 0.15)
+            if tall(self.kind):
+                x = max(4, fig.left() - bw + self.fig_w * 0.3)
+                y = max(4, fig.top() + self.fig_h * 0.06)
+            else:
+                x = max(4, fig.left() - bw + self.size_px * 0.35)
+                y = max(4, fig.top() - bh * 0.15)
             r = QRectF(x, y, bw, bh)
             path = QPainterPath()
             path.addRoundedRect(r, 12, 12)
@@ -487,9 +561,9 @@ class FigurePreview(QWidget):
 
     def __init__(self, size=180):
         super().__init__()
-        self.setFixedSize(size, size)
+        self.setFixedSize(size, int(size * 1.7))
         self.painter = FigurePainter()
-        self.kind = "girl"
+        self.kind = "aki"
         t = QTimer(self)
         t.timeout.connect(self._tick)
         t.start(40)
@@ -506,4 +580,36 @@ class FigurePreview(QWidget):
             p.setFont(T.font(14))
             p.drawText(self.rect(), Qt.AlignCenter, "Без компаньона")
             return
-        self.painter.paint(p, QRectF(self.rect()), self.kind)
+        r = QRectF(self.rect())
+        if not tall(self.kind):
+            r = QRectF(0, r.height() - r.width() - 10, r.width(), r.width())
+        self.painter.paint(p, r, self.kind)
+
+
+def thumb(kind, w, h):
+    """Карточка-портрет для выбора персонажа в настройках."""
+    from PySide6.QtGui import QPixmap
+    kind = norm_kind(kind)
+    pix = QPixmap(w, h)
+    pix.fill(QColor("#0B0E15"))
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    g = QRadialGradient(QPointF(w / 2, h * 0.35), max(w, h) * 0.8)
+    g.setColorAt(0, _c(T.ACCENT, 70))
+    g.setColorAt(1, _c(T.ACCENT, 0))
+    p.fillRect(pix.rect(), QBrush(g))
+    if kind in IMAGE_KINDS:
+        fr = _frames(kind, h * 1.9).get((0, 0))
+        if fr is not None and not fr.isNull():
+            p.drawPixmap(QPointF((w - fr.width()) / 2, h * 0.02 - fr.height() * 0.02), fr)
+    elif kind == "none":
+        p.setPen(QPen(_c("#FFFFFF", 90), 3))
+        p.drawEllipse(QPointF(w / 2, h * 0.42), 26, 26)
+        p.drawLine(QPointF(w / 2 - 18, h * 0.42 + 18), QPointF(w / 2 + 18, h * 0.42 - 18))
+    else:
+        fp = FigurePainter()
+        fp.animated = False
+        fp.paint(p, QRectF(w * 0.08, h * 0.04, w * 0.84, w * 0.84), kind)
+    p.end()
+    return pix

@@ -139,11 +139,27 @@ def _planet(bd, d):
     return _cache(bd, ("planet", d, T.ACCENT), make)
 
 
+_VIG = {}
+
+
 def _vignette(p, w, h, strength=170):
-    g = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.75)
-    g.setColorAt(0.55, QColor(0, 0, 0, 0))
-    g.setColorAt(1.0, QColor(0, 0, 0, strength))
-    p.fillRect(QRectF(0, 0, w, h), QBrush(g))
+    key = (int(w), int(h), strength)
+    if key not in _VIG:
+        if len(_VIG) > 6:
+            _VIG.clear()
+        pix = QPixmap(max(1, int(w) // 4), max(1, int(h) // 4))
+        pix.fill(Qt.transparent)
+        q = QPainter(pix)
+        g = QRadialGradient(QPointF(pix.width() / 2, pix.height() / 2), max(pix.width(), pix.height()) * 0.75)
+        g.setColorAt(0.55, QColor(0, 0, 0, 0))
+        g.setColorAt(1.0, QColor(0, 0, 0, strength))
+        q.fillRect(pix.rect(), QBrush(g))
+        q.end()
+        _VIG[key] = pix
+    p.save()
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.drawPixmap(QRectF(0, 0, w, h), _VIG[key], QRectF(_VIG[key].rect()))
+    p.restore()
 
 
 def _draw_stars(p, bd, w, h, t, n=260, drift=0.006, seed=42):
@@ -166,6 +182,8 @@ def _draw_stars(p, bd, w, h, t, n=260, drift=0.006, seed=42):
 
 
 def _shooting_star(p, w, h, t, period=7.0, seed=0):
+    if T.focused():
+        return                                 # во время разговора фон стоит — без «застывших» звёзд
     k = int(t // period)
     u = (t % period) / 1.1                     # пролёт длится ~1.1 с
     if u > 1.0:
@@ -302,7 +320,7 @@ def paint_warp(bd, p, w, h, t):
     for sx, sy, z0 in stars:
         z = 1.0 - ((z0 + t * speed) % 1.0)              # 1 — далеко, 0 — рядом
         z = max(0.03, z)
-        z2 = min(1.0, z + 0.035)
+        z2 = min(1.0, z + 0.018 + 0.02 * z)
         x1, y1 = cx + sx / z * f, cy + sy / z * f
         x2, y2 = cx + sx / z2 * f, cy + sy / z2 * f
         if not (-50 < x1 < w + 50 and -50 < y1 < h + 50):
@@ -310,7 +328,7 @@ def paint_warp(bd, p, w, h, t):
         a = min(1.0, (1 - z) * 1.4)
         col = QColor("#FFFFFF") if z0 > 0.3 else QColor(tint)
         col.setAlphaF(a)
-        p.setPen(QPen(col, 0.6 + 1.8 * (1 - z), Qt.SolidLine, Qt.RoundCap))
+        p.setPen(QPen(col, 0.5 + 1.2 * (1 - z), Qt.SolidLine, Qt.RoundCap))
         p.drawLine(QPointF(x2, y2), QPointF(x1, y1))
     _vignette(p, w, h, 140)
 
@@ -402,10 +420,10 @@ def paint_grid(bd, p, w, h, t):
     g.setColorAt(1, QColor("#04020A"))
     p.fillRect(QRectF(0, 0, w, h), QBrush(g))
     p.setRenderHint(QPainter.Antialiasing)
-    _draw_stars(p, bd, w, h * 0.55, t, n=110, drift=0.001, seed=3)
-    horizon = h * 0.6
+    _draw_stars(p, bd, w, h * 0.62, t, n=110, drift=0.001, seed=3)
+    horizon = h * 0.68
     cols = _accent_set()
-    r = h * 0.2
+    r = h * 0.14
     sun_c = QPointF(w / 2, horizon - r * 0.35)
     sg = QLinearGradient(0, sun_c.y() - r, 0, sun_c.y() + r)
     sg.setColorAt(0, QColor("#FFD36E"))
