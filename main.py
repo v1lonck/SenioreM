@@ -3683,6 +3683,22 @@ def run_selftest(out_path):
             with wave.open(raw, "wb") as wf:
                 voice.synthesize_wav(_st.prepare(long), wf, syn_config=tts._syn_config(1.0))
             t_raw = tts.wav_seconds(raw)
+            import numpy as _np
+            with wave.open(raw, "rb") as _w:
+                _a = _np.frombuffer(_w.readframes(_w.getnframes()), _np.int16).astype(_np.float32)
+                _sr = _w.getframerate()
+            _win = _sr // 100
+            _r = _np.sqrt((_a[:len(_a) // _win * _win].reshape(-1, _win) ** 2).mean(axis=1))
+            _q = _r < max(60.0, float(_np.percentile(_r, 95)) * 0.03)
+            gaps, run = [], 0
+            for v in _q:
+                if v:
+                    run += 1
+                else:
+                    if run >= 8:
+                        gaps.append(run * 10)
+                    run = 0
+            log(f"pauses in raw speech (ms): {gaps}; trailing {run * 10}")
             tts._tighten(raw)
             log(f"pause test: raw {t_raw:.2f}s -> tight {tts.wav_seconds(raw):.2f}s")
         except Exception as e:  # noqa: BLE001
