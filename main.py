@@ -860,7 +860,7 @@ class HomeScreen(Backdrop):
         self.clock = label("", 14, role="muted")
         top.addWidget(self.clock)
         top.addSpacing(18)
-        chat_btn = button("Чат", "ghost", 14, QFont.Normal)
+        chat_btn = button("  Чат", "ghost", 14, QFont.Normal)
         icons.set_icon(chat_btn, "chat", 17, T.TEXT, 1.4)
         chat_btn.setToolTip("Написать помощнику")
         chat_btn.clicked.connect(lambda: self.win.open_chat())
@@ -1062,13 +1062,13 @@ class HomeScreen(Backdrop):
         self._upd_dl.ready.connect(self._update_downloaded)
         self._upd_dl.failed.connect(self._update_failed)
         self._upd_dl.start()
-        self.upd_btn.setText(f"Скачиваю версию {version}…")
+        self.upd_btn.setText(f"  Скачиваю версию {version}…")
         icons.set_icon(self.upd_btn, "download", 16, "#0A0C10", 1.8)
         self.upd_btn.setEnabled(False)
         self.upd_btn.show()
 
     def _update_progress(self, frac, _text):
-        self.upd_btn.setText(f"Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
+        self.upd_btn.setText(f"  Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
 
     def _update_failed(self, _msg):
         self._upd_busy = False
@@ -1081,7 +1081,7 @@ class HomeScreen(Backdrop):
             self._install_after = False
             QTimer.singleShot(200, self._install_update)
             return
-        self.upd_btn.setText(f"Обновить до {self._upd_version}")
+        self.upd_btn.setText(f"  Обновить до {self._upd_version}")
         icons.set_icon(self.upd_btn, "update", 17, "#0A0C10", 1.7)
         self.upd_btn.setEnabled(True)
         self.upd_btn.show()
