@@ -163,6 +163,7 @@ def _log(text):
 class Speaker(QThread):
     """Озвучка фраз голосом Piper «Руслан» (офлайн). Запасной вариант — голос Windows."""
     speaking = Signal(bool)
+    said = Signal(str)
     problem = Signal(str)
 
     def __init__(self, voice=None, parent=None):
@@ -224,6 +225,7 @@ class Speaker(QThread):
             text, speed, cache, cloud = item
             self._stop_now.clear()
             self.speaking.emit(True)
+            self.said.emit(text)
             try:
                 self._speak(text, speed, cache, cloud)
             except Exception:  # noqa: BLE001

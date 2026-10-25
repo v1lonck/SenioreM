@@ -26,14 +26,29 @@ PRESETS = [
 ]
 BACKGROUNDS = [
     ("aurora", "Северное сияние", "Живой фон, плавно переливается"),
+    ("stars", "Звёздное небо", "Мерцающие звёзды, медленный полёт"),
+    ("particles", "Сеть частиц", "Плавающие точки, соединённые линиями"),
+    ("waves", "Волны", "Светящиеся волны в темноте"),
+    ("grid", "Неон", "Неоновая сетка в стиле 80-х"),
     ("glow", "Свечение", "Мягкие пятна света"),
+    ("oled", "Чёрный", "Полностью чёрный, без эффектов"),
     ("solid", "Однотонный", "Спокойный тёмный фон"),
     ("glass", "Стекло", "Сквозь окно виден рабочий стол"),
 ]
+THEMES = [
+    ("Полночь", "#5B8CFF", "aurora", "digital", "sphere"),
+    ("Космос", "#A78BFA", "stars", "analog", "particles"),
+    ("Матрица", "#34D399", "particles", "digital", "equalizer"),
+    ("Неон", "#F472B6", "grid", "digital", "rings"),
+    ("Закат", "#FB923C", "waves", "digital", "blob"),
+    ("Океан", "#22D3EE", "waves", "analog", "waves"),
+    ("OLED", "#CBD5E1", "oled", "digital", "sphere"),
+]
+ANIMATED = ("aurora", "stars", "particles", "waves", "grid")
 APPEARANCE = {"accent": "#5B8CFF", "background": "aurora", "glass": 0.55, "panels": 0.72,
               "widgets": {"clock": True, "weather": True, "system": True, "volume": True,
                           "history": True, "notes": False, "tips": True},
-              "clock_style": "digital", "city": ""}
+              "clock_style": "digital", "city": "", "orb_style": "sphere", "eco": False}
 _listeners = []
 
 FAMILY = "Segoe UI"
@@ -90,7 +105,7 @@ def _recompute():
     global BG, SURFACE, LINE, ACCENT, ACCENT_SOFT, MUTED, FAINT
     ACCENT = QColor(APPEARANCE.get("accent") or "#5B8CFF").name()
     ACCENT_SOFT = _mix(ACCENT, "#FFFFFF", 0.45)
-    BG = _mix("#090B10", ACCENT, 0.035)
+    BG = "#000000" if APPEARANCE.get("background") == "oled" else _mix("#090B10", ACCENT, 0.035)
     SURFACE = _mix("#141822", ACCENT, 0.05)
     LINE = _mix("#222836", ACCENT, 0.14)
     MUTED = _mix("#8A93A6", ACCENT, 0.08)
@@ -196,6 +211,14 @@ QFrame[role="card"] {{
     border: 1px solid {rgba(_mix(LINE, A, 0.25), 0.9)};
     border-top: 1px solid {rgba(_mix(LINE, "#FFFFFF", 0.25), 0.9)};
     border-radius: 18px;
+}}
+QFrame[role="bubble_me"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT_SOFT}, stop:1 {A});
+    border-radius: 16px; border-bottom-right-radius: 4px;
+}}
+QFrame[role="bubble_bot"] {{
+    background: {rgba(_mix(SURFACE, "#FFFFFF", 0.04), 0.92)}; border: 1px solid {LINE};
+    border-radius: 16px; border-top-left-radius: 4px;
 }}
 QFrame[role="chip"] {{
     background: {rgba(A, 0.10)}; border: 1px solid {rgba(A, 0.28)}; border-radius: 12px;
@@ -372,7 +395,11 @@ class Backdrop(QWidget):
         super().resizeEvent(e)
 
     def _tick(self):
-        if APPEARANCE.get("background") == "aurora" and self.isVisible():
+        if APPEARANCE.get("eco"):
+            return
+        w = self.window()
+        if APPEARANCE.get("background") in ANIMATED and self.isVisible() and \
+                not (w is not None and w.isMinimized()):
             self._t += 0.07
             self.update()
 
@@ -428,9 +455,23 @@ class Backdrop(QWidget):
             p.fillRect(self.rect(), qcolor(BG, 255 * (1 - float(APPEARANCE.get("glass", 0.55)))))
         else:
             p.fillRect(self.rect(), QColor(BG))
+        if style == "oled":
+            return
         if style == "aurora":
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawPixmap(self.rect(), self._render_blobs(w, h, self._t))
+        elif style == "stars":
+            self._paint_stars(p, w, h)
+            return
+        elif style == "particles":
+            self._paint_particles(p, w, h)
+            return
+        elif style == "waves":
+            self._paint_waves(p, w, h)
+            return
+        elif style == "grid":
+            self._paint_grid(p, w, h)
+            return
         elif style in ("glow", "glass"):
             if self._static is None or self._static.size() != self.size():
                 self._static = self._render_blobs(w, h, 0.0)
@@ -439,6 +480,112 @@ class Backdrop(QWidget):
         if self._dots is None or self._dots.size() != self.size():
             self._dots = self._render_dots()
         p.drawPixmap(0, 0, self._dots)
+
+
+def _stars_init(self):
+    import random
+    rnd = random.Random(42)
+    self._stars = [(rnd.random(), rnd.random(), rnd.uniform(0.4, 1.6), rnd.uniform(0, 6.28),
+                    rnd.uniform(0.2, 1.0)) for _ in range(220)]
+    self._pts = [[rnd.random(), rnd.random(), rnd.uniform(-1, 1) * 0.0006,
+                  rnd.uniform(-1, 1) * 0.0006] for _ in range(70)]
+
+
+def _paint_stars(self, p, w, h):
+    if not hasattr(self, "_stars"):
+        _stars_init(self)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    if self._static is None or self._static.size() != self.size():
+        self._static = self._render_blobs(w, h, 2.0)
+    p.setOpacity(0.55)
+    p.drawPixmap(self.rect(), self._static)
+    p.setOpacity(1.0)
+    p.setPen(Qt.NoPen)
+    t = self._t
+    for x, y, size, ph, depth in self._stars:
+        xx = ((x + t * 0.004 * depth) % 1.0) * w
+        a = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * (0.8 + depth) + ph))
+        col = QColor(_mix("#FFFFFF", ACCENT, 0.25 * depth))
+        col.setAlphaF(a * (0.4 + 0.6 * depth))
+        p.setBrush(col)
+        p.drawEllipse(QPointF(xx, y * h), size * depth + 0.3, size * depth + 0.3)
+
+
+def _paint_particles(self, p, w, h):
+    if not hasattr(self, "_pts"):
+        _stars_init(self)
+    p.setRenderHint(QPainter.Antialiasing)
+    for pt in self._pts:
+        pt[0] = (pt[0] + pt[2]) % 1.0
+        pt[1] = (pt[1] + pt[3]) % 1.0
+    pos = [(pt[0] * w, pt[1] * h) for pt in self._pts]
+    lim = min(w, h) * 0.16
+    lim2 = lim * lim
+    acc = QColor(ACCENT)
+    for i in range(len(pos)):
+        x1, y1 = pos[i]
+        for j in range(i + 1, len(pos)):
+            dx, dy = pos[j][0] - x1, pos[j][1] - y1
+            d2 = dx * dx + dy * dy
+            if d2 < lim2:
+                acc.setAlphaF(0.22 * (1 - d2 / lim2))
+                p.setPen(QPen(acc, 1))
+                p.drawLine(QPointF(x1, y1), QPointF(pos[j][0], pos[j][1]))
+    p.setPen(Qt.NoPen)
+    p.setBrush(qcolor(ACCENT_SOFT, 170))
+    for x, y in pos:
+        p.drawEllipse(QPointF(x, y), 2.0, 2.0)
+
+
+def _paint_waves(self, p, w, h):
+    from PySide6.QtGui import QPainterPath
+    p.setRenderHint(QPainter.Antialiasing)
+    t = self._t
+    for i in range(6):
+        path = QPainterPath()
+        amp = h * (0.05 + 0.02 * i)
+        base = h * (0.55 + 0.06 * i)
+        for k in range(0, 121):
+            x = w * k / 120
+            y = base + amp * math.sin(k / 120 * 6.28 * (1.2 + 0.25 * i) + t * (0.6 + 0.15 * i) + i) \
+                + amp * 0.4 * math.sin(k / 120 * 6.28 * 3 - t * 0.9)
+            path.moveTo(x, y) if k == 0 else path.lineTo(x, y)
+        col = QColor(_mix(ACCENT, ACCENT_SOFT, i / 6))
+        col.setAlphaF(0.32 - 0.04 * i)
+        p.setPen(QPen(col, 2.2 - 0.25 * i))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+
+def _paint_grid(self, p, w, h):
+    p.setRenderHint(QPainter.Antialiasing)
+    horizon = h * 0.58
+    sun = QRadialGradient(QPointF(w / 2, horizon), h * 0.32)
+    sun.setColorAt(0, qcolor(ACCENT, 110))
+    sun.setColorAt(1, qcolor(ACCENT, 0))
+    p.fillRect(self.rect(), QBrush(sun))
+    col = QColor(ACCENT)
+    for i in range(1, 22):                    # горизонтальные линии бегут к зрителю
+        z = (i - (self._t * 0.9) % 1.0) / 21
+        y = horizon + (h - horizon) * (z ** 2.2)
+        col.setAlphaF(0.08 + 0.4 * z)
+        p.setPen(QPen(col, 1.0 + 1.2 * z))
+        p.drawLine(QPointF(0, y), QPointF(w, y))
+    for k in range(-14, 15):                  # лучи к горизонту
+        x0 = w / 2 + k * w * 0.11
+        col.setAlphaF(0.22)
+        p.setPen(QPen(col, 1.0))
+        p.drawLine(QPointF(w / 2 + k * w * 0.012, horizon), QPointF(x0, h))
+    col.setAlphaF(0.6)
+    p.setPen(QPen(col, 1.5))
+    p.drawLine(QPointF(0, horizon), QPointF(w, horizon))
+
+
+Backdrop._paint_stars = _paint_stars
+Backdrop._paint_particles = _paint_particles
+Backdrop._paint_waves = _paint_waves
+Backdrop._paint_grid = _paint_grid
 
 
 def enable_glass(widget):

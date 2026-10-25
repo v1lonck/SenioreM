@@ -610,8 +610,10 @@ def _score(key: str, app: str) -> float:
     if flat_k == flat_a:
         return 0.98
     words = app.split()
-    if key in words or (len(flat_k) >= 3 and flat_a.startswith(flat_k)):
+    if (words and key == words[0]) or (len(flat_k) >= 3 and flat_a.startswith(flat_k)):
         return 0.92 - 0.01 * max(0, len(words) - 1)
+    if key in words:                       # слово из середины названия — слабое совпадение
+        return 0.78
     if len(flat_k) >= 4 and flat_k in flat_a:
         return 0.85 - 0.01 * max(0, len(words) - 1)
     best = SequenceMatcher(None, flat_k, flat_a).ratio()
@@ -620,8 +622,10 @@ def _score(key: str, app: str) -> float:
             best = max(best, SequenceMatcher(None, flat_k, w).ratio() - 0.04)
     # звучание: русская запись английского названия
     sk, sa = _skel(key), _skel(app)
-    if len(sk) >= 3 and any(_skel(w) == sk for w in words):
-        best = max(best, 0.88 - 0.01 * max(0, len(words) - 1))   # совпало целое слово названия
+    if len(sk) >= 3 and words and _skel(words[0]) == sk:
+        best = max(best, 0.88 - 0.01 * max(0, len(words) - 1))   # совпало первое слово названия
+    elif len(sk) >= 3 and any(_skel(w) == sk for w in words):
+        best = max(best, 0.78)
     if len(sk) >= 4 and sa:
         if sk == sa:
             best = max(best, 0.9)
@@ -651,23 +655,23 @@ def _phrases(name: str):
     return out
 
 
-def find_program(name: str):
+def find_program(name: str, threshold=0.8):
     """-> (имя, цель) из меню «Пуск» или None."""
     for ph in _phrases(name):
         keys = _keys(ph)
         if keys:
-            hit = _best(keys, refresh_apps())
+            hit = _best(keys, refresh_apps(), threshold)
             if hit:
                 return hit
     return None
 
 
-def find_local(name: str):
+def find_local(name: str, threshold=0.84):
     """-> (имя, ("path", путь)) из Загрузок, Рабочего стола, Документов или None."""
     for ph in _phrases(name):
         keys = {k for k in _keys(ph) if len(k.replace(" ", "")) >= 3}
         if keys:
-            hit = _best(keys, refresh_local(), threshold=0.84)
+            hit = _best(keys, refresh_local(), threshold=threshold)
             if hit:
                 return hit
     return None

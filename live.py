@@ -122,17 +122,36 @@ def rates():
     return _cached("cbr", 1800, lambda: _get("https://www.cbr-xml-daily.ru/daily_json.js"))
 
 
+def _rate_value(code):
+    try:
+        v = rates()["Valute"].get(code)
+        if v:
+            return v["Value"] / v["Nominal"], "по ЦБ"
+    except Exception:  # noqa: BLE001 — запасной источник
+        pass
+    data = _cached("er:" + code, 1800, lambda: _get(f"https://open.er-api.com/v6/latest/{code}"))
+    return data["rates"]["RUB"], "на бирже"
+
+
 def rate_phrase(code="USD"):
-    data = rates()
-    v = data["Valute"].get(code)
-    if not v:
-        return "Не нашёл такую валюту."
-    per = v["Value"] / v["Nominal"]
+    per, src = _rate_value(code)
     name = CURRENCIES.get(code, (code, code))[1]
     rub, kop = int(per), round((per - int(per)) * 100)
     from speechtext import plural
-    return (f"Курс {name} по ЦБ — {rub} {plural(rub, 'рубль', 'рубля', 'рублей')} "
+    return (f"Курс {name} {src} — {rub} {plural(rub, 'рубль', 'рубля', 'рублей')} "
             f"{kop} {plural(kop, 'копейка', 'копейки', 'копеек')}.")
+
+
+COINS = {"bitcoin": "биткоина", "ethereum": "эфира", "toncoin": "тонкоина", "tether": "тезера"}
+
+
+def crypto_phrase(coin="bitcoin"):
+    data = _cached("cg:" + coin, 300, lambda: _get(
+        "https://api.coingecko.com/api/v3/simple/price?vs_currencies=usd,rub&ids=" + coin))
+    p = data[coin]
+    usd, rub = p.get("usd", 0), p.get("rub", 0)
+    return (f"Курс {COINS.get(coin, coin)} — {round(usd):,} долларов, это примерно "
+            f"{round(rub):,} рублей.").replace(",", " ")
 
 
 # ------------------------------------------------------------------ поиск
@@ -240,7 +259,15 @@ def build_context(question, appearance):
             parts += [rate_phrase(c) for c in ("USD", "EUR", "CNY")]
         except Exception:  # noqa: BLE001
             pass
-    if FRESH.search(q) and not (WEATHERY.search(q) and len(q.split()) < 8):
+    who = re.match(r"^(?:а |скажи |расскажи |ты знаешь )?(?:кто так(?:ой|ая|ие)|что так(?:ое|ой)|"
+                   r"кто (?:это|был|была)|расскажи (?:про|о|об))\s+(.+)$", q.strip(" ?!."))
+    if who:
+        try:
+            for title, snip in _wiki(who.group(1), 2)[:1]:
+                parts.append(f"Википедия, «{title}»: {snip[:700]}")
+        except Exception:  # noqa: BLE001
+            pass
+    elif FRESH.search(q) and not (WEATHERY.search(q) and len(q.split()) < 8):
         try:
             for title, snip in web_search(question):
                 parts.append(f"— {title}: {snip}")

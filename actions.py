@@ -168,6 +168,14 @@ def open_by_name(name, cfg):
     if not name:
         return "Что открыть?"
     pretty = sites.clean(name)
+    site = sites.find_site(name)
+    if site and not site[1] and "сайт" not in name:
+        # известный сайт (ютуб, вк…): приложение — только при точном совпадении названия
+        prog = sites.find_program(name, threshold=0.95)
+        if prog:
+            return f"{sites.launch(prog[1])} {prog[0]}."
+        webbrowser.open(site[0])
+        return f"Открываю {pretty}."
     if "сайт" not in name:
         prog = sites.find_program(name)
         if prog:
@@ -321,11 +329,12 @@ def close_app(intent):
     return f"Закрыл {name}." if found else f"Не нашёл открытую программу «{name}»."
 
 def try_launch(text):
-    """Короткая фраза, совпавшая с программой на компьютере, — запускаем её."""
-    if not text or len(text.split()) > 3:
+    """Одно-два слова, ТОЧНО совпавшие с программой на компьютере («осу», «запрет»), — запускаем.
+    Случайные слова из разговора программы не запускают."""
+    if not text or len(text.split()) > 2:
         return None
     import sites
-    hit = sites.find_program(text) or sites.find_local(text)
+    hit = sites.find_program(text, threshold=0.92) or sites.find_local(text, threshold=0.92)
     if hit:
         return f"{sites.launch(hit[1])} {hit[0]}."
     return None
