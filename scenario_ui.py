@@ -14,7 +14,7 @@ import sites
 import theme as T
 from theme import Toggle, button, card, field, label
 
-STEP_BUTTONS = (("app", "+ Программа или игра"), ("site", "+ Сайт"), ("command", "+ Команда"),
+STEP_BUTTONS = (("game", "+ Игра"), ("app", "+ Программа"), ("site", "+ Сайт"), ("command", "+ Команда"),
                 ("vpn", "+ VPN"), ("click", "+ Нажать кнопку"), ("file", "+ Файл или скрипт"),
                 ("wait", "+ Пауза"))
 
@@ -134,6 +134,8 @@ class ScenariosPage(QWidget):
                        "открывает Steam, Discord и обход блокировок, а «я дома» — Яндекс Музыку.")
         # ---- VPN
         self._build_vpn()
+        self.lay.addSpacing(22)
+        self._build_games()
         self.lay.addSpacing(26)
         self.lay.addWidget(label("ВАШИ СЦЕНАРИИ", 12, QFont.DemiBold, "muted", spacing=0.6))
         self.lay.addSpacing(10)
@@ -190,6 +192,50 @@ class ScenariosPage(QWidget):
                            "администратора» в разделе «Запуск».", 12, role="faint", wrap=True))
         self.lay.addWidget(box)
 
+    def _build_games(self):
+        box, bl = card((22, 18, 22, 18), 8)
+        head = QHBoxLayout()
+        self.games_title = label("Ваши игры", 16, QFont.DemiBold)
+        head.addWidget(self.games_title, 1)
+        bl.addLayout(head)
+        bl.addWidget(label("Нажмите, чтобы запустить. Голосом: «Сеньор, открой …». Добавить игру в "
+                           "сценарий — кнопка «+ Игра» в сценарии.", 12, role="muted", wrap=True))
+        bl.addSpacing(6)
+        self.games_grid = QGridLayout()
+        self.games_grid.setHorizontalSpacing(8)
+        self.games_grid.setVerticalSpacing(8)
+        bl.addLayout(self.games_grid)
+        self.lay.addWidget(box)
+
+    def _fill_games(self):
+        while self.games_grid.count():
+            it = self.games_grid.takeAt(0)
+            if it.widget():
+                it.widget().hide()
+                it.widget().deleteLater()
+        found = sites.games()
+        self.games_title.setText(f"Ваши игры · {len(found)}" if found else "Ваши игры")
+        if not found:
+            self.games_grid.addWidget(label("Игры не найдены. Если игра установлена — нажмите "
+                                            "«Обновить список» в разделе «Программы и игры».", 13,
+                                            role="faint", wrap=True), 0, 0)
+            return
+        for k, (name, tgt, src) in enumerate(found[:60]):
+            b = button(name if len(name) <= 26 else name[:25] + "…", "ghost", 13, QFont.Normal)
+            b.setToolTip(f"{name} · {src}")
+            b.clicked.connect(lambda _=False, n=name, t=tgt: self._run_game(n, t))
+            self.games_grid.addWidget(b, k // 3, k % 3)
+
+    def _run_game(self, name, tgt):
+        def work():
+            try:
+                import actions
+                actions._start((name, tuple(tgt)), "игры в настройках")
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=work, daemon=True).start()
+        self.profile._flash(f"Запускаю {name}")
+
     def _vpn(self):
         return dict(self.settings["vpn"] or {}) if self.settings is not None else {}
 
@@ -204,10 +250,12 @@ class ScenariosPage(QWidget):
 
     def _pick_vpn(self):
         dlg = AppPicker(self, "Какой VPN включать")
-        vpns = [x for x in dlg.items if scenarios.is_vpn(x[0])]
-        if vpns:
-            dlg.items = vpns + [x for x in dlg.items if x not in vpns]
-            dlg._fill()
+        vpns = [x for x in dlg.items if scenarios.is_vpn(x[0]) or
+                (x[1][0] in ("path", "lnk") and scenarios.is_vpn(os.path.basename(x[1][1])))]
+        dlg.items = vpns
+        dlg._fill()
+        if not vpns:
+            dlg.list.addItem("VPN на компьютере не найден — выберите файл кнопкой «Файл на компьютере…»")
         if dlg.exec() and dlg.result_value:
             name, tgt = dlg.result_value
             self._set_vpn(app={"name": name, "target": tgt})
@@ -235,6 +283,7 @@ class ScenariosPage(QWidget):
         self.settings = settings
         self.data = copy.deepcopy(scenarios.get(settings))
         self._refresh_vpn()
+        self._fill_games()
         self._render()
 
     def _save(self):
@@ -371,7 +420,14 @@ class ScenariosPage(QWidget):
 
     def _add_step(self, i, kind):
         st = None
-        if kind == "app":
+        if kind == "game":
+            dlg = AppPicker(self, "Выберите игру")
+            dlg.items = sites.games()
+            dlg._fill()
+            if dlg.exec() and dlg.result_value:
+                name, tgt = dlg.result_value
+                st = {"type": "app", "name": name, "target": tgt, "admin": False}
+        elif kind == "app":
             dlg = AppPicker(self)
             if dlg.exec() and dlg.result_value:
                 name, tgt = dlg.result_value

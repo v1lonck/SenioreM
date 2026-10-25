@@ -551,6 +551,42 @@ def _load_index():
         return []
 
 
+GAME_WORDS = ("roblox", "minecraft", "osu", "genshin", "valorant", "league of legends", "fortnite",
+              "dota", "counter strike", "cs2", "grand theft auto", "gta", "apex", "overwatch", "pubg",
+              "warface", "world of tanks", "world of warships", "war thunder", "rust", "terraria",
+              "stardew", "among us", "fall guys", "rocket league", "hearthstone", "starcraft", "diablo",
+              "call of duty", "battlefield", "the sims", "sims", "fifa", "ea sports fc", "nba 2k",
+              "honkai", "zenless", "wuthering", "standoff", "brawl", "clash", "tlauncher", "lunar client",
+              "badlion", "garry", "team fortress", "left 4 dead", "half life", "portal", "witcher",
+              "cyberpunk", "elden ring", "dark souls", "skyrim", "fallout", "minecraft launcher",
+              "geometry dash", "hollow knight", "dead by daylight", "rainbow six", "escape from tarkov",
+              "lethal company", "phasmophobia", "palworld", "helldivers", "deadlock", "marvel rivals",
+              "the finals", "naraka", "lost ark", "path of exile", "warframe", "destiny", "halo",
+              "forza", "need for speed", "assassin", "far cry", "red dead", "mortal kombat", "tekken",
+              "street fighter", "osu lazer", "chess", "мир танков", "калибр", "танки")
+GAME_PATHS = ("steamapps", "epic games", "riot games", "ubisoft", "battle net", "battle.net",
+              "rockstar games", "\\games\\", "\\игры\\", "gog galaxy", "ea games", "electronic arts",
+              "wargaming", "lesta", "mihoyo", "hoyoplay", "roblox", "minecraft", "osulazer", "xboxgames")
+
+
+def is_game(name, target, src=""):
+    """Похоже ли на игру: из Steam/Epic/GOG, известное название или лежит в папке игр."""
+    if src in ("Steam", "Epic Games", "GOG"):
+        return True
+    n = " " + _norm(name) + " "
+    if any((" " + w + " ") in n or (len(w) >= 6 and w in n) for w in GAME_WORDS):
+        return True
+    val = (target[1] if target else "").lower().replace("/", "\\")
+    if target and target[0] == "url" and ("steam://" in val or "epicgames" in val):
+        return True
+    return any(p in val for p in GAME_PATHS)
+
+
+def games():
+    """[(имя, цель, источник)] — только игры."""
+    return [x for x in all_targets() if x[2] not in ("Папка", "Файл") and is_game(*x)]
+
+
 def all_targets():
     """[(имя, цель, источник)] — программы, игры и скачанные папки/файлы, для выбора в настройках."""
     out = [(o, t, src) for _n, o, t, src in _apps_full if src != "Эмулятор"]

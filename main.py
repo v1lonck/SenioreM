@@ -3522,6 +3522,9 @@ def main():
 
     try:
         import elevate
+        code = elevate.handle_cli()
+        if code is not None:
+            os._exit(code)
         if elevate.maybe_restart_elevated():   # режим администратора: перезапуск через задачу
             return 0
     except Exception:  # noqa: BLE001
