@@ -370,13 +370,15 @@ class Pack:
         self.meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         self.name = self.meta.get("name", pid)
         self.frames, self.pos, self.tags = [], [], []
-        if self.meta.get("v") == 2:
+        if self.meta.get("v") == 2 or isinstance(self.meta.get("frames"), list):
             for fr in self.meta["frames"]:
+                if not isinstance(fr, dict) or "f" not in fr:
+                    continue
                 pix = QPixmap(str(d / fr["f"]))
                 if pix.isNull():
                     continue
                 self.frames.append(pix)
-                self.pos.append((fr["x"], fr["y"]))
+                self.pos.append((float(fr.get("x", 0)), float(fr.get("y", 0))))
                 self.tags.append(set(fr.get("tags", [])))
             self.idle_h = self.meta.get("idle_h", 100)
             self.idle_w = self.meta.get("idle_w", 100)
@@ -448,7 +450,7 @@ def get_pack(kind):
     if pid not in _PACKS:
         try:
             p = Pack(pid)
-        except (OSError, ValueError, KeyError):
+        except Exception:  # noqa: BLE001 — повреждённый или старый набор не должен ронять программу
             return None
         if not p.frames:
             return None
