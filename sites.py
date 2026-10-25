@@ -93,7 +93,7 @@ ALIASES = {
     "утоппент": "utorrent", "ватсапп": "whatsapp", "лаунчер": "launcher", "роблокс": "roblox",
     "фортнайт": "fortnite", "валорант": "valorant", "батл нет": "battle.net",
     "тим спик": "teamspeak", "энидеск": "anydesk", "тимвьюер": "teamviewer",
-    "осу": "osu", "оса": "osu", "запрет": "zapret", "запрета": "zapret",
+    "осу": "osu", "оса": "osu", "озу": "osu", "оза": "osu", "осю": "osu", "ozu": "osu", "запрет": "zapret", "запрета": "zapret",
     "тг": "telegram", "телега": "telegram", "телегу": "telegram", "дс": "discord",
     "дискордик": "discord", "ютубчик": "youtube", "хромчик": "chrome", "стимчик": "steam",
     "вкшку": "vk", "вкшка": "vk", "ворлд оф танкс": "world of tanks", "танки": "world of tanks",
@@ -208,15 +208,39 @@ def _appid_ok(appid: str) -> bool:
 _shell = None
 
 
-def _lnk_target(path: str) -> str:
+def _lnk_info(path: str):
+    """-> (цель, аргументы) ярлыка."""
     global _shell
     try:
         if _shell is None:
             import comtypes.client
             _shell = comtypes.client.CreateObject("WScript.Shell", dynamic=True)
-        return str(_shell.CreateShortcut(path).TargetPath or "")
+        sc = _shell.CreateShortcut(path)
+        return str(sc.TargetPath or ""), str(sc.Arguments or "")
     except Exception:  # noqa: BLE001
-        return ""
+        return "", ""
+
+
+def _lnk_target(path: str) -> str:
+    return _lnk_info(path)[0]
+
+
+# Ярлыки Android-приложений из эмуляторов (BlueStacks создаёт «Telegram», «Roblox»…):
+# их не путаем с настоящими программами — только если прямо сказали «в блюстаксе».
+EMU_MARKERS = ("bluestacks", "hd-player", "hd-runapp", "memu", "nox.exe", "noxvm", "ldplayer",
+               "dnplayer", "mumu", "gameloop", "androidemulator", "launchapp")
+EMU_TAG = "bluestacks"
+
+
+def _is_emulated(name: str, target) -> bool:
+    if any(m in name.lower() for m in ("bluestacks", "memu", "nox", "ldplayer", "mumu", "gameloop")):
+        return False                         # это сам эмулятор
+    kind, value = target
+    text = value
+    if kind == "lnk" and value.lower().endswith(".lnk"):
+        text = " ".join((value,) + _lnk_info(value))
+    low = text.lower()
+    return any(m in low for m in EMU_MARKERS)
 
 
 def _lnk_ok(path: str) -> bool:
@@ -293,7 +317,11 @@ def refresh_apps(force=False):
                    + _scan_uninstall())
         for name, target, src in sources:
             n = _norm(name)
-            if not n or any(k in n for k in SKIP) or n in items:
+            if not n or any(k in n for k in SKIP):
+                continue
+            if _is_emulated(name, target):
+                n, name, src = f"{n} {EMU_TAG}", f"{name} (BlueStacks)", "Эмулятор"
+            if n in items:
                 continue
             if target[0] == "lnk":
                 ok = _lnk_ok(target[1])
@@ -454,7 +482,7 @@ def _scan_uninstall():
 
 def _index_file():
     import config
-    return config.data_dir() / "apps_index.json"
+    return config.data_dir() / "apps_index2.json"
 
 
 def _save_index(items):
@@ -610,12 +638,16 @@ def _score(key: str, app: str) -> float:
     if flat_k == flat_a:
         return 0.98
     words = app.split()
-    if (words and key == words[0]) or (len(flat_k) >= 3 and flat_a.startswith(flat_k)):
+    if words and key == words[0]:
         return 0.92 - 0.01 * max(0, len(words) - 1)
+    first = words[0] if words else flat_a
+    if len(flat_k) >= 4 and flat_a.startswith(flat_k) and len(flat_k) >= 0.6 * len(first):
+        # начало названия: «телеграм» ~ «telegram desktop»; но «роб» — это ещё не «roblox»
+        return 0.9 - 0.01 * max(0, len(words) - 1)
     if key in words:                       # слово из середины названия — слабое совпадение
         return 0.78
-    if len(flat_k) >= 4 and flat_k in flat_a:
-        return 0.85 - 0.01 * max(0, len(words) - 1)
+    if len(flat_k) >= 5 and flat_k in flat_a:
+        return 0.84 - 0.01 * max(0, len(words) - 1)
     best = SequenceMatcher(None, flat_k, flat_a).ratio()
     for w in words:
         if len(w) >= 3:
@@ -638,7 +670,10 @@ def _score(key: str, app: str) -> float:
 
 def _best(keys, items, threshold=0.8):
     best, best_score = None, 0.0
+    emu_ok = any(EMU_TAG in k or "эмулятор" in k for k in keys)
     for n, orig, target in items:
+        if not emu_ok and n.endswith(" " + EMU_TAG):
+            continue
         sc = max(_score(k, n) for k in keys)
         if sc > best_score:
             best, best_score = (orig, target), sc
@@ -698,9 +733,26 @@ def _pick_launcher(folder: str):
     return None
 
 
-def launch(target):
+LAUNCH_LOG = []          # последние запуски: (время, что, цель, почему)
+
+
+def log_launch(name, target, why=""):
+    import datetime
+    item = (datetime.datetime.now().strftime("%d.%m %H:%M:%S"), name, f"{target[0]}: {target[1]}", why)
+    LAUNCH_LOG.append(item)
+    del LAUNCH_LOG[:-30]
+    try:
+        import config
+        with open(config.data_dir() / "launches.log", "a", encoding="utf-8") as f:
+            f.write(" | ".join(item) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def launch(target, name="", why=""):
     """Запуск без блокировки программы (ошибки Windows не «замораживают» помощника)."""
     kind, value = target
+    log_launch(name or value, target, why)
     if kind == "app":
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + value], creationflags=NO_WINDOW)
         return "Запускаю"

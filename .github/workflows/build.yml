@@ -2,7 +2,7 @@ name: Сборка SenioreM
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -150,6 +150,7 @@ jobs:
           path: Output/SenioreM-Setup.exe
 
       - name: Релиз
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
