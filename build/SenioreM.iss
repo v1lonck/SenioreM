@@ -187,6 +187,23 @@ end;
 
 { Окна мастера не показываем: установщик перезапускает себя в тихом режиме
   и показывает только своё тёмное окно с прогрессом. }
+{ Можно ли заменить уже установленные файлы без прав администратора?
+  Если прошлое обновление ставилось с правами администратора, файлы принадлежат
+  администраторам — обычная установка получит «Отказано в доступе». }
+function CanReplaceInstalled: Boolean;
+var
+  F: String;
+begin
+  Result := True;
+  F := InstallDir('') + '\SenioreM.exe';
+  if not FileExists(F) then
+    Exit;
+  if RenameFile(F, F + '.check') then
+    RenameFile(F + '.check', F)
+  else
+    Result := False;
+end;
+
 function InitializeSetup: Boolean;
 var
   Code: Integer;
@@ -194,7 +211,8 @@ begin
   Result := True;
   { SenioreM работает с правами администратора — обычный установщик не сможет заменить его
     файлы. Перезапускаем установку с правами администратора (Windows спросит один раз). }
-  if (not IsAdmin) and FileExists(ExpandConstant('{userappdata}\SenioreM\admin_mode')) then
+  if (not IsAdmin) and (FileExists(ExpandConstant('{userappdata}\SenioreM\admin_mode'))
+                       or (not CanReplaceInstalled)) then
     if ShellExec('runas', ExpandConstant('{srcexe}'),
                  '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
                  '/nosplash=' + ExpandConstant('{param:nosplash|0}'),
@@ -269,12 +287,19 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
   { при автообновлении из программы окно не показываем — SenioreM сам откроется снова }
   { при ручной установке показываем окно (чтобы не нажимали установщик повторно);
     при автообновлении из программы (/nosplash=1) — не показываем: SenioreM сам откроется }
   if (CurStep = ssInstall) and WizardSilent and (ExpandConstant('{param:nosplash|0}') = '0') then
     ShowInstallSplash;
+  { после установки с правами администратора разрешаем обычному пользователю менять файлы —
+    чтобы следующие обновления ставились без окон и ошибок }
+  if (CurStep = ssPostInstall) and IsAdmin then
+    Exec(ExpandConstant('{sys}\icacls.exe'), '"' + ExpandConstant('{app}') + '" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if (CurStep = ssPostInstall) and (Splash <> nil) then
   begin
     BarFill.Width := BarW;
