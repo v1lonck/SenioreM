@@ -194,7 +194,7 @@ class ChatScreen(Backdrop):
         if save and self.settings is not None:
             hist = list(self.settings["chat"] or [])
             hist.append({"text": text, "me": me, "t": int(ts)})
-            self.settings.set("chat", hist[-200:])
+            self.settings.set("chat", hist[-150:])
         QTimer.singleShot(30, self._scroll_down)
 
     def _scroll_down(self):
