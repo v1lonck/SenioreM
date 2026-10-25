@@ -21,6 +21,16 @@ def parse(text):
     hit = parse_settings(t)
     if hit:
         return hit
+    if PENDING and time.time() - PENDING.get("t", 0) < 90 and re.fullmatch(
+            r"(да|да удали|да удаляй|удаляй|удали|подтверждаю|подтверди|давай|да давай|конечно|ага)", t):
+        return {"action": "delete_confirm"}
+    if PENDING and re.fullmatch(r"(нет|не надо|не удаляй|отмена|отмени)", t):
+        return {"action": "delete_cancel"}
+    m = re.search(r"(удали|удалить|сотри|снеси)\s+(папку|каталог|директорию)\s+(.+)$", t) or \
+        re.search(r"(удали|удалить|сотри|снеси)\s+(.+?)\s+(папку|папки)$", t)
+    if m:
+        name = m.group(3) if m.group(2) in ("папку", "каталог", "директорию") else m.group(2)
+        return {"action": "delete_folder", "name": name.strip()}
     m = re.search(r"(выключи|убери|отключи|удали|исключи|запрети)\s+(.+?)\s+(из|с|со)\s+"
                   r"(автозапуск\w*|автозагрузк\w*|запуска windows|загрузки)", t)
     if m:
@@ -254,6 +264,150 @@ def uninstall(name):
     return f"Открываю удаление «{disp}». Подтвердите в окне удаления."
 
 
+# ------------------------------------------------------------------ удаление папок
+PENDING = {}
+
+
+def _folder_roots():
+    env = os.environ
+    home = env.get("USERPROFILE", "")
+    sd = env.get("SystemDrive", "C:") + "\\"
+    roots = [(os.path.join(home, "Desktop"), 2), (os.path.join(home, "Downloads"), 2),
+             (os.path.join(home, "Documents"), 2), (os.path.join(home, "OneDrive", "Desktop"), 2),
+             (home, 1), (sd, 1), (os.path.join(sd, "Games"), 1),
+             (env.get("ProgramFiles", ""), 1), (env.get("ProgramFiles(x86)", ""), 1),
+             (env.get("ProgramData", ""), 1), (env.get("LOCALAPPDATA", ""), 1),
+             (os.path.join(env.get("LOCALAPPDATA", ""), "Programs"), 1), (env.get("APPDATA", ""), 1)]
+    return [(r, d) for r, d in roots if r and os.path.isdir(r)]
+
+
+def _protected(path):
+    p = os.path.normcase(os.path.abspath(path)).rstrip("\\")
+    env = os.environ
+    bad = {os.path.normcase(os.path.abspath(x)).rstrip("\\") for x in (
+        env.get("SystemDrive", "C:") + "\\", env.get("SystemRoot", r"C:\Windows"),
+        env.get("ProgramFiles", ""), env.get("ProgramFiles(x86)", ""), env.get("ProgramData", ""),
+        env.get("USERPROFILE", ""), env.get("APPDATA", ""), env.get("LOCALAPPDATA", ""),
+        os.path.join(env.get("USERPROFILE", ""), "Desktop"),
+        os.path.join(env.get("USERPROFILE", ""), "Documents"),
+        os.path.join(env.get("USERPROFILE", ""), "Downloads"),
+        os.path.join(env.get("SystemDrive", "C:") + "\\", "Users")) if x}
+    if p in bad or len(p) <= 3:
+        return True
+    low = p.lower()
+    if "\\windows" in low and low.startswith(os.path.normcase(env.get("SystemRoot", r"C:\Windows")).lower()):
+        return True
+    return "seniorem" in low or "microsoft" in os.path.basename(low) or \
+        os.path.basename(low) in ("windowsapps", "common files", "windows defender", "users")
+
+
+def find_folders(name):
+    import sites
+    keys = {sites._norm(sites._latinize(k)).replace(" ", "") for k in sites.keys_for(name)}
+    keys = {k for k in keys if len(k) >= 3}
+    hits = []
+    for root, depth in _folder_roots():
+        try:
+            level = [(root, 0)]
+            while level:
+                cur, d = level.pop()
+                for e in os.scandir(cur):
+                    if not e.is_dir(follow_symlinks=False) or e.name.startswith((".", "$")):
+                        continue
+                    n = sites._norm(sites._latinize(e.name)).replace(" ", "")
+                    if n and any(n == k or n.startswith(k) or (len(k) >= 5 and k in n) or
+                                 sites._score(k, n) >= 0.9 for k in keys):
+                        if not _protected(e.path) and e.path not in hits:
+                            hits.append(e.path)
+                    elif d + 1 < depth:
+                        level.append((e.path, d + 1))
+        except OSError:
+            continue
+    return hits[:8]
+
+
+def _folder_size(path):
+    total = 0
+    for root, _d, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+        if total > 50 * 2 ** 30:
+            break
+    return total
+
+
+def delete_folder(name):
+    found = find_folders(name)
+    if not found:
+        return f"Не нашёл папку «{name}» на компьютере."
+    PENDING.clear()
+    PENDING.update({"paths": found, "t": time.time(), "name": name})
+    sizes = []
+    for p in found[:4]:
+        gb = _folder_size(p) / 2 ** 30
+        sizes.append(f"{p} ({gb:.1f} ГБ)" if gb >= 0.1 else p)
+    more = f" и ещё {len(found) - 4}" if len(found) > 4 else ""
+    return ("Нашёл: " + "; ".join(sizes) + more + ". Удалить в корзину? Скажите «да, удаляй» "
+            "или «нет».")
+
+
+def _recycle(path):
+    """В корзину (можно восстановить). -> True при успехе."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort),
+                    ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", wintypes.LPCWSTR)]
+    op = SHFILEOPSTRUCTW()
+    op.wFunc = 3                                      # FO_DELETE
+    op.pFrom = path + "\0"
+    op.fFlags = 0x0040 | 0x0010 | 0x0004 | 0x0400     # ALLOWUNDO|NOCONFIRMATION|SILENT|NOERRORUI
+    res = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    return res == 0 and not op.fAnyOperationsAborted and not os.path.exists(path)
+
+
+def delete_confirm():
+    if not PENDING:
+        return "Нечего удалять."
+    paths = PENDING.get("paths", [])
+    PENDING.clear()
+    import procs
+    done, failed = [], []
+    for p in paths:
+        # программы из этой папки закрываем, иначе файлы заняты
+        try:
+            procs.close("", ("path", p))
+            time.sleep(1.0)
+        except Exception:  # noqa: BLE001
+            pass
+        if _recycle(p):
+            done.append(p)
+        else:
+            failed.append(p)
+    if failed:
+        import elevate
+        ps = "; ".join(
+            f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('{p.replace(chr(39), chr(39) * 2)}', 'OnlyErrorDialogs', "
+            f"'SendToRecycleBin')" for p in failed)
+        cmd = f"Add-Type -AssemblyName Microsoft.VisualBasic; {ps}"
+        if elevate.run_as_admin("powershell.exe", f'-NoProfile -WindowStyle Hidden -Command "{cmd}"',
+                                wait=True, show=0):
+            done += [p for p in failed if not os.path.exists(p)]
+            failed = [p for p in failed if os.path.exists(p)]
+    msg = []
+    if done:
+        msg.append(f"Удалил в корзину: {len(done)} папк{'у' if len(done) == 1 else 'и'}")
+    if failed:
+        msg.append("не получилось удалить: " + ", ".join(os.path.basename(p) for p in failed))
+    return (". ".join(msg) + ".") if msg else "Ничего не удалено."
+
+
 def run(intent):
     a = intent["action"]
     if a == "startup_off":
@@ -264,6 +418,13 @@ def run(intent):
         return delete_selected()
     if a == "uninstall":
         return uninstall(intent["name"])
+    if a == "delete_folder":
+        return delete_folder(intent["name"])
+    if a == "delete_confirm":
+        return delete_confirm()
+    if a == "delete_cancel":
+        PENDING.clear()
+        return "Хорошо, ничего не удаляю."
     if a == "sysinfo":
         return sysinfo(intent["what"])
     if a == "settings_page":
@@ -271,7 +432,8 @@ def run(intent):
     return ""
 
 
-ACTIONS = ("startup_off", "startup_list", "delete_selected", "uninstall", "sysinfo", "settings_page")
+ACTIONS = ("startup_off", "startup_list", "delete_selected", "uninstall", "sysinfo", "settings_page",
+           "delete_folder", "delete_confirm", "delete_cancel")
 
 
 # ------------------------------------------------------------------ настройки и характеристики
