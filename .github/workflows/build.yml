@@ -64,11 +64,20 @@ jobs:
           }
           if (-not ($have -contains "llama-server-win-x64.zip")) {
             try {
-              $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
+              $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
             } catch { Write-Output "::error::llama.cpp api — $($_.Exception.Message)"; exit 1 }
-            $a = $rel.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
-            "llama.cpp: $($rel.tag_name) $($a.name)"
-            $want["llama-server-win-x64.zip"] = $a.browser_download_url
+            $pick = $null
+            foreach ($rel in $rels) {
+              $win = @($rel.assets | Where-Object { $_.name -match 'win' -and $_.name -match '\.zip$' })
+              $cpu = $win | Where-Object { $_.name -match 'cpu' -and $_.name -match 'x64' } | Select-Object -First 1
+              if (-not $cpu) {
+                $cpu = $win | Where-Object { $_.name -match 'x64' -and $_.name -notmatch 'cuda|cudart|vulkan|hip|sycl|arm64|opencl|kompute|radeon' } | Select-Object -First 1
+              }
+              if ($cpu) { $pick = $cpu; "llama.cpp: $($rel.tag_name) -> $($cpu.name)"; break }
+              else { "в $($rel.tag_name) нет подходящей сборки: $(($win | ForEach-Object name) -join ', ')" }
+            }
+            if (-not $pick) { Write-Output "::error::не нашёл сборку llama.cpp для Windows"; exit 1 }
+            $want["llama-server-win-x64.zip"] = $pick.browser_download_url
           }
           $failed = $false
           foreach ($name in $want.Keys) {
