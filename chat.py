@@ -1,7 +1,7 @@
 """Чат с помощником: пишете вопрос — он отвечает сообщением (и голосом, если включено)."""
 import datetime
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout,
                                QWidget)

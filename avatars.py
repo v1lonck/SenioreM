@@ -1,7 +1,7 @@
 """Аватары: готовые (цветной круг и значок) или своя картинка."""
 import os
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPixmap
 
 PRESETS = [

@@ -1,7 +1,6 @@
 """Оригинальные персонажи-компаньоны SenioreM в виде SVG (рисует код, без чужих персонажей).
 Каждая функция возвращает SVG 400×820 с нужным состоянием глаз (0 — открыты, 1 — прищур,
 2 — закрыты) и рта (0 — закрыт, 1 — приоткрыт, 2 — открыт)."""
-import math
 
 LINE = "#2A2633"
 SKIN = "#FFE9DF"
@@ -391,8 +390,8 @@ def mia(eyes=0, mouth=0):
                   f'stroke-width="2"/><ellipse cx="{x}" cy="182" rx="11" ry="17" fill="{acc}"/>'
                   f'<ellipse cx="{x - 3}" cy="174" rx="4" ry="6" fill="#FFFFFF" opacity="0.6"/>'
                   for x in (118, 282)))
-    shine = (f'<path d="M 152 90 Q 200 70 248 90" fill="none" stroke="#FFFFFF" stroke-width="5" '
-             f'stroke-linecap="round" opacity="0.75"/>')
+    shine = ('<path d="M 152 90 Q 200 70 248 90" fill="none" stroke="#FFFFFF" stroke-width="5" '
+             'stroke-linecap="round" opacity="0.75"/>')
     return dict(back=back, legs=legs, skirt=skirt, upper=body,
                 head=head + bangs_ + sides + shine + phones,
                 spec=dict(leg="#3A3346", knee="#3A3346", shoe="#7A5240", shoe_acc="#5E3E30",
