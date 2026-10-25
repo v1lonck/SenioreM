@@ -53,6 +53,7 @@ class Bridge(QObject):
     """Передаёт результаты из фоновых потоков в интерфейс."""
     mail_done = Signal(str, str)        # email, ошибка ('' если ок)
     action_done = Signal(str, str)      # ответ, действие окна
+    comps_added = Signal(object)        # найденные в «Загрузках» персонажи
     volume = Signal(int)                # текущая громкость системы
     recognized = Signal(str)            # текст, уточнённый точным распознаванием
     ai_sentence = Signal(str)           # очередная готовая фраза ответа ИИ (озвучиваем сразу)
@@ -986,7 +987,8 @@ class HomeScreen(Backdrop):
         self.tips_hint.setText(f"Начинайте с «{settings.name}». Нажмите на пример, "
                                "чтобы выполнить.")
         name = settings["name"] or ""
-        self.avatar.setText((name or email or "?")[:1].upper())
+        import avatars
+        avatars.apply(self.avatar, settings["avatar"] or "", (name or email or "?")[:1].upper(), 38)
         self.history.set_items(settings["history"])
         self.w_notes.set_text(settings["notes"] or "")
         self._tick_clock()
@@ -1491,6 +1493,7 @@ class HomeScreen(Backdrop):
 class ProfileScreen(Backdrop):
     back_requested = Signal()
     logout_requested = Signal()
+    account_changed = Signal(str)
 
     SECTIONS = [
         ("look", "Оформление"),
@@ -2207,8 +2210,9 @@ class ProfileScreen(Backdrop):
         lay.setSpacing(0)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
-        self._title(lay, "Оформление", "Выберите тему одним нажатием или настройте фон, круг и "
-                                       "цвет по отдельности. Всё применяется сразу.")
+        self._title(lay, "Оформление", "Тема — это готовый набор: фон, цвет и круг сразу. Ниже "
+                                       "можно поменять каждую часть по отдельности. Всё применяется "
+                                       "сразу.")
 
         def grid(cols=3):
             g = QGridLayout()
@@ -2218,7 +2222,7 @@ class ProfileScreen(Backdrop):
             return g
 
         # ---- темы: всё сразу (цвет + фон + круг)
-        self._caption(lay, "Темы")
+        self._caption(lay, "Готовые темы — фон, цвет и круг одним нажатием")
         tg = grid()
         self.theme_cards = []
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
@@ -2232,7 +2236,7 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(30)
 
         # ---- фон
-        self._caption(lay, "Фон")
+        self._caption(lay, "Фон отдельно — меняет только картинку позади")
         bgg = grid()
         self.bg_cards = {}
         for i, (key, title, desc) in enumerate(T.BACKGROUNDS):
@@ -2241,6 +2245,26 @@ class ProfileScreen(Backdrop):
             bgg.addWidget(c, i // 3, i % 3)
             self.bg_cards[key] = c
         lay.addLayout(bgg)
+        lay.addSpacing(12)
+        crow_ = QHBoxLayout()
+        crow_.setSpacing(12)
+        add_bg = button("Добавить свой фон…", "ghost", 14)
+        add_bg.setFixedWidth(240)
+        add_bg.clicked.connect(self._add_custom_bg)
+        crow_.addWidget(add_bg)
+        crow_.addWidget(label("Картинка (PNG, JPG) — неподвижный фон, GIF — анимированный.", 12,
+                              role="faint", wrap=True), 1)
+        lay.addLayout(crow_)
+        self.custom_box = QWidget()
+        cbl = QVBoxLayout(self.custom_box)
+        cbl.setContentsMargins(0, 10, 0, 0)
+        cbl.addWidget(label("Затемнение своего фона (чтобы текст хорошо читался)", 13, role="muted"))
+        self.s_dim = QSlider(Qt.Horizontal)
+        self.s_dim.setRange(0, 80)
+        self.s_dim.setFixedWidth(420)
+        self.s_dim.valueChanged.connect(lambda v: self._set_look(custom_dim=v / 100))
+        cbl.addWidget(self.s_dim)
+        lay.addWidget(self.custom_box)
         lay.addSpacing(8)
         self.glass_note = label("", 13, role="accent", wrap=True)
         self.glass_note.hide()
@@ -2359,6 +2383,8 @@ class ProfileScreen(Backdrop):
         for c, tacc, tbg, torb in self.theme_cards:
             c.set_selected(tacc.lower() == acc and tbg == bg and torb == orb)
         self.glass_box.setVisible(bg == "glass")
+        self.custom_box.setVisible(bg == "custom")
+        self.s_dim.setValue(int(float(a.get("custom_dim", 0.35)) * 100))
         self.s_glass.setValue(int(float(a.get("glass", 0.55)) * 100))
         for k, t in self.widget_toggles.items():
             t.setChecked(bool(a.get("widgets", {}).get(k, True)))
@@ -2387,7 +2413,36 @@ class ProfileScreen(Backdrop):
         if c.isValid():
             self._set_look(accent=c.name())
 
+    def _add_custom_bg(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Свой фон", "", "Картинки и GIF (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
+        if not path:
+            return
+        if path.lower().endswith((".mp4", ".webm", ".avi", ".mkv", ".mov")):
+            return
+        import shutil
+        d = config.data_dir() / "backgrounds"
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.iterdir():            # храним только один свой фон
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        ext = os.path.splitext(path)[1].lower() or ".png"
+        dst = d / f"custom_{int(time.time())}{ext}"
+        try:
+            shutil.copyfile(path, dst)
+        except OSError:
+            dst = path
+        T.APPEARANCE["custom_bg"] = str(dst)
+        self._choose_bg("custom")
+
     def _choose_bg(self, key):
+        if key == "custom" and not (T.APPEARANCE.get("custom_bg") and
+                                    os.path.isfile(T.APPEARANCE.get("custom_bg"))):
+            self._add_custom_bg()
+            return
         was_glass = self.win.glass
         self._set_look(background=key)
         need = (key == "glass") != was_glass
@@ -2614,6 +2669,27 @@ class ProfileScreen(Backdrop):
         self.comp_status = label("", 13, role="accent", wrap=True)
         lay.addWidget(self.comp_status)
         lay.addSpacing(18)
+        self._caption(lay, "Поза")
+        prow = QHBoxLayout()
+        prow.setSpacing(10)
+        self.comp_poses = {}
+        from companion import POSES
+        for key, title in POSES:
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self._set_comp(companion_pose=k))
+            prow.addWidget(b)
+            self.comp_poses[key] = b
+        edit = button("Настроить позы…", "link", 13, QFont.Normal)
+        edit.clicked.connect(self._comp_edit_poses)
+        prow.addSpacing(8)
+        prow.addWidget(edit)
+        prow.addStretch(1)
+        lay.addLayout(prow)
+        lay.addWidget(label("«Сам меняет» — обычно стоит, иногда садится или ложится отдохнуть. "
+                            "Какие кадры считать «сидит» и «лежит», можно поправить в «Настроить позы».",
+                            12, role="faint", wrap=True))
+        lay.addSpacing(18)
         self.t_comp_anim = self._toggle_row(lay, "Всегда двигается",
                                             "Меняет выражения и «дышит». Если выключить — стоит "
                                             "спокойно и оживает только когда говорит.", None)
@@ -2685,6 +2761,16 @@ class ProfileScreen(Backdrop):
         path = QFileDialog.getExistingDirectory(self, "Папка с картинками персонажа")
         self._comp_import([path] if path else [])
 
+    def _comp_edit_poses(self):
+        pid = self._comp_selected_pack()
+        if not pid:
+            self.comp_status.setText("Сначала выберите персонажа.")
+            return
+        from companion import PoseDialog
+        PoseDialog(self, "pack:" + pid).exec()
+        self._refresh_comp()
+        self.win.apply_companion()
+
     def _comp_selected_pack(self):
         kind = (self.settings["companion"] or "") if self.settings is not None else ""
         return kind[5:] if kind.startswith("pack:") else None
@@ -2739,6 +2825,13 @@ class ProfileScreen(Backdrop):
         size = int(s["companion_size"] or 150)
         for px, b in self.comp_sizes.items():
             b.setChecked(px == size)
+        pose = s["companion_pose"] or "auto"
+        self.comp_preview.painter.pose = pose
+        import companion as _cm
+        pack = _cm.get_pack(kind)
+        for k, b in self.comp_poses.items():
+            b.setChecked(k == pose)
+            b.setEnabled(k in ("auto", "stand") or (pack is not None and pack.has(k)))
 
     def _build_startup(self, lay):
         self._title(lay, "Запуск", "Когда и как открывается SenioreM.")
@@ -2783,11 +2876,55 @@ class ProfileScreen(Backdrop):
             QTimer.singleShot(600, self.win.force_close)
 
     def _build_account(self, lay):
-        self._title(lay, "Аккаунт", "Логин, пароль и выход.")
-        self._caption(lay, "Логин")
-        self.acc_email = label("", 17)
-        lay.addWidget(self.acc_email)
-        lay.addSpacing(30)
+        self._title(lay, "Аккаунт", "Аватар, логин, пароль и выход.")
+        top = QHBoxLayout()
+        top.setSpacing(18)
+        self.acc_avatar = label("", 34, QFont.DemiBold)
+        self.acc_avatar.setAlignment(Qt.AlignCenter)
+        self.acc_avatar.setFixedSize(88, 88)
+        self.acc_avatar.setProperty("role", "bigavatar")
+        self.acc_avatar.setStyleSheet("border-radius: 44px;")
+        top.addWidget(self.acc_avatar)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addStretch(1)
+        self.acc_email = label("", 19, QFont.DemiBold)
+        col.addWidget(self.acc_email)
+        brow = QHBoxLayout()
+        brow.setSpacing(10)
+        b_av = button("Изменить аватар", "ghost", 13)
+        b_av.clicked.connect(self._change_avatar)
+        brow.addWidget(b_av)
+        b_login = button("Изменить логин", "ghost", 13)
+        b_login.clicked.connect(lambda: self.login_box.setVisible(not self.login_box.isVisible()))
+        brow.addWidget(b_login)
+        brow.addStretch(1)
+        col.addLayout(brow)
+        col.addStretch(1)
+        top.addLayout(col, 1)
+        lay.addLayout(top)
+        lay.addSpacing(14)
+        self.login_box = QWidget()
+        lb = QVBoxLayout(self.login_box)
+        lb.setContentsMargins(0, 0, 0, 0)
+        lb.setSpacing(10)
+        lb.addWidget(label("Новый логин", 17, QFont.DemiBold))
+        lr = QHBoxLayout()
+        lr.setSpacing(18)
+        self.l_new = field("новый логин")
+        self.l_pass = field("пароль для подтверждения", True)
+        lr.addWidget(self.l_new)
+        lr.addWidget(self.l_pass)
+        lb.addLayout(lr)
+        self.l_msg = label("", 13, role="error", wrap=True)
+        lb.addWidget(self.l_msg)
+        l_ok = button("Сохранить логин", "ghost", 14)
+        l_ok.setFixedWidth(200)
+        l_ok.clicked.connect(self._change_login)
+        lb.addWidget(l_ok, 0, Qt.AlignLeft)
+        self.login_box.setVisible(False)
+        lay.addWidget(self.login_box)
+        lay.addSpacing(24)
         lay.addWidget(label("Сменить пароль", 17, QFont.DemiBold))
         lay.addSpacing(12)
         pw = QHBoxLayout()
@@ -2825,6 +2962,50 @@ class ProfileScreen(Backdrop):
         set_role(self.p_msg, "accent")
         self.p_msg.setText("Пароль изменён.")
 
+    def _letter(self):
+        return ((self.settings["name"] if self.settings is not None else "") or self.email or "?")[:1].upper()
+
+    def _show_avatar(self):
+        import avatars
+        v = self.settings["avatar"] if self.settings is not None else ""
+        avatars.apply(self.big_avatar, v, self._letter(), 70)
+        avatars.apply(self.acc_avatar, v, self._letter(), 86)
+
+    def _change_avatar(self):
+        import avatars
+        if self.settings is None:
+            return
+        v = avatars.AvatarDialog.ask(self, self.settings["avatar"] or "", self.email)
+        if v is None:
+            return
+        self.settings.set("avatar", v)
+        self._show_avatar()
+        self.account_changed.emit(self.email)
+
+    def _change_login(self):
+        try:
+            new = self.store.rename(self.email, self.l_new.text(), self.l_pass.text())
+        except AuthError as e:
+            set_role(self.l_msg, "error")
+            self.l_msg.setText(str(e))
+            return
+        if self.settings is not None:          # настройки уже лежат под новым именем
+            import hashlib
+            self.settings.email = new
+            self.settings.path = self.settings.path.with_name(
+                hashlib.sha1(new.encode()).hexdigest()[:16] + ".json")
+            self.settings.save()
+        self.email = new
+        self.l_new.clear()
+        self.l_pass.clear()
+        self.acc_email.setText(new)
+        if not (self.settings["name"] if self.settings is not None else ""):
+            self.who.setText(new)
+        set_role(self.l_msg, "accent")
+        self.l_msg.setText(f"Логин изменён. Теперь входите как «{new}».")
+        self._show_avatar()
+        self.account_changed.emit(new)
+
     def _build_about(self, lay):
         row = QHBoxLayout()
         row.addWidget(LogoMark(110))
@@ -2857,8 +3038,8 @@ class ProfileScreen(Backdrop):
         self.email, self.settings = email, settings
         self._loading = True
         name = settings["name"]
-        self.big_avatar.setText((name or email or "?")[:1].upper())
         self.who.setText(name or email)
+        self._show_avatar()
         created = self.store.created(email)
         self.since.setText(("с нами с " + datetime.datetime.fromtimestamp(created).strftime("%d.%m.%Y"))
                            if created else email)
@@ -2940,6 +3121,7 @@ class MainWindow(QWidget):
         self.companion = None
         self.bridge = Bridge()
         self.bridge.mail_done.connect(self._mail_done)
+        self.bridge.comps_added.connect(self._on_comps_added)
         self.pending_email = ""
         self.email = ""
         self.settings = None
@@ -2971,6 +3153,7 @@ class MainWindow(QWidget):
         self.home.profile_requested.connect(lambda: self.open_profile("address"))
         self.profile.back_requested.connect(self._back_home)
         self.profile.logout_requested.connect(self._logout)
+        self.profile.account_changed.connect(self._account_changed)
 
         self.resend_timer = QTimer(self)
         self.resend_timer.timeout.connect(self._tick_resend)
@@ -3012,6 +3195,7 @@ class MainWindow(QWidget):
         switch_page(self.stack, self.home)
         self.home.start(email, s)
         self.apply_companion()
+        self._auto_import_companions()
         if not self.greeted:
             self.greeted = True
             who = s["name"] or s["address"]
@@ -3041,9 +3225,41 @@ class MainWindow(QWidget):
                                                                   self.open_profile("companion")))
             self.speaker.speaking.connect(self.companion.set_speaking)
             self.speaker.said.connect(lambda t: self.companion.say(t, 4 + len(t) / 14))
-        self.companion.configure(kind, bool(s["companion_anim"]), int(s["companion_size"] or 150))
+        self.companion.configure(kind, bool(s["companion_anim"]), int(s["companion_size"] or 150),
+                                 s["companion_pose"] or "auto")
         self.companion.show()
         self.companion.raise_()
+
+    def _auto_import_companions(self):
+        """Архивы с персонажами из «Загрузок»/рабочего стола добавляются сами."""
+        if os.environ.get("SENIOREM_NO_DOWNLOADS"):
+            return
+
+        def work():
+            try:
+                import companion
+                added = companion.auto_import()
+            except Exception:  # noqa: BLE001
+                added = []
+            if added:
+                self.bridge.comps_added.emit(added)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_comps_added(self, added):
+        s = self.settings
+        if s is None:
+            return
+        import companion
+        if companion.norm_kind(s["companion"]) == "none":
+            s.set("companion", "pack:" + added[0][0])
+            self.apply_companion()
+        if self.companion is not None:
+            self.companion.say("Добавил персонажей из «Загрузок»: " +
+                               ", ".join(n for _p, n in added[:5]), 10)
+        try:
+            self.profile._fill_comp_cards()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _remove_companion(self):
         """«Убрать» в меню персонажа: выключаем компаньона (вернуть — профиль → «Компаньон»)."""
@@ -3063,6 +3279,10 @@ class MainWindow(QWidget):
         self.profile.load(self.email, self.settings)
         self.profile.show_section(section)
         switch_page(self.stack, self.profile)
+
+    def _account_changed(self, email):
+        self.email = email
+        self.home.start(email, self.settings)
 
     def _back_home(self):
         switch_page(self.stack, self.home)
@@ -3522,6 +3742,45 @@ def run_uitest(out_dir):
         for sec in ("look", "scenarios", "city", "voice", "apps", "ai", "name", "wake", "startup"):
             win.open_profile(sec)
             shot(win, f"05-profile-{sec}")
+        # аккаунт: аватар, смена логина, окно выбора аватара
+        win.settings.set("avatar", "preset:fox")
+        win.open_profile("account")
+        win.profile.login_box.setVisible(True)
+        win.profile.l_new.setText("tester2")
+        win.profile.l_pass.setText("secret1")
+        win.profile._change_login()
+        log.append(f"rename: {win.email} / {win.profile.l_msg.text()}")
+        shot(win, "05-profile-account")
+
+        def _grab_dialog():
+            dlg = QApplication.activeModalWidget()
+            if dlg is not None:
+                pump(300)
+                dlg.grab().save(os.path.join(out_dir, "05-avatar-dialog.png"))
+                log.append("05-avatar-dialog")
+                dlg.reject()
+        QTimer.singleShot(700, _grab_dialog)
+        import avatars as _av
+        _av.AvatarDialog.ask(win, "preset:fox", win.email)
+        win._back_home()
+        shot(win, "03-home-avatar")
+        # свой фон: картинка-градиент
+        from PySide6.QtGui import QImage as _QI, QLinearGradient as _QLG, QPainter as _QPP
+        cimg = _QI(1600, 900, _QI.Format_RGB32)
+        _qp = _QPP(cimg)
+        _g = _QLG(0, 0, 1600, 900)
+        _g.setColorAt(0, QColor("#FF6B6B"))
+        _g.setColorAt(0.5, QColor("#845EC2"))
+        _g.setColorAt(1, QColor("#00C9A7"))
+        _qp.fillRect(cimg.rect(), _g)
+        _qp.end()
+        cpath = os.path.join(tempfile.mkdtemp(), "mybg.png")
+        cimg.save(cpath)
+        T.set_appearance(app, custom_bg=cpath, background="custom")
+        h.apply_widgets()
+        shot(win, "04-home-custom-bg")
+        T.set_appearance(app, background="space")
+        h.apply_widgets()
         win.open_profile("look")
         pump(800)
         look = win.profile.page_widgets["look"].findChild(QScrollArea).widget()

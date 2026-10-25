@@ -464,6 +464,108 @@ PAINTERS = {"space": paint_space, "galaxy": paint_galaxy, "warp": paint_warp,
             "aurora": paint_aurora, "waves": paint_waves, "grid": paint_grid}
 
 
+# ------------------------------------------------------------------ свой фон
+class _Custom:
+    """Своя картинка (PNG/JPG — статичная) или GIF/WebP (анимированная) из APPEARANCE["custom_bg"]."""
+
+    def __init__(self):
+        self.path = None
+        self.movie = None
+        self.image = None
+        self.frame = None
+        self.next_at = 0.0
+        self._scaled = None
+
+    def _load(self, path):
+        from PySide6.QtGui import QImage, QMovie
+        self.path, self.movie, self.image, self.frame, self._scaled = path, None, None, None, None
+        if not path:
+            return
+        import os
+        if not os.path.isfile(path):
+            return
+        if path.lower().endswith((".gif", ".webp", ".apng")):
+            m = QMovie(path)
+            m.setCacheMode(QMovie.CacheNone)
+            if m.isValid() and m.frameCount() != 1 and m.jumpToFrame(0):
+                self.movie = m
+                self.frame = m.currentImage()
+                return
+        img = QImage(path)
+        if not img.isNull():
+            if img.width() > 3840:
+                img = img.scaledToWidth(3840, Qt.SmoothTransformation)
+            self.image = img
+
+    def ensure(self):
+        p = T.APPEARANCE.get("custom_bg") or ""
+        if p != self.path:
+            self._load(p)
+
+    def animated(self):
+        self.ensure()
+        return self.movie is not None
+
+    def current(self):
+        """Текущий кадр (QImage) с учётом времени кадров GIF."""
+        import time
+        self.ensure()
+        if self.movie is None:
+            return self.image
+        now = time.monotonic()
+        if now >= self.next_at:
+            m = self.movie
+            if not m.jumpToNextFrame():
+                m.jumpToFrame(0)
+            self.frame = m.currentImage()
+            delay = m.nextFrameDelay()
+            self.next_at = now + max(0.02, (delay if delay > 0 else 80) / 1000.0)
+        return self.frame
+
+
+CUSTOM = _Custom()
+
+
+def _cover(img, w, h):
+    """Прямоугольник-источник, чтобы картинка заполнила экран без искажений (обрезка краёв)."""
+    iw, ih = img.width(), img.height()
+    if iw <= 0 or ih <= 0:
+        return QRectF(0, 0, 1, 1)
+    k = max(w / iw, h / ih)
+    sw, sh = w / k, h / k
+    return QRectF((iw - sw) / 2, (ih - sh) / 2, sw, sh)
+
+
+def paint_custom(self, p, w, h, t):
+    img = CUSTOM.current()
+    if img is None or img.isNull():
+        p.fillRect(QRectF(0, 0, w, h), QColor("#06070C"))
+        return
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.drawImage(QRectF(0, 0, w, h), img, _cover(img, w, h))
+    dim = float(T.APPEARANCE.get("custom_dim", 0.35))     # затемнение — чтобы текст читался
+    p.fillRect(QRectF(0, 0, w, h), QColor(0, 0, 0, int(255 * max(0.0, min(0.85, dim)))))
+
+
+def custom_thumb(w, h):
+    pix = QPixmap(w, h)
+    pix.fill(QColor("#06070C"))
+    p = QPainter(pix)
+    CUSTOM.ensure()
+    img = CUSTOM.frame if CUSTOM.movie is not None else CUSTOM.image
+    if img is not None and not img.isNull():
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.drawImage(QRectF(0, 0, w, h), img, _cover(img, w, h))
+    else:
+        p.setPen(QColor(255, 255, 255, 120))
+        f = p.font()
+        f.setPixelSize(int(h * 0.28))
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "+")
+    p.end()
+    return pix
+
+
 class _Holder:
     """Хранилище кэша для миниатюр (вместо настоящего фона)."""
 
@@ -473,6 +575,8 @@ _THUMBS = {}
 
 def thumbnail(key, w, h, accent=None):
     """Миниатюра фона для настроек (кадр анимации)."""
+    if key == "custom":
+        return custom_thumb(w, h)
     ck = (key, w, h, accent or T.ACCENT)
     if ck in _THUMBS:
         return _THUMBS[ck]
@@ -510,3 +614,6 @@ def thumbnail(key, w, h, accent=None):
         T.ACCENT, T.ACCENT_SOFT = old
     _THUMBS[ck] = pix
     return pix
+
+
+PAINTERS["custom"] = paint_custom

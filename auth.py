@@ -195,6 +195,34 @@ class AuthStore:
         user.update(salt=salt, hash=_hash_password(new, salt))
         self._save(self.users_path, self.users)
 
+    def rename(self, old: str, new: str, password: str) -> str:
+        """Сменить логин (пароль подтверждает, что это вы). Настройки переносятся."""
+        old = self.normalize_email(old)
+        user = self.users.get(old)
+        if not user:
+            raise AuthError("Аккаунт не найден.")
+        if not hmac.compare_digest(user["hash"], _hash_password(password, user["salt"])):
+            raise AuthError("Пароль указан неверно.")
+        new = self._check_login(new)
+        if new == old:
+            return old
+        if new in self.users:
+            raise AuthError("Такой логин уже занят.")
+        self.users[new] = self.users.pop(old)
+        self._save(self.users_path, self.users)
+        # профиль (настройки, история, сценарии) — под новым именем
+        import hashlib
+        prof = self.dir / "profiles"
+        a = prof / (hashlib.sha1(old.encode()).hexdigest()[:16] + ".json")
+        b = prof / (hashlib.sha1(new.encode()).hexdigest()[:16] + ".json")
+        try:
+            if a.exists():
+                os.replace(a, b)
+        except OSError:
+            pass
+        self.set_session(new)
+        return new
+
     def created(self, email: str) -> int:
         return int((self.users.get(self.normalize_email(email)) or {}).get("created", 0))
 
