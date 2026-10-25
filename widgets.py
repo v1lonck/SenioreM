@@ -234,17 +234,24 @@ class WeatherCard(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(20 * 60 * 1000)
 
-    def set_city(self, city):
-        if city != self.city or self.last is None:
+    def set_city(self, city, lat=None, lon=None):
+        key = (city, lat, lon)
+        if key != getattr(self, "_key", None) or self.last is None:
+            self._key = key
             self.city = city
             self.refresh()
 
     def refresh(self):
-        city = self.city
-
         def work():
             try:
-                self.bridge.done.emit(fetch_weather(city))
+                import live
+                d = live.weather(T.APPEARANCE)
+                c = d["current"]
+                self.bridge.done.emit({"city": d.get("_city", ""), "temp": c["temperature_2m"],
+                                       "feels": c["apparent_temperature"],
+                                       "wind": c["wind_speed_10m"],
+                                       "humidity": c["relative_humidity_2m"],
+                                       "code": c["weather_code"]})
             except Exception as e:  # noqa: BLE001
                 self.bridge.done.emit({"error": str(e)})
 

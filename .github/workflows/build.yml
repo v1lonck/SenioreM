@@ -107,7 +107,7 @@ jobs:
         run: |
           $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt | ForEach-Object { "$_" }
-          Get-Content selftest.txt | Select-Object -Last 12 | ForEach-Object { Write-Output "::notice::$_" }
+          Get-Content selftest.txt | Select-Object -Last 18 | ForEach-Object { Write-Output "::notice::$_" }
           $last = (Get-Content selftest.txt | Select-Object -Last 1)
           if ($last -ne "RESULT PASS") { Write-Output "::error::Самопроверка не прошла"; exit 1 }
 

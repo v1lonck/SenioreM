@@ -22,6 +22,7 @@ DEFAULTS = {
     "speak_replies": True,
     "listen_seconds": 10,
     "dialog_mode": True,
+    "followup_seconds": 10,         # сколько слушать после ответа; 0 — сразу выключаться
     "wake_words": "",               # дополнительные слова-обращения
     "autostart": False,
     "ai_enabled": True,
@@ -59,6 +60,9 @@ class Settings:
             pass
         if self.data.get("listen_seconds") == 8:      # старое значение по умолчанию
             self.data["listen_seconds"] = 10
+        if "followup_seconds" not in self.data or self.data.get("dialog_mode") is False:
+            self.data["followup_seconds"] = 10 if self.data.get("dialog_mode", True) else 0
+            self.data["dialog_mode"] = True
 
     def __getitem__(self, k):
         return self.data.get(k, DEFAULTS.get(k))

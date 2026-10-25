@@ -210,13 +210,18 @@ class AI:
                 f"подскажи голосовую команду, например «{name}, открой телеграм» или "
                 f"«{name}, громкость 30».{who} Сейчас {now:%d.%m.%Y}, {now:%H:%M}.")
 
-    def ask(self, text, settings):
-        """-> ответ строкой. settings — словарь-подобный объект профиля."""
+    def ask(self, text, settings, context=""):
+        """-> ответ строкой. settings — профиль; context — свежие данные из интернета."""
         with self.lock:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
-            msgs = [{"role": "system", "content": self._system(name, settings["address"])}]
+            system = self._system(name, settings["address"])
+            if context:
+                system += ("\n\nСвежие данные из интернета (точные и актуальные — отвечай по ним, "
+                           "называй конкретные числа; не говори, что у тебя нет доступа к "
+                           "интернету):\n" + context)
+            msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
             msgs.append({"role": "user", "content": text})
             mode = settings["ai_mode"] or "smart"
