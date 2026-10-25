@@ -57,8 +57,53 @@ def list_packs():
 
 
 def figures():
-    return [("pack:" + pid, name, "Ваш персонаж") for pid, name in list_packs()] + \
-        [("none", "Нет", "Без компаньона")]
+    packs = list_packs()
+    built = [("pack:" + pid, name, "Встроенный") for pid, name in packs if pid.startswith("builtin-")]
+    own = [("pack:" + pid, name, "Ваш персонаж") for pid, name in packs if not pid.startswith("builtin-")]
+    return built + own + [("none", "Нет", "Без компаньона")]
+
+
+def _removed_file():
+    return packs_dir() / ".removed_builtin.json"
+
+
+def install_builtin(restore=False):
+    """Встроенные персонажи (котёнок, лисёнок, Аля) — копируем из программы в папку персонажей.
+    Удалённые пользователем не возвращаем, пока он сам не нажмёт «Вернуть встроенных»."""
+    import config
+    src = config.resource_path("assets/companions")
+    if not src.is_dir():
+        return []
+    try:
+        removed = set(json.loads(_removed_file().read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        removed = set()
+    if restore:
+        removed = set()
+        try:
+            _removed_file().unlink()
+        except OSError:
+            pass
+    added = []
+    for d in sorted(src.iterdir()):
+        meta = d / "meta.json"
+        if not meta.is_file() or d.name in removed:
+            continue
+        try:
+            ver = json.loads(meta.read_text(encoding="utf-8")).get("builtin", 0)
+            dst = packs_dir() / d.name
+            have = 0
+            if (dst / "meta.json").is_file():
+                have = json.loads((dst / "meta.json").read_text(encoding="utf-8")).get("builtin", 0)
+            if have >= ver:
+                continue
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(d, dst)
+            _PACKS.pop(d.name, None)
+            added.append(d.name)
+        except (OSError, ValueError):
+            continue
+    return added
 
 
 def norm_kind(kind):
@@ -70,6 +115,13 @@ def norm_kind(kind):
 
 def delete_pack(pid):
     _PACKS.pop(pid, None)
+    if pid.startswith("builtin-"):
+        try:
+            removed = set(json.loads(_removed_file().read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            removed = set()
+        removed.add(pid)
+        _removed_file().write_text(json.dumps(sorted(removed)), encoding="utf-8")
     shutil.rmtree(packs_dir() / pid, ignore_errors=True)
 
 
@@ -331,9 +383,21 @@ class Pack:
         self.aspect = self.idle_h / max(1, self.idle_w)
         self._scaled = {}
 
-    def pose_frames(self, pose):
+    def pose_frames(self, pose, talk=False):
+        """Кадры позы. talk=True — с открытым ртом (если такие отмечены), иначе — без них."""
         out = [i for i, t in enumerate(self.tags) if pose in t]
-        return out or [i for i, t in enumerate(self.tags) if "idle" in t] or [0]
+        if not out:
+            pose = "idle"
+            out = [i for i, t in enumerate(self.tags) if "idle" in t] or [0]
+        talking = [i for i in out if "talk" in self.tags[i]]
+        quiet = [i for i in out if "talk" not in self.tags[i]]
+        if talk:
+            return talking or out
+        return quiet or out
+
+    def seq(self, pose):
+        """Сколько секунд на кадр, если позу нужно проигрывать по порядку (болтает ногами, Zzz)."""
+        return (self.meta.get("seq") or {}).get(pose)
 
     def has(self, pose):
         return any(pose in t for t in self.tags)
@@ -427,19 +491,30 @@ class FigurePainter:
         self._next -= dt
         pose = self._want_pose(pack, dt)
         frames = pack.pose_frames(pose) if pack else [0]
-        if self.frame not in frames:
-            self.frame = frames[0]
-            self._next = 0.6
         if self.speaking:
+            talk = pack.pose_frames(pose, talk=True) if pack else [0]
+            both = list(dict.fromkeys(frames[:1] + talk))
+            if self.frame not in both:
+                self.frame = talk[0]
+                self._next = 0.2
             if self._next <= 0:
-                if len(frames) > 1:
-                    self.frame = random.choice([i for i in frames if i != self.frame])
-                self._next = random.uniform(0.16, 0.32)
+                if len(both) > 1:
+                    self.frame = random.choice([i for i in both if i != self.frame])
+                self._next = random.uniform(0.14, 0.28)
             self._jump = abs(math.sin(self.t * 7.5)) * (0.4 if pose != "idle" else 1.0)
         else:
             self._jump *= 0.8
+            step = pack.seq(pose) if pack else None
+            if self.frame not in frames:
+                self.frame = frames[0]
+                self._next = step or 0.6
             if not self.animated:
                 self.frame = frames[0]
+            elif step:                                  # по порядку: болтает ногами, «Zzz»
+                if self._next <= 0:
+                    k = frames.index(self.frame) if self.frame in frames else -1
+                    self.frame = frames[(k + 1) % len(frames)]
+                    self._next = step
             elif self._next <= 0:
                 if self.frame != frames[0] or len(frames) == 1 or random.random() < 0.45:
                     self.frame = frames[0]
@@ -461,6 +536,8 @@ class FigurePainter:
         feet = QPointF(rect.center().x(), rect.bottom() - 6)
         x = feet.x() + (fx - pack.cx) * scale
         y = feet.y() - (pack.bottom - fy) * scale
+        if x + pix.width() > rect.right() + 4:          # лёжа персонаж шире — не вылезаем за край
+            x = rect.right() + 4 - pix.width()
         w = pack.idle_w * scale
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
