@@ -199,6 +199,25 @@ begin
       Result := False;
 end;
 
+{ Перед установкой закрываем запущенный SenioreM и движок ИИ, иначе их файлы заняты
+  («Отказано в доступе» при замене файлов). }
+procedure KillApp;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
+  Sleep(1200);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  KillApp;
+  Result := '';
+end;
+
 { Тёмное оформление мастера — на случай, если он всё же понадобится }
 procedure InitializeWizard;
 var

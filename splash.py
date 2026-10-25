@@ -469,9 +469,14 @@ class Splash(QWidget):
         import os
         import subprocess
         self.status.setText("Устанавливаю обновление — через несколько секунд SenioreM откроется снова")
+        try:
+            import ai
+            ai.ENGINE.stop()
+        except Exception:  # noqa: BLE001
+            pass
         subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                           "/CLOSEAPPLICATIONS"])
-        QTimer.singleShot(600, lambda: os._exit(0))
+        os._exit(0)   # сразу освобождаем файлы программы для установщика
 
     def _update_failed(self, msg):
         self._updating = False
