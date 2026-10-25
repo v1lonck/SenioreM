@@ -307,11 +307,11 @@ def find_uia(hwnd, text, limit_s=2.5):
 
 
 OCR_PS = r"""
-param($img, $x, $y, $w, $h)
+param([string]$img, [int]$x, [int]$y, [int]$w, [int]$h)
 Add-Type -Name D -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
 [W.D]::SetProcessDPIAware() | Out-Null
 Add-Type -AssemblyName System.Drawing
-$bmp = New-Object System.Drawing.Bitmap $w, $h
+$bmp = New-Object System.Drawing.Bitmap([int]$w, [int]$h)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
 $bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
