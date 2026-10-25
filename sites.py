@@ -98,7 +98,8 @@ ALIASES = {
     "дискордик": "discord", "ютубчик": "youtube", "хромчик": "chrome", "стимчик": "steam",
     "вкшку": "vk", "вкшка": "vk", "ворлд оф танкс": "world of tanks", "танки": "world of tanks",
     "доту": "dota", "кску": "counter strike", "контру": "counter strike", "впн": "vpn",
-    "блюстакс": "bluestacks", "амонг ас": "among us", "геншин": "genshin", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
+    "блюстакс": "bluestacks", "саундпад": "soundpad", "саунпад": "soundpad", "саунд пад": "soundpad",
+    "соундпад": "soundpad", "амонг ас": "among us", "геншин": "genshin", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
     "ведьмак": "witcher", "ведьмака": "witcher", "гта": "grand theft auto", "пабг": "pubg",
     "пубг": "pubg", "кс го": "counter strike", "майн": "minecraft", "симс": "sims",
     "фифа": "fifa", "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
@@ -128,11 +129,36 @@ def _base(word):
     return word
 
 
+_REV = None
+
+
+def _ru_words(words):
+    """Латинские названия -> русские: «youtube» -> «ютуб», «telegram» -> «телеграм»."""
+    global _REV
+    if _REV is None:
+        _REV = {}
+        for ru, en in ALIASES.items():
+            _REV.setdefault(en.replace(" ", ""), ru)
+        _REV.update({"youtube": "ютуб", "ютуб": "ютуб", "vk": "вк", "vkontakte": "вконтакте",
+                     "google": "гугл", "twitch": "твич", "tiktok": "тикток", "instagram": "инстаграм",
+                     "github": "гитхаб", "wikipedia": "википедия", "netflix": "нетфликс",
+                     "rutube": "рутуб", "gmail": "джимейл", "chatgpt": "чат гпт", "avito": "авито",
+                     "ozon": "озон", "wildberries": "вайлдберриз", "pinterest": "пинтерест",
+                     "twitter": "твиттер", "facebook": "фейсбук", "kinopoisk": "кинопоиск"})
+    out = []
+    for w in words:
+        key = re.sub(r"[^a-z0-9]", "", w.lower())
+        out.append(_REV.get(key, w) if key else w)
+    return " ".join(out).split()
+
+
 def find_site(name: str):
     """-> (url, prefer_app) или None."""
     words = clean(name).split()
     if not words:
         return None
+    if re.search("[a-z]", " ".join(words)):
+        words = _ru_words(words)
     joined = "".join(words)
     m = re.fullmatch(r"([a-zа-я0-9-]+(?:\s*(?:точка|\.)\s*[a-zа-я0-9-]+)+)", " ".join(words))
     if m and ("точка" in joined or "." in joined):
@@ -309,6 +335,7 @@ def refresh_apps(force=False):
             if cached:
                 _apps_full = cached
                 _apps = [(n, o, t) for n, o, t, _s in cached]
+                _feed_vocab()
                 _apps_time = time.time() - 540     # обновим в фоне через минуту
                 return _apps
         items = {}
@@ -335,6 +362,7 @@ def refresh_apps(force=False):
         _apps = [(n, o, t) for n, o, t, _s in _apps_full]
         _apps_time = time.time()
         _save_index(_apps_full)
+        _feed_vocab()
         return _apps
 
 
@@ -478,6 +506,18 @@ def _scan_uninstall():
                 except Exception:  # noqa: BLE001
                     continue
     return out
+
+
+def _feed_vocab():
+    """Подсказываем распознаванию речи названия своих программ и игр (сначала игры)."""
+    try:
+        import asr
+        rank = {"Steam": 0, "Epic Games": 0, "GOG": 0, "Ярлык": 1, "Пуск": 2, "Программа": 3}
+        items = sorted((x for x in _apps_full if x[3] != "Эмулятор"),
+                       key=lambda x: (rank.get(x[3], 4), len(x[1])))
+        asr.set_vocab([x[1] for x in items if re.search("[A-Za-z]", x[1])])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _index_file():

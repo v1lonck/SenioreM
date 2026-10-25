@@ -203,11 +203,16 @@ def open_by_name(name, cfg):
     if site:
         webbrowser.open(site[0])
         return f"Открываю {pretty}."
-    if re.search(r"\bигр", name) or len(sites.all_apps()) and _looks_like_game(pretty):
-        return (f"Не нашёл «{pretty}» среди игр и программ на компьютере. Если она только что "
-                f"установлена — скажите «обнови список программ».")
-    webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote(pretty))   # обычный поиск, без «мне повезёт»
-    return f"Открываю {pretty}."
+    if "сайт" not in name:
+        # похоже звучит, но сказано неточно: «саунпат» -> Soundpad
+        loose = sites.find_program(name, threshold=0.72)
+        if loose:
+            return _start(loose, f"открой {name} (похоже на {loose[0]})")
+    if "сайт" in name or len(pretty.split()) >= 3:
+        webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote(pretty))
+        return f"Ищу {pretty} в интернете."
+    return (f"Не нашёл «{pretty}» на компьютере. Если программа только что установлена — скажите "
+            f"«обнови список программ», а чтобы найти в интернете — «найди {pretty}».")
 
 
 def _looks_like_game(name):
@@ -298,6 +303,11 @@ def _close_pids(pids, names):
     return done
 
 
+CURRENT_WORDS = {"окно", "это", "это окно", "текущее окно", "активное окно", "его", "ее", "её",
+                 "игру", "эту игру", "программу", "эту программу", "приложение", "это приложение",
+                 "текущую программу", "текущее", "текущую игру", "вкладку"}
+
+
 def close_app(intent):
     me = os.getpid()
     names = _proc_names()
@@ -316,12 +326,14 @@ def close_app(intent):
         _close_pids(pids, names)
         return f"Закрыл {title}."
 
-    if name in ("окно", "это окно", "текущее окно", "активное окно"):
-        for hwnd, pid, title in _windows():
-            if pid != me and names.get(pid, "") not in PROTECTED:
-                ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-                return f"Закрыл окно «{title[:40]}»."
-        return "Открытых окон нет."
+    if name in CURRENT_WORDS:
+        import procs
+        w = procs.foreground()
+        if w is None:
+            return "Открытых окон нет."
+        procs.close_window(w.hwnd)
+        procs.force_later([w])
+        return f"Закрыл «{w.title[:40]}»."
 
     import sites
     # 1) по списку программ: «закрой озу» -> osu! -> процессы из папки osu!
@@ -441,6 +453,33 @@ def run(intent: dict, cfg: dict):
             return close_app(intent), ""
         if a == "app_window":
             return app_window(intent), ""
+        import control
+        if a in control.ACTIONS:
+            return control.run(intent), ""
+        if a == "desktop":
+            try:
+                import comtypes
+                import comtypes.client
+                comtypes.CoInitialize()
+                shell = comtypes.client.CreateObject("Shell.Application", dynamic=True)
+                if intent.get("mode") == "min":
+                    shell.MinimizeAll()
+                    return "Свернул все окна.", "minimize"
+                shell.UndoMinimizeALL()
+                return "Вернул окна.", ""
+            except Exception:  # noqa: BLE001
+                pass
+            if intent.get("mode") == "min":
+                _key(VK["lwin"], True)
+                _tap(0x4D)                      # Win+M — свернуть все окна
+                _key(VK["lwin"], False)
+                return "Свернул все окна.", "minimize"
+            _key(VK["lwin"], True)
+            _key(0x10, True)
+            _tap(0x4D)                          # Win+Shift+M — вернуть окна
+            _key(0x10, False)
+            _key(VK["lwin"], False)
+            return "Вернул окна.", ""
         if a == "search":
             q = intent.get("query") or ""
             if not q:

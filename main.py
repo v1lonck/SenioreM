@@ -25,6 +25,7 @@ import config
 import theme as T
 import sites
 import timers
+import control
 from chat import ChatScreen
 import widgets
 import tts
@@ -1059,11 +1060,18 @@ class HomeScreen(Backdrop):
     def _timer_action(self, intent):
         mgr = timers.manager()
         a = intent["action"]
+        if a == "timer_alarm_stop":
+            return "Выключил будильник. Хорошего дня!" if mgr.stop_alarm() else "Будильник сейчас не звенит."
+        if a == "timer_snooze":
+            mgr.snooze()
+            return "Хорошо, разбужу через 5 минут."
         if a == "timer_add":
             kind, sec, lab = intent["kind"], intent["seconds"], intent.get("label", "")
-            mgr.add(kind, sec, lab)
+            item = mgr.add(kind, sec, lab, intent.get("at_text", ""))
             h = timers.human(sec)
-            return {"timer": f"Поставил таймер на {h}." + (f" Для: {lab}." if lab else ""),
+            return {"alarm": f"Будильник на {item.get('at_text')}. Зазвонит через {h}. "
+                             f"Не закрывайте SenioreM и не выключайте компьютер.",
+                    "timer": f"Поставил таймер на {h}." + (f" Для: {lab}." if lab else ""),
                     "remind": f"Хорошо, напомню через {h}" + (f": {lab}." if lab else "."),
                     "shutdown": f"Компьютер выключится через {h}. Чтобы отменить — скажите "
                                 f"«отмени выключение» или нажмите крестик на плашке.",
@@ -1171,7 +1179,17 @@ class HomeScreen(Backdrop):
         self.heard.setStyleSheet(f"color: {T.FAINT if faint else T.TEXT};")
 
     def _on_partial(self, text):
-        if self.orb.state in ("idle", "armed") and text:
+        if not text:
+            return
+        if not self.armed:
+            # пока не позвали — ничего не показываем (без «субтитров» чужих разговоров)
+            words = commands.tokens(text)
+            wake = self.settings.wake_words if self.settings else None
+            i = commands.find_wake(words, wake)
+            if i < 0:
+                return
+            text = " ".join(words[i:])
+        if self.orb.state in ("idle", "armed"):
             self._show_heard(text, True)
             if self.armed:
                 self.arm_timer.start(getattr(self, "_arm_ms", self._listen_ms()))  # не перебиваем
@@ -1186,6 +1204,10 @@ class HomeScreen(Backdrop):
         return bool(a) and (a in b or SequenceMatcher(None, a, b).ratio() > 0.55)
 
     def _on_final(self, text, confs=None, audio=None):
+        if timers.ALARM.playing and any(w in commands.normalize(text) for w in
+                                        ("стоп", "хватит", "выключи", "встал", "встаю", "проснул")):
+            self.execute("выключи будильник")          # будильник выключается и без «Сеньор»
+            return
         if self.speaking or self._is_echo(text):
             return
         words = commands.tokens(text)
@@ -1274,7 +1296,9 @@ class HomeScreen(Backdrop):
     # ---------- выполнение ----------
     def execute(self, text, typed=False, sink=None):
         """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
-        intent = timers.parse(text) or commands.parse(text)
+        if not typed:
+            text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
+        intent = timers.parse(text) or control.parse(text) or commands.parse(text)
         intent["typed"] = typed
         # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
         intent["followup"] = (not typed and sink is None and getattr(self, "_followup_cmd", False))
@@ -1290,6 +1314,7 @@ class HomeScreen(Backdrop):
             self._on_action_done(self._timer_action(intent), "")
             return
         if intent["action"] == "stop":
+            timers.manager().stop_alarm()
             self.speaker.interrupt()
             self.reply.setText("")
             self._disarm()
@@ -3109,6 +3134,12 @@ def run_selftest(out_path):
         for speed in ("slow", "fast"):
             tts.synth_wav(voice, "Проверка скорости.", wav, speed)
         log("OK speeds")
+        try:
+            import control as _ctl2
+            ids = _ctl2.video_ids(_ctl2.search_url("lofi hip hop"))
+            log(f"youtube ids: {len(ids)} {ids[:3]}")
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN youtube: {e!r}")
         # уже открытая программа: найти окно, свернуть, развернуть, закрыть (на блокноте)
         try:
             import procs
@@ -3126,6 +3157,16 @@ def run_selftest(out_path):
                 log(f"procs bring_up after minimize: {procs.bring_up('блокнот', tgt)}")
                 time.sleep(0.5)
                 log(f"procs bring_up again: {procs.bring_up('блокнот', tgt)}")
+                try:
+                    import control as _ctl
+                    time.sleep(0.5)
+                    log(f"uia find File: {_ctl.find_uia(wins[0].hwnd, 'File')}")
+                    rect = _ctl._rect(wins[0].hwnd)
+                    words = _ctl.ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+                    log(f"ocr words: {len(words)} {[w['t'] for w in words[:8]]}")
+                    log(f"ocr find Edit: {_ctl.find_ocr(rect, 'Edit')}")
+                except Exception as e:  # noqa: BLE001
+                    log(f"WARN control: {e!r}")
             n, names = procs.close("блокнот", tgt)
             time.sleep(1.5)
             log(f"procs close: {n} {names}; still running: {np.poll() is None}")
@@ -3287,13 +3328,16 @@ def run_uitest(out_dir):
         import timers as _tm
         mgr = _tm.manager()
         mgr.add("timer", 300, "Чай")
+        mgr.add("alarm", 600, "Тренировка")
         mgr.add("sleep", 1800, "")       # не выключение — чтобы не трогать компьютер сборки
         pump(800)
         for i, tt in enumerate(mgr.toasts):
             shot(tt, f"10-toast-{i}")
         mgr.toasts[0].finish()
+        mgr.toasts[1].finish()
         pump(700)
         shot(mgr.toasts[0], "10-toast-done")
+        shot(mgr.toasts[1], "10-toast-alarm")
         mgr.cancel()
         for tt in list(mgr.toasts):
             tt.close()
