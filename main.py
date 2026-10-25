@@ -2855,8 +2855,9 @@ class ProfileScreen(Backdrop):
         s = self.settings
         from companion import norm_kind
         kind = norm_kind(s["companion"] or "none")
-        if kind not in self.comp_cards:
-            self._fill_comp_cards()
+        from companion import figures
+        if kind not in self.comp_cards or set(self.comp_cards) != {k for k, _t, _d in figures()}:
+            self._fill_comp_cards()          # список персонажей изменился (встроенные, импорт)
         for k, c in self.comp_cards.items():
             c.set_selected(k == kind)
         self.comp_preview.kind = kind
@@ -3755,6 +3756,12 @@ def run_uitest(out_dir):
         shot(win, "02-register")
         win.store.register("tester", "secret1", "secret1")
         win._enter("tester")
+        win.open_profile("companion")           # встроенные персонажи видны сразу, без выбора
+        n_cards = len(win.profile.comp_cards)
+        log.append(f"companion cards on first open: {n_cards}")
+        if n_cards < 4:
+            raise RuntimeError("встроенные персонажи не показаны в списке")
+        win._back_home()
         h = win.home
         h.settings.set("address", "господин")
         h.settings.add_history("громкость десять", "Готово, господин. Громкость 10 процентов.")
