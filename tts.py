@@ -143,33 +143,96 @@ def _tighten(path, lead=LEAD, tail=TAIL, max_gap=MAX_GAP):
         w.writeframes(out.tobytes())
 
 
-_ACCENT_OK = None
+_PV = set("aɐʌɑeɛiɪɨoɵuʊəæyɯ")
+_STRESSED = {"а": "ɑ", "о": "o", "у": "u", "ы": "y", "и": "i", "е": "e", "э": "ɛ", "я": "a",
+             "ю": "u", "ё": "ɵ"}
+_REDUCED = {"о": "ʌ", "а": "ʌ", "е": "i", "я": "i"}
+_RU_V = "аеёиоуыэюя"
+_PH_FIX = {}
 
 
-def accents_supported(voice):
-    """Понимает ли голос знак ударения (U+0301): «за́мок» и «замо́к» звучат по-разному."""
-    global _ACCENT_OK
-    if _ACCENT_OK is None:
-        try:
-            a = voice.phonemize("за\u0301мок")
-            b = voice.phonemize("замо\u0301к")
-            plain = voice.phonemize("замок")
-            _ACCENT_OK = bool(a and b and a != b and len(sum(a, [])) <= len(sum(plain, [])) + 2)
-        except Exception:  # noqa: BLE001
-            _ACCENT_OK = False
-    return _ACCENT_OK
+def _move_stress(ph, word, mark):
+    """Переносит ударение в фонемах слова: «pˈoisk» + «по+иск» -> «pʌˈisk»."""
+    letters = [c for c in word if c in _RU_V]
+    k = sum(1 for c in mark[:mark.index("+")] if c in _RU_V)
+    clean = ph.replace("ˈ", "").replace("ˌ", "")
+    vpos = [i for i, c in enumerate(clean) if c in _PV]
+    if len(vpos) != len(letters) or k >= len(letters):
+        return None
+    j = None
+    n = 0
+    for c in ph:
+        if c == "ˈ":
+            j = n
+            break
+        if c in _PV:
+            n += 1
+    out = list(clean)
+    if j is not None and j != k:
+        out[vpos[j]] = _REDUCED.get(letters[j], out[vpos[j]])
+    out[vpos[k]] = _STRESSED.get(letters[k], out[vpos[k]])
+    out.insert(vpos[k], "ˈ")
+    return "".join(out)
+
+
+def _stress_fixes(voice, text):
+    """[(как голос читает, как надо)] для слов из словаря ударений, встречающихся в тексте."""
+    import re
+    import speechtext
+    fixes = []
+    for w in set(re.findall(r"[а-яё]+", text.lower())):
+        mark = speechtext.STRESS.get(w)
+        if not mark:
+            continue
+        if w not in _PH_FIX:
+            bad = "".join(sum(voice.phonemize(w), [])).strip(" .,!?")
+            good = _move_stress(bad, w, mark)
+            _PH_FIX[w] = (bad, good) if good and good != bad else None
+        if _PH_FIX[w]:
+            fixes.append(_PH_FIX[w])
+    return sorted(fixes, key=lambda x: -len(x[0]))
+
+
+def _synth_fixed(voice, text, wf, cfg):
+    """Синтез с исправленными ударениями (через фонемы). -> False, если исправлять нечего."""
+    import unicodedata
+    import numpy as np
+    fixes = _stress_fixes(voice, text)
+    if not fixes:
+        return False
+    parts = []
+    for sent in voice.phonemize(text):
+        joined = unicodedata.normalize("NFD", "".join(sent))
+        for bad, good in fixes:
+            joined = joined.replace(unicodedata.normalize("NFD", bad), unicodedata.normalize("NFD", good))
+        ids = voice.phonemes_to_ids(list(joined))
+        audio = voice.phoneme_ids_to_audio(ids, cfg)
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        parts.append(np.clip(audio * 32767.0, -32768, 32767).astype(np.int16))
+    wf.setframerate(voice.config.sample_rate)
+    wf.setsampwidth(2)
+    wf.setnchannels(1)
+    wf.writeframes(np.concatenate(parts).tobytes() if parts else b"")
+    return True
 
 
 def synth_wav(voice, text: str, path: str, speed: str = "normal"):
     """Синтезирует фразу в WAV. Поддерживает API piper-tts 1.3 и старее."""
     import speechtext
-    text = speechtext.prepare(text, accents=accents_supported(voice))
+    text = speechtext.prepare(text)
     scale = SPEEDS.get(speed, 1.0)
     tmp = path + ".part"
     try:
         cfg = _syn_config(scale)
-        with wave.open(tmp, "wb") as wf:
-            voice.synthesize_wav(text, wf, syn_config=cfg)
+        done = False
+        try:
+            with wave.open(tmp, "wb") as wf:
+                done = _synth_fixed(voice, text, wf, cfg)
+        except Exception:  # noqa: BLE001 — старая версия piper и т.п.: синтезируем как обычно
+            done = False
+        if not done:
+            with wave.open(tmp, "wb") as wf:
+                voice.synthesize_wav(text, wf, syn_config=cfg)
     except ImportError:
         with wave.open(tmp, "wb") as wf:
             if hasattr(voice, "synthesize_wav"):

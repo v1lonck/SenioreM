@@ -3672,12 +3672,11 @@ def run_selftest(out_path):
         log(f"OK synth {secs:.2f}s")
         # произношение: понимает ли голос ударения и как он читает слова
         try:
-            import speechprobe
-            log(f"accents supported: {tts.accents_supported(voice)}")
-            for w in ("замок", "за\u0301мок", "замо\u0301к", "все", "всё"):
-                log(f"PH {w} {''.join(sum(voice.phonemize(w), []))}")
-            for w in speechprobe.WORDS:
-                log(f"PH {w} {''.join(sum(voice.phonemize(w), []))}")
+            fx = tts._stress_fixes(voice, "Начинаю поиск в интернете, щавель")
+            log(f"stress fixes: {fx}")
+            sw = str(config.local_dir() / "selftest_stress.wav")
+            tts.synth_wav(voice, "Начинаю поиск в интернете.", sw)
+            log(f"stress synth {tts.wav_seconds(sw):.2f}s")
             long = "Сегодня в Магадане облачно. Температура минус три градуса. Ветер слабый, осадков не будет."
             raw = str(config.local_dir() / "selftest_raw.wav")
             import speechtext as _st
