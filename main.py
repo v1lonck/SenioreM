@@ -2673,7 +2673,7 @@ class ProfileScreen(Backdrop):
     def _build_companion(self, lay):
         from companion import FigurePreview
         self._title(lay, "Компаньон", "Персонаж над панелью задач. Когда помощник отвечает — "
-                    "он оживает и показывает текст. Есть встроенные (котёнок, лисёнок, Аля), а своих "
+                    "он оживает и показывает текст. Есть встроенные (Аля, Аки, Мия, Рэй, котёнок, лисёнок), а своих "
                     "можно добавить из архива (.zip) или папки с картинками — например, shimeji.")
         row = QHBoxLayout()
         row.setSpacing(28)
@@ -3759,7 +3759,7 @@ def run_uitest(out_dir):
         win.open_profile("companion")           # встроенные персонажи видны сразу, без выбора
         n_cards = len(win.profile.comp_cards)
         log.append(f"companion cards on first open: {n_cards}")
-        if n_cards < 4:
+        if n_cards < 7:
             raise RuntimeError("встроенные персонажи не показаны в списке")
         win._back_home()
         h = win.home
@@ -3866,7 +3866,7 @@ def run_uitest(out_dir):
             win.settings.set("companion", "pack:" + added[0][0])
         win.open_profile("companion")
         shot(win, "06-profile-companion")
-        for bid in ("builtin-alya", "builtin-cat", "builtin-fox"):
+        for bid in ("builtin-alya", "builtin-aki", "builtin-mia", "builtin-rei", "builtin-cat", "builtin-fox"):
             for pose in ("stand", "sit", "lie"):
                 win.settings.set("companion", "pack:" + bid)
                 win.settings.set("companion_pose", pose)
