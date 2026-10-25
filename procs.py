@@ -276,6 +276,31 @@ def _fuzzy_proc(keys, exe):
                for k in keys)
 
 
+def _title_match(keys, title):
+    """Заголовок окна похож на сказанное: «Soundpad» ~ «саундпад», «osu!» ~ «озу»."""
+    import sites
+    t = sites._norm(sites._latinize(title)) if title else ""
+    if not t:
+        return False
+    flat = t.replace(" ", "")
+    words = [w for w in t.split() if len(w) >= 3]
+    for k in keys:
+        lk = sites._norm(sites._latinize(k)).replace(" ", "")
+        if len(lk) < 3:
+            continue
+        if flat.startswith(lk) or any(sites._score(lk, w) >= 0.88 for w in words[:4]):
+            return True
+    return False
+
+
+def foreground():
+    """Окно программы, которое было активным до SenioreM (верхнее чужое окно)."""
+    for w in windows():
+        if w.exe not in ("seniorem.exe",):
+            return w
+    return None
+
+
 def find(name="", target=None):
     """Окна и процессы программы. -> (окна [Win], pids без окон {pid: exe})."""
     dirs, exes, package = locate(target) if target else (set(), set(), "")
@@ -287,6 +312,8 @@ def find(name="", target=None):
         if (dirs or exes or package) and _matches(w.path, dirs, exes, package):
             wins.append(w)
         elif keys and _fuzzy_proc(keys, w.exe):
+            wins.append(w)
+        elif keys and w.exe not in BROWSERS and _title_match(keys, w.title):
             wins.append(w)
     win_pids = {w.pid for w in wins}
     rest = {}
@@ -314,6 +341,22 @@ def bring_up(name, target):
     return "minimized" if was_min else "open"
 
 
+def force_later(wins, wait=3.0):
+    """Окно не закрылось за несколько секунд (игры часто игнорируют «закрыть») — завершаем."""
+    def later():
+        time.sleep(wait)
+        u = ctypes.windll.user32
+        for w in wins:
+            if u.IsWindow(w.hwnd) and u.IsWindowVisible(w.hwnd):
+                try:
+                    subprocess.run(["taskkill", "/PID", str(w.pid), "/T", "/F"], capture_output=True,
+                                   creationflags=NO_WINDOW, timeout=10)
+                except Exception:  # noqa: BLE001
+                    pass
+    import threading
+    threading.Thread(target=later, daemon=True).start()
+
+
 def close(name, target=None):
     """Закрыть программу. -> (сколько закрыто окон/процессов, имена exe)."""
     wins, rest = find(name, target)
@@ -326,7 +369,8 @@ def close(name, target=None):
     for pid, exe in rest.items():
         if exe in names and exe not in tray:
             continue        # у программы уже закрываем окно — дочерние процессы закроются сами
-        args = ["/PID", str(pid), "/T"] + (["/F"] if exe in tray else [])
+        # программа без окон (в трее/фоне) обычную просьбу закрыться не слышит — завершаем
+        args = ["/PID", str(pid), "/T"] + (["/F"] if exe in tray or not wins else [])
         try:
             subprocess.run(["taskkill", *args], capture_output=True, creationflags=NO_WINDOW,
                            timeout=10)
@@ -334,14 +378,5 @@ def close(name, target=None):
         except Exception:  # noqa: BLE001
             pass
     if wins:
-        # окно не закрылось за 3 секунды (некоторые игры игнорируют WM_CLOSE) — завершаем
-        def later():
-            time.sleep(3)
-            u = ctypes.windll.user32
-            for w in wins:
-                if u.IsWindow(w.hwnd) and u.IsWindowVisible(w.hwnd):
-                    subprocess.run(["taskkill", "/PID", str(w.pid), "/T", "/F"], capture_output=True,
-                                   creationflags=NO_WINDOW, timeout=10)
-        import threading
-        threading.Thread(target=later, daemon=True).start()
+        force_later(wins)
     return len(wins) + len(rest), names

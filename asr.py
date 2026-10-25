@@ -14,6 +14,27 @@ HF = "https://huggingface.co/Systran/faster-whisper-small/resolve/main/"
 MIRROR_PREFIX = "whisper-small-"
 PROMPT = ("Сеньор, открой телеграм. Громкость десять. Запусти Steam, Discord, Dota 2, "
           "Counter-Strike 2, osu!, Minecraft. Найди погоду. Который час?")
+VOCAB = ""            # названия программ и игр этого компьютера — Whisper пишет их правильно
+
+
+def set_vocab(names):
+    global VOCAB
+    picked, total = [], 0
+    for n in names:
+        n = n.strip()
+        if not (3 <= len(n) <= 24) or n in picked:
+            continue
+        if total + len(n) > 260:
+            break
+        picked.append(n)
+        total += len(n) + 2
+    VOCAB = ", ".join(picked)
+
+
+def prompt():
+    return PROMPT + (" Программы: " + VOCAB + "." if VOCAB else "")
+
+
 HALLUCINATIONS = ("субтитр", "продолжение следует", "редактор субтитров", "спасибо за просмотр",
                   "подписывайтесь", "dimatorzok")
 
@@ -90,12 +111,13 @@ class Recognizer:
         audio = audio * min(8.0, 0.6 / peak)          # нормализуем громкость (шёпот)
         with self.lock:
             segments, _info = self.model.transcribe(
-                audio, language="ru", beam_size=1, initial_prompt=PROMPT,
+                audio, language="ru", beam_size=3 if len(audio) < 16000 * 7 else 1,
+                initial_prompt=prompt(),
                 condition_on_previous_text=False, vad_filter=False,
                 no_speech_threshold=0.6, temperature=0.0)
             text = " ".join(s.text.strip() for s in segments).strip()
         low = text.lower()
-        if any(h in low for h in HALLUCINATIONS):
+        if any(h in low for h in HALLUCINATIONS) or "программы:" in low:
             return ""
         return text
 
