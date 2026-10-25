@@ -3641,6 +3641,28 @@ def main():
 
     cfg = config.load_config()
     holder = {}
+    # установщик просит закрыться через файл-флажок (так он может закрыть и SenioreM,
+    # запущенный с правами администратора, без лишних окон)
+    quit_flag = config.data_dir() / "quit.flag"
+    try:
+        quit_flag.unlink()
+    except OSError:
+        pass
+
+    def _check_quit():
+        if quit_flag.exists():
+            try:
+                quit_flag.unlink()
+            except OSError:
+                pass
+            try:
+                ai.ENGINE.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            os._exit(0)
+    quit_timer = QTimer()
+    quit_timer.timeout.connect(_check_quit)
+    quit_timer.start(700)
 
     def open_main(models):
         win = MainWindow(cfg, models)

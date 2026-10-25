@@ -205,6 +205,10 @@ procedure KillApp;
 var
   Code, Code2: Integer;
 begin
+  { сначала просим SenioreM закрыться самому (работает, даже если он запущен от администратора) }
+  ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
+  SaveStringToFile(ExpandConstant('{userappdata}\SenioreM\quit.flag'), '1', False);
+  Sleep(2500);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
