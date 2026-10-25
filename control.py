@@ -101,6 +101,10 @@ def parse(text):
         return {"action": "yt_key", "key": "back"}
     if re.search(r"^(сделай )?(на весь экран|во весь экран|полноэкранный)", t):
         return {"action": "yt_key", "key": "full"}
+    # --- вкладки браузера
+    hit = parse_tabs(t)
+    if hit:
+        return hit
     # --- игры и лаунчеры: «найди игру … и зайди», «выбери первую игру», «играть»
     hit = parse_app(t)
     if hit:
@@ -129,6 +133,130 @@ def parse(text):
     if om and om.group(1) in ORDINALS:
         return {"action": "yt_nth", "n": ORDINALS[om.group(1)]}
     return {"action": "click_text", "text": target}
+
+
+TAB_NUM = {"одну": 1, "одна": 1, "две": 2, "два": 2, "три": 3, "четыре": 4, "пять": 5, "шесть": 6,
+           "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "пару": 2}
+
+
+def parse_tabs(t):
+    """«закрой эту вкладку», «закрой первые 5 вкладок», «закрой все вкладки», «закрой вкладку ютуб»."""
+    m = re.match(r"^(закрой|убери|закрыть)\s+(сайт\s+)?(.+)$", t)
+    if m and not re.search(r"вклад[ко]", t):
+        import sites
+        name = m.group(3)
+        site = sites.find_site(name)
+        if site and (not site[1] or not sites.find_program(name, threshold=0.8)):
+            return {"action": "tabs", "mode": "by_name", "name": name}   # «закрой ютуб» — вкладку
+    if not re.search(r"вклад[ко]|таб[ыа]?\b|вкладочк", t) or not re.search(
+            r"закр|убери|удали|выключи|верни|открой заново|восстанови|переключи|следующ|предыдущ", t):
+        return None
+    if re.search(r"(верни|открой заново|восстанови)", t):
+        return {"action": "tabs", "mode": "reopen"}
+    if re.search(r"следующ", t):
+        return {"action": "tabs", "mode": "next"}
+    if re.search(r"предыдущ", t):
+        return {"action": "tabs", "mode": "prev"}
+    if re.search(r"\bвсе\b|\bвсё\b", t) and not re.search(r"кроме|остальн", t):
+        return {"action": "tabs", "mode": "all"}
+    if re.search(r"остальн|кроме (этой|текущей)", t):
+        return {"action": "tabs", "mode": "others"}
+    m = re.search(r"(\d+|" + "|".join(TAB_NUM) + r")", t)
+    n = None
+    if m:
+        n = int(m.group(1)) if m.group(1).isdigit() else TAB_NUM[m.group(1)]
+    if re.search(r"последн", t):
+        return {"action": "tabs", "mode": "last", "n": n or 1}
+    if re.search(r"перв", t):
+        return {"action": "tabs", "mode": "first", "n": n or 1}
+    if n:
+        return {"action": "tabs", "mode": "current", "n": n}
+    m = re.search(r"вкладк\w*\s+(с\s+|со\s+|где\s+)?(.+)$", t)
+    if m and not re.fullmatch(r"(эту|текущую|ее|её|открытую|активную)", m.group(2).strip()):
+        name = re.sub(r"^(сайтом|сайт|страницей)\s+", "", m.group(2).strip())
+        return {"action": "tabs", "mode": "by_name", "name": name}
+    return {"action": "tabs", "mode": "current", "n": 1}
+
+
+def tabs(intent):
+    win = _browser_window(prefer_youtube=False)
+    if win is None:
+        return "Не вижу открытого браузера."
+    _focus(win)
+    mode, n = intent.get("mode"), max(1, min(50, int(intent.get("n") or 1)))
+    W, TAB, SH, CTRL = ord("W"), 0x09, 0x10, 0x11
+    if mode == "reopen":
+        press([CTRL, SH, ord("T")])
+        return "Вернул закрытую вкладку."
+    if mode == "next":
+        press([CTRL, TAB])
+        return "Следующая вкладка."
+    if mode == "prev":
+        press([CTRL, SH, TAB])
+        return "Предыдущая вкладка."
+    if mode == "all":
+        press([CTRL, SH, W])                    # закрыть окно браузера со всеми вкладками
+        return "Закрыл все вкладки."
+    if mode == "others":
+        # закрываем всё справа и слева от текущей: справа — переходом на последнюю
+        title = win.title
+        closed = 0
+        for _ in range(60):
+            press([CTRL, ord("9")])             # последняя вкладка
+            time.sleep(0.15)
+            import procs
+            cur = procs.foreground()
+            if cur is None or cur.title == title:
+                break
+            press([CTRL, W])
+            closed += 1
+            time.sleep(0.12)
+        for _ in range(60):
+            press([CTRL, ord("1")])             # первая вкладка
+            time.sleep(0.15)
+            import procs
+            cur = procs.foreground()
+            if cur is None or cur.title == title:
+                break
+            press([CTRL, W])
+            closed += 1
+            time.sleep(0.12)
+        return f"Оставил только текущую вкладку, закрыл {closed}."
+    if mode in ("first", "last"):
+        press([CTRL, ord("1" if mode == "first" else "9")])
+        time.sleep(0.15)
+        for _ in range(n):
+            if mode == "last":
+                press([CTRL, ord("9")])
+                time.sleep(0.08)
+            press([CTRL, W])
+            time.sleep(0.12)
+        word = "первую" if mode == "first" else "последнюю"
+        return (f"Закрыл {word} вкладку." if n == 1 else
+                f"Закрыл {'первые' if mode == 'first' else 'последние'} {n} вкладок.")
+    if mode == "by_name":
+        name = intent.get("name", "")
+        import procs
+        import sites
+        keys = {sites._norm(sites._latinize(k)) for k in sites.keys_for(name)} | {sites._norm(name)}
+        first = None
+        for step in range(40):
+            cur = procs.foreground()
+            raw = cur.title if cur else ""
+            title = sites._norm(sites._latinize(raw))
+            if any(k and k in title for k in keys):
+                press([CTRL, W])
+                return f"Закрыл вкладку «{raw[:40]}»."
+            if step and raw == first:
+                break                               # прошли все вкладки по кругу
+            first = first if first is not None else raw
+            press([CTRL, TAB])
+            time.sleep(0.18)
+        return f"Не нашёл вкладку «{name}»."
+    for _ in range(n):
+        press([CTRL, W])
+        time.sleep(0.12)
+    return "Закрыл вкладку." if n == 1 else f"Закрыл {n} вкладок."
 
 
 ITEM_WORDS = r"(игру|игра|карточку|результат|пункт|вариант|ссылку|сервер|мод|режим|уровень|карту|" \
@@ -804,6 +932,8 @@ def click_play():
 
 def run(intent):
     a = intent["action"]
+    if a == "tabs":
+        return tabs(intent)
     if a == "nth_item":
         return nth_item(intent["n"], intent.get("play"))
     if a == "app_search":
@@ -838,5 +968,5 @@ def run(intent):
     return ""
 
 
-ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_key", "nth_item",
+ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_key", "nth_item", "tabs",
            "app_search", "enter_item", "click_play")

@@ -2585,30 +2585,38 @@ class ProfileScreen(Backdrop):
         lay.addWidget(self.scen_page)
 
     def _build_companion(self, lay):
-        from companion import FIGURES, FigurePreview
-        self._title(lay, "Компаньон", "Фигурка над панелью задач в правом нижнем углу. Когда "
-                    "помощник отвечает — она говорит вместе с ним и показывает текст.")
+        from companion import FigurePreview
+        self._title(lay, "Компаньон", "Ваш персонаж над панелью задач. Когда помощник отвечает — "
+                    "он оживает и показывает текст. Добавьте персонажа из архива (.zip) или папки "
+                    "с картинками — например, shimeji.")
         row = QHBoxLayout()
         row.setSpacing(28)
         self.comp_preview = FigurePreview(200)
         row.addWidget(self.comp_preview, 0, Qt.AlignTop)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
+        self.comp_grid = QGridLayout()
+        self.comp_grid.setHorizontalSpacing(10)
+        self.comp_grid.setVerticalSpacing(10)
         self.comp_cards = {}
-        from companion import thumb
-        for i, (key, title, desc) in enumerate(FIGURES):
-            c = ThumbCard(title, desc, 156, 196)
-            c.set_pixmap(thumb(key, 312, 392))
-            c.clicked.connect(lambda k=key: self._set_comp(companion=k))
-            grid.addWidget(c, i // 4, i % 4)
-            self.comp_cards[key] = c
-        row.addLayout(grid, 1)
+        row.addLayout(self.comp_grid, 1)
         lay.addLayout(row)
-        lay.addSpacing(26)
+        lay.addSpacing(14)
+        brow = QHBoxLayout()
+        brow.setSpacing(10)
+        for title, fn in (("Добавить из архива…", self._comp_add_zip),
+                          ("Добавить из папки…", self._comp_add_dir),
+                          ("Переименовать", self._comp_rename),
+                          ("Удалить персонажа", self._comp_delete)):
+            b = button(title, "ghost", 13, QFont.Normal)
+            b.clicked.connect(fn)
+            brow.addWidget(b)
+        brow.addStretch(1)
+        lay.addLayout(brow)
+        self.comp_status = label("", 13, role="accent", wrap=True)
+        lay.addWidget(self.comp_status)
+        lay.addSpacing(18)
         self.t_comp_anim = self._toggle_row(lay, "Всегда двигается",
-                                            "Покачивается и моргает. Если выключить — стоит "
-                                            "неподвижно и оживает только когда говорит.", None)
+                                            "Меняет выражения и «дышит». Если выключить — стоит "
+                                            "спокойно и оживает только когда говорит.", None)
         self.t_comp_anim.toggled.connect(lambda v: self._set_comp(companion_anim=bool(v)))
         self._caption(lay, "Размер")
         srow = QHBoxLayout()
@@ -2623,9 +2631,90 @@ class ProfileScreen(Backdrop):
         srow.addStretch(1)
         lay.addLayout(srow)
         lay.addSpacing(14)
-        lay.addWidget(label("Фигурку можно перетащить мышью, а нажатие на неё открывает SenioreM.",
+        lay.addWidget(label("Персонажа можно перетащить мышью, а нажатие на него открывает SenioreM. "
+                            "Из архива берутся только картинки — программы из него не запускаются.",
                             12, role="faint", wrap=True))
         lay.addStretch(1)
+        self._fill_comp_cards()
+
+    def _fill_comp_cards(self):
+        from companion import figures, thumb
+        while self.comp_grid.count():
+            it = self.comp_grid.takeAt(0)
+            if it.widget():
+                it.widget().hide()
+                it.widget().deleteLater()
+        self.comp_cards = {}
+        for i, (key, title, desc) in enumerate(figures()):
+            c = ThumbCard(title, desc, 150, 190)
+            c.set_pixmap(thumb(key, 300, 380))
+            c.clicked.connect(lambda k=key: self._set_comp(companion=k))
+            self.comp_grid.addWidget(c, i // 4, i % 4)
+            self.comp_cards[key] = c
+
+    def _comp_import(self, paths):
+        if not paths:
+            return
+        self.comp_status.setText("Добавляю персонажа…")
+        QApplication.processEvents()
+        import companion
+        added, errors = [], []
+        for path in paths:
+            try:
+                added += companion.import_path(path)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{os.path.basename(path)}: {e}")
+        self._fill_comp_cards()
+        if added:
+            self.comp_status.setText("Добавлено: " + ", ".join(n for _p, n in added) +
+                                     ". Нажмите на персонажа, чтобы выбрать его.")
+            if self.settings is not None and not (self.settings["companion"] or "").startswith("pack:"):
+                self._set_comp(companion="pack:" + added[0][0])
+        else:
+            self.comp_status.setText("Не нашёл картинок персонажа. " + "; ".join(errors))
+        self._refresh_comp()
+
+    def _comp_add_zip(self):
+        from PySide6.QtWidgets import QFileDialog
+        paths, _ = QFileDialog.getOpenFileNames(self, "Архивы с персонажами", "",
+                                                "Архивы (*.zip)")
+        self._comp_import(paths)
+
+    def _comp_add_dir(self):
+        from PySide6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(self, "Папка с картинками персонажа")
+        self._comp_import([path] if path else [])
+
+    def _comp_selected_pack(self):
+        kind = (self.settings["companion"] or "") if self.settings is not None else ""
+        return kind[5:] if kind.startswith("pack:") else None
+
+    def _comp_rename(self):
+        pid = self._comp_selected_pack()
+        if not pid:
+            self.comp_status.setText("Сначала выберите персонажа.")
+            return
+        from PySide6.QtWidgets import QInputDialog
+        import companion
+        name, ok = QInputDialog.getText(self, "Имя персонажа", "Как его зовут:",
+                                        text=dict(companion.list_packs()).get(pid, ""))
+        if ok and name.strip():
+            companion.rename_pack(pid, name.strip())
+            companion._PACKS.pop(pid, None)
+            self._fill_comp_cards()
+            self._refresh_comp()
+
+    def _comp_delete(self):
+        pid = self._comp_selected_pack()
+        if not pid:
+            self.comp_status.setText("Сначала выберите персонажа.")
+            return
+        import companion
+        self._set_comp(companion="none")
+        companion.delete_pack(pid)
+        self._fill_comp_cards()
+        self._refresh_comp()
+        self.comp_status.setText("Персонаж удалён.")
 
     def _set_comp(self, **changes):
         if self.settings is None or self._loading:
@@ -2640,6 +2729,8 @@ class ProfileScreen(Backdrop):
         s = self.settings
         from companion import norm_kind
         kind = norm_kind(s["companion"] or "none")
+        if kind not in self.comp_cards:
+            self._fill_comp_cards()
         for k, c in self.comp_cards.items():
             c.set_selected(k == kind)
         self.comp_preview.kind = kind
@@ -2936,7 +3027,8 @@ class MainWindow(QWidget):
 
     def apply_companion(self):
         s = self.settings
-        kind = (s["companion"] if s is not None else "none") or "none"
+        from companion import norm_kind
+        kind = norm_kind((s["companion"] if s is not None else "none") or "none")
         if kind == "none" or os.environ.get("SENIOREM_NO_COMPANION"):
             if self.companion is not None:
                 self.companion.hide()
@@ -3426,30 +3518,39 @@ def run_uitest(out_dir):
         look = win.profile.page_widgets["look"].findChild(QScrollArea).widget()
         look.grab().save(os.path.join(out_dir, "05-profile-look-full.png"))
         win._back_home()
-        win.settings.set("companion", "aki")
+        # тестовый персонаж: рисуем кадры (круглый «колобок» с разными глазами) и импортируем
+        import tempfile as _tf
+        import companion as _cmp
+        from PySide6.QtGui import QImage, QPainter as _QP
+        tdir = os.path.join(_tf.mkdtemp(), "Kolobok", "img")
+        os.makedirs(tdir)
+        for k in range(6):
+            im = QImage(256, 256, QImage.Format_ARGB32)
+            im.fill(Qt.transparent)
+            qp = _QP(im)
+            qp.setRenderHint(_QP.Antialiasing)
+            qp.setBrush(QColor("#F4B942"))
+            qp.setPen(QColor("#5A3A10"))
+            qp.drawEllipse(48, 40 + (k % 2) * 3, 160, 180)
+            qp.setBrush(QColor("#2A1A10"))
+            eh = 4 if k == 3 else 18
+            qp.drawEllipse(95, 100, 16, eh)
+            qp.drawEllipse(145, 100, 16, eh)
+            qp.drawArc(100, 140 - k, 56, 30 + k * 2, 200 * 16, 140 * 16)
+            qp.end()
+            im.save(os.path.join(tdir, f"shime{k + 1}.png"))
+        added = _cmp.import_path(os.path.dirname(tdir))
+        log.append(f"companion import: {added}")
+        if added:
+            win.settings.set("companion", "pack:" + added[0][0])
         win.open_profile("companion")
         shot(win, "06-profile-companion")
         win.apply_companion()
-        win.companion.say("Привет! Я Аки. Чем помочь?", 20)
+        win.companion.say("Привет! Я твой компаньон. Чем помочь?", 20)
         win.companion.set_speaking(True)
         pump(600)
         win.companion.grab().save(os.path.join(out_dir, "06-companion-window.png"))
         win.companion.set_speaking(False)
-        from PySide6.QtGui import QImage, QPainter as _QP
-        from PySide6.QtCore import QRectF as _R
-        import companion as _cmp
-        figs = [k for k, _, _ in _cmp.FIGURES if k != "none"]
-        img = QImage(240 * len(figs), 960, QImage.Format_ARGB32)
-        img.fill(QColor("#141A26"))
-        fp = _cmp.FigurePainter()
-        qp = _QP(img)
-        for i, k in enumerate(figs):
-            for row, (spk, mo, bl) in enumerate(((False, 0.0, 0.0), (True, 0.9, 1.0))):
-                fp.speaking, fp.mouth, fp._blink = spk, mo, bl * 0.5
-                fp.paint(qp, _R(i * 240 + 10, row * 480 + 10, 220, 460), k)
-        qp.end()
-        img.save(os.path.join(out_dir, "07-companions.png"))
-        log.append("07-companions")
         win.open_chat()
         win.chat.send("Кто такой Павел Дуров?")
         win.chat.receive("Павел Дуров — российский предприниматель, основатель ВКонтакте и Telegram.")
