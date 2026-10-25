@@ -999,7 +999,7 @@ class HomeScreen(Backdrop):
         self._upd_timer = QTimer(self)
         self._upd_timer.timeout.connect(self._check_update)
         self._upd_timer.start(30 * 60 * 1000)
-        QTimer.singleShot(90 * 1000, self._check_update)
+        QTimer.singleShot(15 * 1000, self._check_update)
 
     def _refresh_downloads(self):
         import stats
@@ -1039,15 +1039,26 @@ class HomeScreen(Backdrop):
         self._upd_busy = True
         self._upd_version = version
         self._upd_dl = Updater(url, version)
-        self._upd_dl.progress.connect(lambda f, _t: None)
+        self._upd_dl.progress.connect(self._update_progress)
         self._upd_dl.ready.connect(self._update_downloaded)
-        self._upd_dl.failed.connect(lambda _m: setattr(self, "_upd_busy", False))
+        self._upd_dl.failed.connect(self._update_failed)
         self._upd_dl.start()
+        self.upd_btn.setText(f"⬇  Скачиваю версию {version}…")
+        self.upd_btn.setEnabled(False)
+        self.upd_btn.show()
+
+    def _update_progress(self, frac, _text):
+        self.upd_btn.setText(f"⬇  Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
+
+    def _update_failed(self, _msg):
+        self._upd_busy = False
+        self.upd_btn.hide()
 
     def _update_downloaded(self, path):
         self._upd_busy = False
         self._upd_ready = path
         self.upd_btn.setText(f"⬆  Обновить до {self._upd_version}")
+        self.upd_btn.setEnabled(True)
         self.upd_btn.show()
 
     def _install_update(self):
