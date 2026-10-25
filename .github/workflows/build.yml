@@ -46,13 +46,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
-          gh release view models *> $null
+          $have = @(gh release view models --json assets -q ".assets[].name" 2>$null)
           if ($LASTEXITCODE -ne 0) {
-            gh release create models --prerelease --latest=false --title "Модели для SenioreM (зеркало)" --notes "Речевая модель, голос и ИИ. Программа скачивает их отсюда."
+            gh release create models --prerelease --title "Модели для SenioreM (зеркало)" --notes "Речевая модель, голос и ИИ. Программа скачивает их отсюда."
+            $have = @()
           }
-          $have = @(gh release view models --json assets -q ".assets[].name")
+          "в релизе уже есть: $($have -join ', ')"
           New-Item -ItemType Directory -Force models | Out-Null
           $hfv = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium"
           $want = [ordered]@{
@@ -63,19 +63,29 @@ jobs:
             "Qwen2.5-3B-Instruct-Q4_K_M.gguf" = "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
           }
           if (-not ($have -contains "llama-server-win-x64.zip")) {
-            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
+            try {
+              $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
+            } catch { Write-Output "::error::llama.cpp api — $($_.Exception.Message)"; exit 1 }
             $a = $rel.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
             "llama.cpp: $($rel.tag_name) $($a.name)"
             $want["llama-server-win-x64.zip"] = $a.browser_download_url
           }
+          $failed = $false
           foreach ($name in $want.Keys) {
             if ($have -contains $name) { "есть: $name"; continue }
-            "качаю: $name"
-            Invoke-WebRequest $want[$name] -OutFile "models/$name"
-            "загружаю в релиз: $name ({0:N0} МБ)" -f ((Get-Item "models/$name").Length / 1MB)
-            gh release upload models "models/$name" --clobber
-            Remove-Item "models/$name"
+            try {
+              "качаю: $name"
+              Invoke-WebRequest $want[$name] -OutFile "models/$name"
+              "загружаю в релиз: $name ({0:N0} МБ)" -f ((Get-Item "models/$name").Length / 1MB)
+              gh release upload models "models/$name" --clobber
+              if ($LASTEXITCODE -ne 0) { throw "gh upload exit $LASTEXITCODE" }
+              Remove-Item "models/$name"
+            } catch {
+              Write-Output "::error::$name — $($_.Exception.Message)"
+              $failed = $true
+            }
           }
+          if ($failed) { exit 1 }
 
       - name: Самопроверка программы (голос, распознавание, ИИ)
         shell: pwsh
