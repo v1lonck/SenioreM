@@ -175,9 +175,10 @@ class Speaker(QThread):
         self.speed = speed if speed in ("slow", "normal", "fast") else "normal"
         self.enabled = enabled
 
-    def say(self, text: str, force=False, speed=None):
+    def say(self, text: str, force=False, speed=None, cache=True):
+        """cache=False — для одноразовых фраз (ответы ИИ): файл удаляется после озвучки."""
         if text and (self.enabled or force):
-            self.q.put((text, speed or self.speed))
+            self.q.put((text, speed or self.speed, cache))
 
     def prefetch(self, texts):
         """Заранее готовит частые фразы, чтобы они звучали мгновенно."""
@@ -209,11 +210,11 @@ class Speaker(QThread):
             item = self.q.get()
             if item is None:
                 break
-            text, speed = item
+            text, speed, cache = item
             self._stop_now.clear()
             self.speaking.emit(True)
             try:
-                self._speak(text, speed)
+                self._speak(text, speed, cache)
             except Exception:  # noqa: BLE001
                 import traceback
                 _log("Ошибка озвучки:\n" + traceback.format_exc())
@@ -222,19 +223,29 @@ class Speaker(QThread):
                 self.speaking.emit(False)
 
     # ---------- озвучка ----------
-    def _wav(self, text, speed):
+    def _wav(self, text, speed, cache=True):
         import tts
         path = tts.cache_path(text, speed)
+        if not cache:
+            path = path[:-4] + ".once.wav"
         if not os.path.exists(path):
             with self._lock:   # синтез одной модели — по очереди
                 if not os.path.exists(path):
                     tts.synth_wav(self._piper, text, path, speed)
         return path
 
-    def _speak(self, text, speed):
+    def _speak(self, text, speed, cache=True):
         if self._piper is not None:
             try:
-                self._play_wav(self._wav(text, speed))
+                path = self._wav(text, speed, cache)
+                try:
+                    self._play_wav(path)
+                finally:
+                    if not cache:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
                 return
             except Exception:  # noqa: BLE001
                 import traceback

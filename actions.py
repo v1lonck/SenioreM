@@ -311,6 +311,17 @@ def close_app(intent):
         found = bool(_close_pids(pids, names)) or found
     return f"Закрыл {name}." if found else f"Не нашёл открытую программу «{name}»."
 
+def try_launch(text):
+    """Короткая фраза, совпавшая с программой на компьютере, — запускаем её."""
+    if not text or len(text.split()) > 3:
+        return None
+    import sites
+    hit = sites.find_program(text) or sites.find_local(text)
+    if hit:
+        return f"{sites.launch(hit[1])} {hit[0]}."
+    return None
+
+
 # ---------------- главный вход ----------------
 def run(intent: dict, cfg: dict):
     """-> (reply_text, ui_action) ; ui_action: '', 'minimize', 'restore', 'quit'."""
@@ -391,15 +402,15 @@ def run(intent: dict, cfg: dict):
             return "До встречи.", "quit"
         if a == "chat":
             return intent.get("reply", ""), ""
+        if a in ("ask", "forget"):
+            return ("Чтобы я мог разговаривать и отвечать на вопросы, включите "
+                    "ИИ-собеседника: профиль → «ИИ-собеседник»."), ""
         if a == "empty":
             return "", ""
         # Неизвестная короткая фраза — может, это название программы («запрет», «осу»)
-        text = intent.get("text", "")
-        if text and len(text.split()) <= 3:
-            import sites
-            hit = sites.find_program(text) or sites.find_local(text)
-            if hit:
-                return f"{sites.launch(hit[1])} {hit[0]}.", ""
+        launched = try_launch(intent.get("text", ""))
+        if launched:
+            return launched, ""
         if intent.get("typed"):
             return ("Не понял команду. Попробуйте написать иначе — например, «открой телеграм» "
                     "или «громкость 30»."), ""

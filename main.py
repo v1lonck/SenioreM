@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, 
                                QVBoxLayout, QWidget)
 
 import actions
+import ai
 import commands
 import config
 import sites
@@ -27,6 +28,12 @@ from theme import (ACCENT, ERROR, FAINT, LINE, TEXT, Backdrop, Clickable, Confir
                    apply_app_theme, button, card, field, font, hline, label, set_role,
                    switch_page, window_controls)
 from voice import Chime, Listener, Speaker
+
+
+class AIBridge(QObject):
+    progress = Signal(float, str)
+    done = Signal(str)
+    answer = Signal(str)
 
 
 class Bridge(QObject):
@@ -790,10 +797,27 @@ class HomeScreen(Backdrop):
             self.reply.setText("")
             self._rest_state()
             return
-        self._set_state("busy")
+        s = self.settings
+        ai_on = s is not None and s["ai_enabled"]
+        use_ai = ai_on and intent["action"] in ("ask", "unknown", "forget")
+        self._set_state("busy", "ДУМАЮ…" if use_ai and intent["action"] != "forget" else None)
 
         def work():
-            reply, ui = actions.run(intent, self.cfg)
+            ui = ""
+            if use_ai and intent["action"] == "forget":
+                ai.ENGINE.forget()
+                reply = "Хорошо, начнём разговор заново."
+            elif use_ai:
+                reply = actions.try_launch(intent.get("text", "")) \
+                    if intent["action"] == "unknown" else None
+                if reply is None:
+                    try:
+                        reply = ai.ENGINE.ask(text, s)
+                        ui = "ai"
+                    except ai.AIError as e:
+                        reply = str(e)
+            else:
+                reply, ui = actions.run(intent, self.cfg)
             if intent["action"] != "mute" and actions.is_muted():
                 ui += "|muted"
             self.bridge.action_done.emit(reply, ui)
@@ -803,16 +827,21 @@ class HomeScreen(Backdrop):
     def _on_action_done(self, reply, ui):
         muted = ui.endswith("|muted")
         ui = ui.replace("|muted", "")
+        from_ai = ui == "ai"
+        if from_ai:
+            ui = ""
         if self.settings is not None:
-            reply = personalize(reply, self.settings["address"])
+            if not from_ai:
+                reply = personalize(reply, self.settings["address"])
             if self._last_cmd:
                 self.settings.add_history(self._last_cmd, reply)
                 self.history.set_items(self.settings["history"])
+        self.reply.setFont(font(16 if len(reply) > 140 else 18))
         self.reply.setText(reply + ("\nЗвук на компьютере выключен — скажите или напишите "
                                     "«включи звук»." if muted and reply else ""))
         self._rest_state()
         if reply:
-            self.speaker.say(reply)
+            self.speaker.say(reply, cache=not from_ai)
         if "громк" in self._last_cmd or "звук" in self._last_cmd or "тише" in self._last_cmd \
                 or "громче" in self._last_cmd:
             QTimer.singleShot(300, self._poll_volume)
@@ -835,6 +864,7 @@ class ProfileScreen(Backdrop):
         ("voice", "Голос"),
         ("wake", "Активация"),
         ("history", "История"),
+        ("ai", "ИИ-собеседник"),
         ("startup", "Запуск"),
         ("account", "Аккаунт"),
         ("about", "О программе"),
@@ -1230,6 +1260,183 @@ class ProfileScreen(Backdrop):
             self.win.home.history.set_items([])
             self._flash("История очищена")
 
+    def _build_ai(self, lay):
+        self._title(lay, "ИИ-собеседник", "С помощником можно разговаривать и задавать любые "
+                                          "вопросы: «расскажи анекдот», «что такое чёрная дыра», "
+                                          "«придумай поздравление».")
+        self.t_ai = self._toggle_row(lay, "Разговаривать и отвечать на вопросы",
+                                     "Всё, что не похоже на команду, помощник обсудит с вами.",
+                                     "ai_enabled")
+        self._caption(lay, "Где работает ИИ")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        self.ai_cards = {}
+        opts = [("smart", "Умный", "На компьютере · бесплатно · ~2 ГБ"),
+                ("fast", "Быстрый", "Для слабых ПК · бесплатно · ~1 ГБ"),
+                ("api", "Свой сервер", "OpenAI-совместимый API по ключу")]
+        for i, (key, title, desc) in enumerate(opts):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            cl = QVBoxLayout(c)
+            cl.setContentsMargins(18, 14, 18, 14)
+            cl.setSpacing(3)
+            cl.addWidget(label(title, 16, QFont.DemiBold))
+            cl.addWidget(label(desc, 12, role="muted", wrap=True))
+            c.clicked.connect(lambda k=key: self._choose_ai(k))
+            grid.addWidget(c, 0, i)
+            self.ai_cards[key] = c
+        lay.addLayout(grid)
+        lay.addSpacing(18)
+
+        # локальный режим: скачивание
+        self.ai_local = QWidget()
+        ll = QVBoxLayout(self.ai_local)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(10)
+        self.ai_status = label("", 14, wrap=True)
+        ll.addWidget(self.ai_status)
+        self.ai_bar = VolumeMeter()
+        self.ai_bar.hide()
+        ll.addWidget(self.ai_bar)
+        self.ai_download = button("Скачать", "ghost", 14)
+        self.ai_download.setFixedWidth(220)
+        self.ai_download.clicked.connect(self._download_ai)
+        ll.addWidget(self.ai_download, 0, Qt.AlignLeft)
+        ll.addWidget(label("Модель Qwen 2.5 работает прямо на вашем компьютере через llama.cpp: "
+                           "бесплатно, без ключей и регистрации, разговоры никуда не отправляются. "
+                           "Первый ответ после запуска — через несколько секунд.", 12,
+                           role="faint", wrap=True))
+        lay.addWidget(self.ai_local)
+
+        # свой API
+        self.ai_api = QWidget()
+        al = QVBoxLayout(self.ai_api)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(4)
+        self._caption(al, "Адрес API")
+        self.f_api_url = field("например: https://api.groq.com/openai/v1")
+        self.f_api_url.textEdited.connect(lambda v: self._set("ai_api_url", v.strip()))
+        al.addWidget(self.f_api_url)
+        al.addSpacing(14)
+        row = QHBoxLayout()
+        row.setSpacing(18)
+        kc = QVBoxLayout()
+        self._caption(kc, "Ключ")
+        self.f_api_key = field("ключ API", True)
+        self.f_api_key.textEdited.connect(lambda v: self._set("ai_api_key", v.strip()))
+        kc.addWidget(self.f_api_key)
+        mc = QVBoxLayout()
+        self._caption(mc, "Модель")
+        self.f_api_model = field("например: llama-3.3-70b-versatile")
+        self.f_api_model.textEdited.connect(lambda v: self._set("ai_api_model", v.strip()))
+        mc.addWidget(self.f_api_model)
+        row.addLayout(kc, 1)
+        row.addLayout(mc, 1)
+        al.addLayout(row)
+        al.addSpacing(6)
+        al.addWidget(label("Ключ хранится только на этом компьютере.", 12, role="faint"))
+        lay.addWidget(self.ai_api)
+
+        lay.addSpacing(22)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        self.ai_test = button("Проверить", "ghost", 14)
+        self.ai_test.setFixedWidth(160)
+        self.ai_test.clicked.connect(self._test_ai)
+        row.addWidget(self.ai_test)
+        forget = button("Забыть разговор", "ghost", 14, QFont.Normal)
+        forget.setFixedWidth(190)
+        forget.clicked.connect(lambda: (ai.ENGINE.forget(), self._flash("Разговор начат заново")))
+        row.addWidget(forget)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addSpacing(10)
+        self.ai_answer = label("", 14, role="muted", wrap=True)
+        lay.addWidget(self.ai_answer)
+        lay.addStretch(1)
+
+        self.ai_bridge = AIBridge()
+        self.ai_bridge.progress.connect(self._ai_progress)
+        self.ai_bridge.done.connect(self._ai_done)
+        self.ai_bridge.answer.connect(self._ai_answer)
+
+    def _choose_ai(self, key):
+        self._set("ai_mode", key)
+        self._refresh_ai()
+
+    def _refresh_ai(self):
+        if self.settings is None:
+            return
+        mode = self.settings["ai_mode"] or "smart"
+        for k, c in self.ai_cards.items():
+            c.setProperty("selected", "true" if k == mode else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
+        self.ai_api.setVisible(mode == "api")
+        self.ai_local.setVisible(mode != "api")
+        if mode != "api" and not getattr(self, "_ai_downloading", False):
+            ready = ai.local_ready(mode)
+            size = "~2 ГБ" if mode == "smart" else "~1 ГБ"
+            self.ai_status.setText("✓ Модель скачана и готова к работе." if ready else
+                                   f"Модель ещё не скачана ({size}, один раз).")
+            set_role(self.ai_status, "accent" if ready else "muted")
+            self.ai_download.setVisible(not ready)
+            self.ai_bar.hide()
+
+    def _download_ai(self):
+        mode = self.settings["ai_mode"] or "smart"
+        self._ai_downloading = True
+        self.ai_download.setEnabled(False)
+        self.ai_bar.show()
+        self.ai_bar.value = self.ai_bar.target = 0.0
+
+        def work():
+            try:
+                ai.download_local(mode, lambda f, t: self.ai_bridge.progress.emit(f, t))
+                self.ai_bridge.done.emit("")
+            except Exception as e:  # noqa: BLE001
+                self.ai_bridge.done.emit(f"Не удалось скачать: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_progress(self, frac, text):
+        self.ai_bar.target = frac
+        self.ai_status.setText(f"{text} · {round(frac * 100)} %")
+
+    def _ai_done(self, err):
+        self._ai_downloading = False
+        self.ai_download.setEnabled(True)
+        self._refresh_ai()
+        if err:
+            self.ai_status.setText(err)
+            set_role(self.ai_status, "error")
+            self.ai_download.show()
+        else:
+            if not self.settings["ai_enabled"]:
+                self.t_ai.setChecked(True)
+            self._flash("ИИ готов")
+
+    def _test_ai(self):
+        self.ai_test.setEnabled(False)
+        self.ai_answer.setText("Думаю…")
+        s = self.settings
+
+        def work():
+            try:
+                ans = ai.ENGINE.ask("Привет! Представься одной короткой фразой.", s)
+            except ai.AIError as e:
+                ans = str(e)
+            self.ai_bridge.answer.emit(ans)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_answer(self, text):
+        self.ai_test.setEnabled(True)
+        self.ai_answer.setText(text)
+        self.speaker.say(text, force=True, cache=False)
+
     def _build_startup(self, lay):
         self._title(lay, "Запуск", "Когда и как открывается SenioreM.")
         self.t_autostart = self._toggle_row(lay, "Запускать вместе с Windows",
@@ -1337,6 +1544,11 @@ class ProfileScreen(Backdrop):
         for sec, b in self.listen_buttons.items():
             b.setChecked(sec == int(settings["listen_seconds"] or 8))
         self.acc_email.setText(email)
+        self.t_ai.setChecked(bool(settings["ai_enabled"]))
+        self.f_api_url.setText(settings["ai_api_url"] or "")
+        self.f_api_key.setText(settings["ai_api_key"] or "")
+        self.f_api_model.setText(settings["ai_api_model"] or "")
+        self._refresh_ai()
         self.full_history.set_items(settings["history"])
         self._loading = False
         self._refresh_preview()
@@ -1418,6 +1630,9 @@ class MainWindow(QWidget):
         s = self.settings
         self.speaker.configure(s["voice_speed"], s["speak_replies"])
         self.speaker.prefetch([s["wake_reply"]] if s["wake_reply"] else [])
+        mode = s["ai_mode"] or "smart"
+        if s["ai_enabled"] and mode != "api" and ai.local_ready(mode):
+            threading.Thread(target=lambda: self._warm_ai(mode), daemon=True).start()
         switch_page(self.stack, self.home)
         self.home.start(email, s)
         if not self.greeted:
@@ -1426,6 +1641,13 @@ class MainWindow(QWidget):
             hello = greeting(datetime.datetime.now().hour)
             self.speaker.say(f"{hello}{', ' + who if who else ''}. Я на связи — "
                              f"скажите «{s.name}» и команду.")
+
+    @staticmethod
+    def _warm_ai(mode):
+        try:
+            ai.ENGINE.start_local(mode)
+        except Exception:  # noqa: BLE001 — запустится при первом вопросе
+            pass
 
     def open_profile(self, section="address"):
         if self.settings is None:
@@ -1605,6 +1827,7 @@ class MainWindow(QWidget):
             self.force_close()
 
     def force_close(self):
+        ai.ENGINE.stop()
         self._close_ok = True
         self.close()
 
@@ -1615,6 +1838,7 @@ class MainWindow(QWidget):
             return
         self.home.stop()
         self.speaker.shutdown()
+        ai.ENGINE.stop()
         super().closeEvent(e)
 
 
@@ -1661,6 +1885,7 @@ def run_selftest(out_path):
         log("OK piper voice loaded")
         wav = str(config.local_dir() / "selftest.wav")
         tts.synth_wav(voice, "Сеньор, громкость десять процентов.", wav)
+        _ = sites  # модуль поиска программ подключён
         secs = tts.wav_seconds(wav)
         log(f"OK synth {secs:.2f}s")
         if secs < 0.5:
@@ -1683,6 +1908,26 @@ def run_selftest(out_path):
         for speed in ("slow", "fast"):
             tts.synth_wav(voice, "Проверка скорости.", wav, speed)
         log("OK speeds")
+        if os.environ.get("SENIOREM_SELFTEST_AI"):
+            import time as _t
+            import ai as _ai
+            t0 = _t.time()
+            _ai.download_local("fast")
+            log(f"OK ai download {(_t.time() - t0):.0f}s")
+
+            class _S(dict):
+                name = "Сеньор"
+            s = _S(address="", ai_mode="fast")
+            t0 = _t.time()
+            _ai.ENGINE.start_local("fast", timeout=300)
+            log(f"OK ai server {(_t.time() - t0):.1f}s")
+            t0 = _t.time()
+            ans = _ai.ENGINE.ask("Привет! Какого цвета небо днём? Ответь одной фразой.", s)
+            log(f"ai answer ({(_t.time() - t0):.1f}s): {ans}")
+            if not ans or len(ans) < 3:
+                ok = False
+                log("FAIL ai empty answer")
+            _ai.ENGINE.stop()
     except Exception:  # noqa: BLE001
         ok = False
         log("FAIL " + traceback.format_exc())
@@ -1725,6 +1970,7 @@ def main():
         holder["win"] = win
         win.appear()
 
+    ai.AI.kill_stale()
     splash = Splash()
     splash.done.connect(open_main)
     splash.cancelled.connect(lambda: os._exit(0))  # мгновенно, даже если идёт загрузка

@@ -41,41 +41,50 @@ jobs:
           pyinstaller build/SenioreM.spec --noconfirm --clean
           python build/slim.py dist/SenioreM
 
-      - name: Зеркало моделей (голос и распознавание) в релизе «models»
-        id: mirror
+      - name: Зеркало моделей в релизе «models» (докачиваем недостающие)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $r = Invoke-WebRequest -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/models" -Headers @{Authorization="Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
-          if ($r.StatusCode -eq 200) { "exists=true" >> $env:GITHUB_OUTPUT; exit 0 }
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          gh release view models *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create models --prerelease --latest=false --title "Модели для SenioreM (зеркало)" --notes "Речевая модель, голос и ИИ. Программа скачивает их отсюда."
+          }
+          $have = @(gh release view models --json assets -q ".assets[].name")
           New-Item -ItemType Directory -Force models | Out-Null
-          Invoke-WebRequest "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" -OutFile models/vosk-model-small-ru-0.22.zip
-          $hf = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium"
-          Invoke-WebRequest "$hf/ru_RU-ruslan-medium.onnx" -OutFile models/ru_RU-ruslan-medium.onnx
-          Invoke-WebRequest "$hf/ru_RU-ruslan-medium.onnx.json" -OutFile models/ru_RU-ruslan-medium.onnx.json
-          "exists=false" >> $env:GITHUB_OUTPUT
+          $hfv = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium"
+          $want = [ordered]@{
+            "vosk-model-small-ru-0.22.zip" = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
+            "ru_RU-ruslan-medium.onnx" = "$hfv/ru_RU-ruslan-medium.onnx"
+            "ru_RU-ruslan-medium.onnx.json" = "$hfv/ru_RU-ruslan-medium.onnx.json"
+            "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+            "Qwen2.5-3B-Instruct-Q4_K_M.gguf" = "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+          }
+          if (-not ($have -contains "llama-server-win-x64.zip")) {
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{Authorization="Bearer $env:GH_TOKEN"}
+            $a = $rel.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
+            "llama.cpp: $($rel.tag_name) $($a.name)"
+            $want["llama-server-win-x64.zip"] = $a.browser_download_url
+          }
+          foreach ($name in $want.Keys) {
+            if ($have -contains $name) { "есть: $name"; continue }
+            "качаю: $name"
+            Invoke-WebRequest $want[$name] -OutFile "models/$name"
+            "загружаю в релиз: $name ({0:N0} МБ)" -f ((Get-Item "models/$name").Length / 1MB)
+            gh release upload models "models/$name" --clobber
+            Remove-Item "models/$name"
+          }
 
-      - name: Опубликовать зеркало моделей
-        if: steps.mirror.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: models
-          name: Модели для SenioreM (зеркало)
-          body: Речевая модель Vosk и голос Piper «Руслан». Программа скачивает их отсюда при первом запуске.
-          prerelease: true
-          make_latest: false
-          files: |
-            models/vosk-model-small-ru-0.22.zip
-            models/ru_RU-ruslan-medium.onnx
-            models/ru_RU-ruslan-medium.onnx.json
-
-      - name: Самопроверка программы (голос и распознавание)
+      - name: Самопроверка программы (голос, распознавание, ИИ)
         shell: pwsh
+        env:
+          SENIOREM_SELFTEST_AI: "1"
         run: |
           $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt | ForEach-Object { "$_" }
-          Get-Content selftest.txt | Select-Object -Last 6 | ForEach-Object { Write-Output "::notice::$_" }
+          Get-Content selftest.txt | Select-Object -Last 9 | ForEach-Object { Write-Output "::notice::$_" }
           if ($p.ExitCode -ne 0) { Write-Output "::error::Самопроверка не прошла"; exit 1 }
 
       - name: Inno Setup
