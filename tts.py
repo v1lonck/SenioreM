@@ -81,31 +81,89 @@ def load_voice():
 
 
 def _syn_config(scale):
-    """Ровная, спокойная речь: меньше «дрожания» интонации и пауз (noise / noise_w)."""
+    """Живая, но ровная интонация: noise — выразительность голоса, noise_w — разброс длины звуков."""
     from piper import SynthesisConfig
     try:
-        return SynthesisConfig(length_scale=scale, noise_scale=0.5, noise_w_scale=0.55)
+        return SynthesisConfig(length_scale=scale, noise_scale=0.6, noise_w_scale=0.7)
     except TypeError:
         return SynthesisConfig(length_scale=scale)
 
 
-def _pad(path, lead=0.12, tail=0.15):
-    """Тишина в начале и в конце: колонки и Bluetooth-наушники не «съедают» первый слог."""
+# паузы: после точки — короткая, как в живой речи; в начале и в конце — почти без тишины
+MAX_GAP = 0.24        # самая длинная пауза внутри фразы, сек
+LEAD, TAIL = 0.06, 0.05
+
+
+def _tighten(path, lead=LEAD, tail=TAIL, max_gap=MAX_GAP):
+    """Убирает лишнюю тишину: обрезает края и сокращает долгие паузы между предложениями.
+    Колонки и Bluetooth-наушники не «съедают» первый слог — короткая тишина в начале остаётся."""
+    import numpy as np
     with wave.open(path, "rb") as r:
         params = r.getparams()
-        frames = r.readframes(r.getnframes())
-    bpf = params.sampwidth * params.nchannels
-    pre = b"\x00" * (int(params.framerate * lead) * bpf)
-    post = b"\x00" * (int(params.framerate * tail) * bpf)
+        raw = r.readframes(r.getnframes())
+    if params.sampwidth != 2 or params.nchannels != 1:
+        return
+    a = np.frombuffer(raw, dtype=np.int16)
+    sr = params.framerate
+    win = max(1, int(sr * 0.01))                       # окна по 10 мс
+    n = len(a) // win
+    if n < 3:
+        return
+    rms = np.sqrt((a[:n * win].astype(np.float32).reshape(n, win) ** 2).mean(axis=1))
+    loud = rms > max(120.0, float(np.percentile(rms, 95)) * 0.04)
+    idx = np.nonzero(loud)[0]
+    if len(idx) == 0:
+        return
+    first, last = int(idx[0]), int(idx[-1])
+    keep = []
+    i = first
+    gap_max = int(max_gap / 0.01)
+    while i <= last:
+        if loud[i]:
+            keep.append(a[i * win:(i + 1) * win])
+            i += 1
+            continue
+        j = i
+        while j <= last and not loud[j]:
+            j += 1
+        span = j - i
+        if span > gap_max:
+            # сохраняем начало и конец паузы (затухание и вдох), середину выкидываем
+            h = gap_max // 2
+            keep.append(a[i * win:(i + h) * win])
+            keep.append(a[(j - (gap_max - h)) * win:j * win])
+        else:
+            keep.append(a[i * win:j * win])
+        i = j
+    keep.append(a[(last + 1) * win:min(len(a), (last + 4) * win)])    # мягкий хвост 30 мс
+    out = np.concatenate([np.zeros(int(sr * lead), np.int16)] + keep +
+                         [np.zeros(int(sr * tail), np.int16)])
     with wave.open(path, "wb") as w:
         w.setparams(params)
-        w.writeframes(pre + frames + post)
+        w.writeframes(out.tobytes())
+
+
+_ACCENT_OK = None
+
+
+def accents_supported(voice):
+    """Понимает ли голос знак ударения (U+0301): «за́мок» и «замо́к» звучат по-разному."""
+    global _ACCENT_OK
+    if _ACCENT_OK is None:
+        try:
+            a = voice.phonemize("за\u0301мок")
+            b = voice.phonemize("замо\u0301к")
+            plain = voice.phonemize("замок")
+            _ACCENT_OK = bool(a and b and a != b and len(sum(a, [])) <= len(sum(plain, [])) + 2)
+        except Exception:  # noqa: BLE001
+            _ACCENT_OK = False
+    return _ACCENT_OK
 
 
 def synth_wav(voice, text: str, path: str, speed: str = "normal"):
     """Синтезирует фразу в WAV. Поддерживает API piper-tts 1.3 и старее."""
     import speechtext
-    text = speechtext.prepare(text)
+    text = speechtext.prepare(text, accents=accents_supported(voice))
     scale = SPEEDS.get(speed, 1.0)
     tmp = path + ".part"
     try:
@@ -121,7 +179,10 @@ def synth_wav(voice, text: str, path: str, speed: str = "normal"):
                 wf.setsampwidth(2)
                 wf.setnchannels(1)
                 voice.synthesize(text, wf, length_scale=scale)
-    _pad(tmp)
+    try:
+        _tighten(tmp)
+    except Exception:  # noqa: BLE001
+        pass
     os.replace(tmp, path)
 
 
@@ -133,7 +194,7 @@ def wav_seconds(path: str) -> float:
 def cache_path(text: str, speed: str) -> str:
     d = config.local_dir() / "voice_cache"
     d.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha1(f"{VOICE_NAME}|v2|{speed}|{text}".encode()).hexdigest()
+    key = hashlib.sha1(f"{VOICE_NAME}|v3|{speed}|{text}".encode()).hexdigest()
     return str(d / f"{key}.wav")
 
 
@@ -180,5 +241,8 @@ def yandex_synth(text: str, path: str, key: str, voice: str = "filipp", speed: s
         w.setsampwidth(2)
         w.setframerate(48000)
         w.writeframes(pcm)
-    _pad(tmp)
+    try:
+        _tighten(tmp)
+    except Exception:  # noqa: BLE001
+        pass
     os.replace(tmp, path)
