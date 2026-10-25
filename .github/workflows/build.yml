@@ -164,6 +164,25 @@ jobs:
           # контрольная сумма: программа сверяет её перед установкой обновления
           (Get-FileHash Output\SenioreM-Setup.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline -Encoding ascii Output\SenioreM-Setup.exe.sha256
 
+      - name: Проверка установщика (запуск как двойным щелчком)
+        run: |
+          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -PassThru
+          if (-not $p.WaitForExit(180000)) { Write-Output "::error::установщик не завершился за 3 минуты (ждёт нажатия?)"; Stop-Process $p -Force; exit 1 }
+          "установщик завершился, код $($p.ExitCode)"
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\SenioreM\SenioreM.exe"
+          if (-not (Test-Path $exe)) { $exe = "C:\SenioreM\SenioreM.exe" }
+          if (-not (Test-Path $exe)) { Write-Output "::error::после установки нет SenioreM.exe"; exit 1 }
+          (Get-Item $exe).VersionInfo | Format-List FileDescription, ProductName, FileVersion, CompanyName
+          Start-Sleep 8
+          Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
+          # повторная установка поверх (обновление) — тоже должна пройти сама
+          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/nosplash=1" -PassThru
+          if (-not $p.WaitForExit(180000)) { Write-Output "::error::тихое обновление зависло"; Stop-Process $p -Force; exit 1 }
+          "обновление поверх: код $($p.ExitCode)"
+          Start-Sleep 5
+          Stop-Process -Name SenioreM -Force -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: SenioreM-Setup
