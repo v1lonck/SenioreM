@@ -334,11 +334,10 @@ def set_role(widget, role):
 def window_controls(win):
     box = QHBoxLayout()
     box.setSpacing(4)
-    mn = button("—", "chrome", 14, QFont.Normal)
-    mn.setToolTip("Свернуть")
+    from icons import ChromeButton
+    mn = ChromeButton("minimize", "Свернуть")
     mn.clicked.connect(getattr(win, "smooth_minimize", win.showMinimized))
-    cl = button("✕", "chrome", 14, QFont.Normal)
-    cl.setToolTip("Закрыть")
+    cl = ChromeButton("close", "Закрыть")
     cl.clicked.connect(getattr(win, "request_close", win.close))
     box.addWidget(mn)
     box.addWidget(cl)

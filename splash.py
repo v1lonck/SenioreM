@@ -330,7 +330,8 @@ class Splash(QWidget):
 
         top = QHBoxLayout()
         top.addStretch(1)
-        close = button("✕", "chrome", 14, QFont.Normal)
+        from icons import ChromeButton
+        close = ChromeButton("close", "Закрыть")
         close.clicked.connect(self._cancel)
         top.addWidget(close)
         root.addLayout(top)

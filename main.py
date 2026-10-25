@@ -12,7 +12,7 @@ import webbrowser
 from PySide6.QtCore import QLineF, QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainterPath,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout, QLabel,
                                QPushButton, QSlider,
                                QLineEdit, QMessageBox, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -22,6 +22,7 @@ import asr
 import live
 import ai
 import commands
+import icons
 import config
 import theme as T
 import sites
@@ -840,6 +841,11 @@ class HomeScreen(Backdrop):
         top.addWidget(LogoMark(34, glow=False))
         top.addWidget(label("SenioreM", 18, QFont.DemiBold))
         top.addSpacing(6)
+        self.dl_icon = QLabel()
+        self.dl_icon.setPixmap(icons.pixmap("download", 13, T.FAINT, 1.7))
+        self.dl_icon.hide()
+        top.addWidget(self.dl_icon, 0, Qt.AlignVCenter)
+        top.addSpacing(2)
         self.dl_label = label("", 12, role="faint")
         self.dl_label.setToolTip("Сколько раз SenioreM скачали с GitHub (обновляется раз в 30 минут)")
         self.dl_label.hide()
@@ -854,7 +860,8 @@ class HomeScreen(Backdrop):
         self.clock = label("", 14, role="muted")
         top.addWidget(self.clock)
         top.addSpacing(18)
-        chat_btn = button("💬  Чат", "ghost", 14, QFont.Normal)
+        chat_btn = button("Чат", "ghost", 14, QFont.Normal)
+        icons.set_icon(chat_btn, "chat", 17, T.TEXT, 1.4)
         chat_btn.setToolTip("Написать помощнику")
         chat_btn.clicked.connect(lambda: self.win.open_chat())
         top.addWidget(chat_btn)
@@ -1021,16 +1028,15 @@ class HomeScreen(Backdrop):
 
     def _show_downloads(self, n):
         import stats
-        self.dl_label.setText("⬇ " + stats.phrase(n))
+        self.dl_label.setText(stats.phrase(n))
         self.dl_label.setVisible(n > 0)
+        self.dl_icon.setVisible(n > 0)
 
     # ---------- обновление, не выходя из программы ----------
     def _check_update(self):
         """Раз в 30 минут смотрим, не вышла ли новая версия. Нашли — тихо скачиваем,
         и в углу появляется кнопка «Обновить»."""
         if os.environ.get("SENIOREM_NO_DOWNLOADS") or getattr(self, "_upd_busy", False):
-            return
-        if getattr(self, "_upd_ready", None):
             return
         from splash import UpdateChecker
         self._upd_checker = UpdateChecker(self.cfg)
@@ -1039,6 +1045,16 @@ class HomeScreen(Backdrop):
 
     def _update_found(self, version, url):
         from splash import Updater
+        # уже скачана именно эта версия — ничего не делаем; вышла ещё новее — качаем её
+        if getattr(self, "_upd_ready", None) and getattr(self, "_upd_version", "") == version:
+            return
+        old = getattr(self, "_upd_ready", None)
+        if old and os.path.isfile(old):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        self._upd_ready = None
         self._upd_busy = True
         self._upd_version = version
         self._upd_dl = Updater(url, version)
@@ -1046,12 +1062,13 @@ class HomeScreen(Backdrop):
         self._upd_dl.ready.connect(self._update_downloaded)
         self._upd_dl.failed.connect(self._update_failed)
         self._upd_dl.start()
-        self.upd_btn.setText(f"⬇  Скачиваю версию {version}…")
+        self.upd_btn.setText(f"Скачиваю версию {version}…")
+        icons.set_icon(self.upd_btn, "download", 16, "#0A0C10", 1.8)
         self.upd_btn.setEnabled(False)
         self.upd_btn.show()
 
     def _update_progress(self, frac, _text):
-        self.upd_btn.setText(f"⬇  Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
+        self.upd_btn.setText(f"Скачиваю версию {self._upd_version} · {int(frac * 100)}%")
 
     def _update_failed(self, _msg):
         self._upd_busy = False
@@ -1060,7 +1077,8 @@ class HomeScreen(Backdrop):
     def _update_downloaded(self, path):
         self._upd_busy = False
         self._upd_ready = path
-        self.upd_btn.setText(f"⬆  Обновить до {self._upd_version}")
+        self.upd_btn.setText(f"Обновить до {self._upd_version}")
+        icons.set_icon(self.upd_btn, "update", 17, "#0A0C10", 1.7)
         self.upd_btn.setEnabled(True)
         self.upd_btn.show()
 
@@ -1695,7 +1713,8 @@ class ProfileScreen(Backdrop):
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 22, 24, 36)
         top = QHBoxLayout()
-        back = button("←  Назад", "link", 15, QFont.Normal)
+        back = button("Назад", "link", 15, QFont.Normal)
+        icons.set_icon(back, "back", 16, T.MUTED)
         back.clicked.connect(self.back_requested.emit)
         top.addWidget(back)
         top.addSpacing(18)
@@ -3985,7 +4004,7 @@ def run_uitest(out_dir):
         pump(2500)
         h._show_downloads(1234)
         h._upd_version = "9.9"
-        h.upd_btn.setText("⬆  Обновить до 9.9")
+        h._update_downloaded("")
         h.upd_btn.show()
         shot(win, "03-home-blue")
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
