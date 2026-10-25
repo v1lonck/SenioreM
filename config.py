@@ -131,3 +131,17 @@ def load_config() -> dict:
     if base_dir() != resource_path("."):
         cfg = _merge(cfg, _read_json(base_dir() / "config.json"))
     return cfg
+
+
+_T0 = __import__("time").time()
+
+
+def startup_mark(stage):
+    """Журнал запуска: какой этап и через сколько секунд (startup.log) — видно, где долго
+    и на чём программа закрылась."""
+    import time
+    try:
+        with open(data_dir() / "startup.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} +{time.time() - _T0:5.1f}s  pid {os.getpid()}  {stage}\n")
+    except OSError:
+        pass
