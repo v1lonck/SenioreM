@@ -842,6 +842,12 @@ class HomeScreen(Backdrop):
         self.dl_label.hide()
         top.addWidget(self.dl_label, 0, Qt.AlignVCenter)
         top.addStretch(1)
+        self.upd_btn = button("", "primary", 13)
+        self.upd_btn.setToolTip("Вышла новая версия SenioreM — обновление займёт несколько секунд")
+        self.upd_btn.clicked.connect(self._install_update)
+        self.upd_btn.hide()
+        top.addWidget(self.upd_btn)
+        top.addSpacing(14)
         self.clock = label("", 14, role="muted")
         top.addWidget(self.clock)
         top.addSpacing(18)
@@ -990,6 +996,10 @@ class HomeScreen(Backdrop):
         self._dl_timer.timeout.connect(self._refresh_downloads)
         self._dl_timer.start(30 * 60 * 1000)
         QTimer.singleShot(3000, self._refresh_downloads)
+        self._upd_timer = QTimer(self)
+        self._upd_timer.timeout.connect(self._check_update)
+        self._upd_timer.start(30 * 60 * 1000)
+        QTimer.singleShot(90 * 1000, self._check_update)
 
     def _refresh_downloads(self):
         import stats
@@ -1011,6 +1021,71 @@ class HomeScreen(Backdrop):
         self.dl_label.setText("⬇ " + stats.phrase(n))
         self.dl_label.setVisible(n > 0)
 
+    # ---------- обновление, не выходя из программы ----------
+    def _check_update(self):
+        """Раз в 30 минут смотрим, не вышла ли новая версия. Нашли — тихо скачиваем,
+        и в углу появляется кнопка «Обновить»."""
+        if os.environ.get("SENIOREM_NO_DOWNLOADS") or getattr(self, "_upd_busy", False):
+            return
+        if getattr(self, "_upd_ready", None):
+            return
+        from splash import UpdateChecker
+        self._upd_checker = UpdateChecker(self.cfg)
+        self._upd_checker.found.connect(self._update_found)
+        self._upd_checker.start()
+
+    def _update_found(self, version, url):
+        from splash import Updater
+        self._upd_busy = True
+        self._upd_version = version
+        self._upd_dl = Updater(url, version)
+        self._upd_dl.progress.connect(lambda f, _t: None)
+        self._upd_dl.ready.connect(self._update_downloaded)
+        self._upd_dl.failed.connect(lambda _m: setattr(self, "_upd_busy", False))
+        self._upd_dl.start()
+
+    def _update_downloaded(self, path):
+        self._upd_busy = False
+        self._upd_ready = path
+        self.upd_btn.setText(f"⬆  Обновить до {self._upd_version}")
+        self.upd_btn.show()
+
+    def _install_update(self):
+        path = getattr(self, "_upd_ready", None)
+        if not path or not os.path.isfile(path):
+            self.upd_btn.hide()
+            self._upd_ready = None
+            self._check_update()
+            return
+        import subprocess
+        self.upd_btn.setText("Обновляю…  SenioreM откроется через пару секунд")
+        self.upd_btn.setEnabled(False)
+        QApplication.processEvents()
+        try:
+            (config.data_dir() / "updated.txt").write_text(
+                f"{self.cfg.get('version', '')}|{self._upd_version}", encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            self.speaker.interrupt()
+            ai.ENGINE.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                          "/CLOSEAPPLICATIONS", "/nosplash=1"])
+        os._exit(0)          # сразу освобождаем файлы программы — установщик заменит их и запустит SenioreM
+
+    def _after_update_note(self):
+        """Первый запуск после обновления — коротко сообщаем об этом."""
+        f = config.data_dir() / "updated.txt"
+        try:
+            old, new = f.read_text(encoding="utf-8").split("|", 1)
+            f.unlink()
+        except (OSError, ValueError):
+            return
+        if new and new == self.cfg.get("version"):
+            self.reply.setText(f"Готово — SenioreM обновлён до версии {new}.")
+
     # ---------- жизненный цикл ----------
     def start(self, email, settings):
         self.settings = settings
@@ -1021,6 +1096,7 @@ class HomeScreen(Backdrop):
         import avatars
         avatars.apply(self.avatar, settings["avatar"] or "", (name or email or "?")[:1].upper(), 38)
         self.history.set_items(settings["history"])
+        QTimer.singleShot(400, self._after_update_note)
         self.w_notes.set_text(settings["notes"] or "")
         self._tick_clock()
         self.heard.setText("")
@@ -3791,6 +3867,9 @@ def run_uitest(out_dir):
         h.orb.push_level(0.5)
         pump(2500)
         h._show_downloads(1234)
+        h._upd_version = "9.9"
+        h.upd_btn.setText("⬆  Обновить до 9.9")
+        h.upd_btn.show()
         shot(win, "03-home-blue")
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
