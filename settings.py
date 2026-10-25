@@ -17,7 +17,8 @@ DEFAULTS = {
     "mic_sensitivity": "normal",
     "assistant_name": "Сеньор",
     "speak_replies": True,
-    "listen_seconds": 8,
+    "listen_seconds": 10,
+    "dialog_mode": True,
     "wake_words": "",               # дополнительные слова-обращения
     "autostart": False,
     "ai_enabled": False,
@@ -51,6 +52,8 @@ class Settings:
                 self.data.update(json.load(f))
         except (OSError, ValueError):
             pass
+        if self.data.get("listen_seconds") == 8:      # старое значение по умолчанию
+            self.data["listen_seconds"] = 10
 
     def __getitem__(self, k):
         return self.data.get(k, DEFAULTS.get(k))

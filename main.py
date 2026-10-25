@@ -508,6 +508,8 @@ class HomeScreen(Backdrop):
         self.arm_timer.setSingleShot(True)
         self.arm_timer.timeout.connect(self._disarm)
         self._last_cmd = ""
+        self._continue = False
+        self._voice_cmd = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 22, 24, 30)
@@ -722,15 +724,19 @@ class HomeScreen(Backdrop):
         self.speaking = flag
         if self.listener:
             self.listener.set_paused(flag)
-        if not flag and self.armed:
-            self.arm_timer.start(self._listen_ms())
+        if not flag:
+            if self._continue:
+                self._continue = False
+                self._arm(quiet=True)       # как у Алисы: ответил — и снова слушает
+            elif self.armed:
+                self.arm_timer.start(self._listen_ms())
         self._rest_state()
 
     def _listen_ms(self):
         try:
             return int(self.settings["listen_seconds"]) * 1000
         except (TypeError, ValueError):
-            return 8000
+            return 10000
 
     # ---------- речь ----------
     def _show_heard(self, text, faint):
@@ -740,6 +746,8 @@ class HomeScreen(Backdrop):
     def _on_partial(self, text):
         if self.orb.state in ("idle", "armed") and text:
             self._show_heard(text, True)
+            if self.armed:
+                self.arm_timer.start(self._listen_ms())   # вы говорите — не перебиваем
 
     def _on_final(self, text, confs=None):
         words = commands.tokens(text)
@@ -759,9 +767,13 @@ class HomeScreen(Backdrop):
         else:
             self._show_heard("", True)
 
-    def _arm(self):
+    def _arm(self, quiet=False):
         self.armed = True
         s = self.settings
+        if quiet:                       # продолжение разговора — без звука и приветствия
+            self.arm_timer.start(self._listen_ms())
+            self._rest_state()
+            return
         if s is None or s["chime"]:
             self.chime.play()
         self._show_heard("", True)
@@ -774,10 +786,13 @@ class HomeScreen(Backdrop):
         self._rest_state()
 
     def _disarm(self, silent=False):
+        was = self.armed
         self.armed = False
         self.arm_timer.stop()
         if not silent:
             self._rest_state()
+            if was and not self.speaking and self.settings is not None:
+                self._show_heard("", True)
 
     def _typed(self):
         text = self.input.text().strip()
@@ -789,13 +804,15 @@ class HomeScreen(Backdrop):
     def execute(self, text, typed=False):
         intent = commands.parse(text)
         intent["typed"] = typed
+        self._continue = False
+        self._voice_cmd = not typed
         shown = commands.normalize(text)
         self._last_cmd = shown
         self._show_heard(shown[:1].upper() + shown[1:], False)
         if intent["action"] == "stop":
             self.speaker.interrupt()
             self.reply.setText("")
-            self._rest_state()
+            self._disarm()
             return
         s = self.settings
         ai_on = s is not None and s["ai_enabled"]
@@ -839,9 +856,14 @@ class HomeScreen(Backdrop):
         self.reply.setFont(font(16 if len(reply) > 140 else 18))
         self.reply.setText(reply + ("\nЗвук на компьютере выключен — скажите или напишите "
                                     "«включи звук»." if muted and reply else ""))
-        self._rest_state()
-        if reply:
+        dialog = (self._voice_cmd and ui not in ("quit", "minimize")
+                  and (self.settings is None or self.settings["dialog_mode"]))
+        if reply and self.speaker.enabled:
+            self._continue = dialog           # снова слушаем, когда договорит
             self.speaker.say(reply, cache=not from_ai)
+        elif dialog:
+            self._arm(quiet=True)
+        self._rest_state()
         if "громк" in self._last_cmd or "звук" in self._last_cmd or "тише" in self._last_cmd \
                 or "громче" in self._last_cmd:
             QTimer.singleShot(300, self._poll_volume)
@@ -1223,12 +1245,16 @@ class ProfileScreen(Backdrop):
                             "но в шумной комнате возможны ложные срабатывания.", 12,
                             role="faint", wrap=True))
         lay.addSpacing(26)
-        self._caption(lay, "Сколько секунд ждать команду после обращения")
+        self.t_dialog = self._toggle_row(lay, "Режим разговора, как у Алисы",
+                                         "После ответа помощник ещё слушает — можно продолжать "
+                                         "без «Сеньор». Если молчать, через несколько секунд "
+                                         "разговор закончится.", "dialog_mode")
+        self._caption(lay, "Сколько секунд ждать, пока вы заговорите")
         row = QHBoxLayout()
         row.setSpacing(10)
         group = QButtonGroup(self)
         self.listen_buttons = {}
-        for sec in (5, 8, 12, 20):
+        for sec in (5, 10, 15, 20):
             b = button(f"{sec} с", "ghost", 14, QFont.Normal)
             b.setCheckable(True)
             b.setFixedWidth(80)
@@ -1541,8 +1567,9 @@ class ProfileScreen(Backdrop):
         self.t_chime.setChecked(bool(settings["chime"]))
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
         self.t_autostart.setChecked(bool(settings["autostart"]))
+        self.t_dialog.setChecked(bool(settings["dialog_mode"]))
         for sec, b in self.listen_buttons.items():
-            b.setChecked(sec == int(settings["listen_seconds"] or 8))
+            b.setChecked(sec == int(settings["listen_seconds"] or 10))
         self.acc_email.setText(email)
         self.t_ai.setChecked(bool(settings["ai_enabled"]))
         self.f_api_url.setText(settings["ai_api_url"] or "")
