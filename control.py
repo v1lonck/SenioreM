@@ -320,6 +320,9 @@ Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+$null = [Windows.Foundation.IAsyncOperation`1, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Storage.Streams.RandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
 $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($img)) ([Windows.Storage.StorageFile])
@@ -329,8 +332,11 @@ $sb = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareB
 $res = @()
 $langs = @([Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages)
 [Console]::Error.WriteLine("ocr langs: " + ($langs | ForEach-Object { $_.LanguageTag }) -join ",")
-foreach ($lang in $langs) {
-  $eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
+$engines = @()
+foreach ($lang in $langs) { $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang); if ($e) { $engines += $e } }
+if ($engines.Count -eq 0) { $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages(); if ($e) { $engines += $e } }
+[Console]::Error.WriteLine("engines: " + $engines.Count + " bitmap: " + ($sb -ne $null))
+foreach ($eng in $engines) {
   if ($eng -eq $null) { continue }
   $r = Await ($eng.RecognizeAsync($sb)) ([Windows.Media.Ocr.OcrResult])
   foreach ($l in $r.Lines) { foreach ($wd in $l.Words) {
@@ -358,7 +364,7 @@ def ocr_words(left, top, width, height):
                        capture_output=True, timeout=25, creationflags=NO_WINDOW)
     out = r.stdout.decode("utf-8", "ignore").strip()
     global OCR_ERR
-    OCR_ERR = r.stderr.decode("utf-8", "ignore").strip()[-600:]
+    OCR_ERR = r.stderr.decode("utf-8", "ignore").strip()[:900]
     if not out:
         return []
     data = json.loads(out)
