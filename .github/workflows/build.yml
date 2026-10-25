@@ -104,10 +104,14 @@ jobs:
         shell: pwsh
         env:
           SENIOREM_SELFTEST_AI: "1"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $p = Start-Process -FilePath "dist\SenioreM\SenioreM.exe" -ArgumentList "--selftest","$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt | ForEach-Object { "$_" }
           Get-Content selftest.txt | Select-Object -Last 18 | ForEach-Object { Write-Output "::notice::$_" }
+          gh release view ci-screens *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create ci-screens --prerelease --title "Снимки экранов сборки" --notes "Автоматические проверки." }
+          gh release upload ci-screens selftest.txt --clobber
           $last = (Get-Content selftest.txt | Select-Object -Last 1)
           if ($last -ne "RESULT PASS") { Write-Output "::error::Самопроверка не прошла"; exit 1 }
 

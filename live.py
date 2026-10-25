@@ -82,9 +82,13 @@ def weather(appearance):
     return data
 
 
-def _deg(t):
+def _deg(t, word=False):
     t = round(t)
-    return f"{'плюс ' if t > 0 else ('минус ' if t < 0 else '')}{abs(t)}"
+    sign = "плюс " if t > 0 else ("минус " if t < 0 else "")
+    if not word:
+        return f"{sign}{abs(t)}"
+    from speechtext import plural
+    return f"{sign}{abs(t)} {plural(abs(t), 'градус', 'градуса', 'градусов')}"
 
 
 def weather_phrase(appearance, day="now"):
@@ -92,16 +96,18 @@ def weather_phrase(appearance, day="now"):
     city = d.get("_city") or "вашем городе"
     if day == "now":
         c = d["current"]
-        return (f"В городе {city} сейчас {_deg(c['temperature_2m'])} градусов, "
+        return (f"В городе {city} сейчас {_deg(c['temperature_2m'], True)}, "
                 f"{WEATHER.get(int(c['weather_code']), '').strip()}. Ощущается как "
                 f"{_deg(c['apparent_temperature'])}, ветер {round(c['wind_speed_10m'])} м/с.")
     i = 1 if day == "tomorrow" else 0
     dl = d["daily"]
     word = "Завтра" if i else "Сегодня"
     rain = dl.get("precipitation_probability_max", [None] * 3)[i]
-    tail = f" Вероятность осадков {rain} процентов." if rain is not None else ""
+    from speechtext import plural
+    tail = (f" Вероятность осадков {rain} {plural(rain, 'процент', 'процента', 'процентов')}."
+            if rain is not None else "")
     return (f"{word} в городе {city} от {_deg(dl['temperature_2m_min'][i])} до "
-            f"{_deg(dl['temperature_2m_max'][i])} градусов, "
+            f"{_deg(dl['temperature_2m_max'][i], True)}, "
             f"{WEATHER.get(int(dl['weather_code'][i]), '')}.{tail}")
 
 
@@ -124,24 +130,74 @@ def rate_phrase(code="USD"):
     per = v["Value"] / v["Nominal"]
     name = CURRENCIES.get(code, (code, code))[1]
     rub, kop = int(per), round((per - int(per)) * 100)
-    return f"Курс {name} по ЦБ — {rub} рублей {kop} копеек."
+    from speechtext import plural
+    return (f"Курс {name} по ЦБ — {rub} {plural(rub, 'рубль', 'рубля', 'рублей')} "
+            f"{kop} {plural(kop, 'копейка', 'копейки', 'копеек')}.")
 
 
 # ------------------------------------------------------------------ поиск
+def _ddg(query, n):
+    page = _get("https://html.duckduckgo.com/html/?kl=ru-ru&q=" + urllib.parse.quote(query),
+                timeout=8, raw=True)
+    titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', page, flags=re.S)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</(?:a|td|div)>', page, flags=re.S)
+    return [(_clean(t), _clean(sn)) for t, sn in zip(titles, snippets)][:n]
+
+
+def _clean(s):
+    return html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+
+
+def _wiki(query, n):
+    """Википедия: определения, факты, люди, места."""
+    data = _get("https://ru.wikipedia.org/w/api.php?action=query&list=search&format=json"
+                "&utf8=1&srlimit=%d&srsearch=%s" % (n, urllib.parse.quote(query)), timeout=8)
+    hits = data.get("query", {}).get("search", [])
+    out = []
+    if hits:
+        title = hits[0]["title"]
+        ext = _get("https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1"
+                   "&explaintext=1&exsentences=3&format=json&utf8=1&titles="
+                   + urllib.parse.quote(title), timeout=8)
+        for page in ext.get("query", {}).get("pages", {}).values():
+            if page.get("extract"):
+                out.append((title, page["extract"].strip()))
+    for h in hits[1:n]:
+        out.append((h["title"], _clean(h.get("snippet", ""))))
+    return out
+
+
+def _news(query, n):
+    """Свежие новости (Google News RSS)."""
+    page = _get("https://news.google.com/rss/search?hl=ru&gl=RU&ceid=RU:ru&q="
+                + urllib.parse.quote(query), timeout=8, raw=True)
+    items = re.findall(r"<item>(.*?)</item>", page, flags=re.S)
+    out = []
+    for it in items[:n]:
+        title = _clean(re.sub(r"<!\[CDATA\[|\]\]>", "", (re.findall(r"<title>(.*?)</title>", it, re.S) or [""])[0]))
+        date = (re.findall(r"<pubDate>(.*?)</pubDate>", it, re.S) or [""])[0][:16]
+        if title:
+            out.append((date, title))
+    return out
+
+
+NEWSY = re.compile(r"новост|сегодня|вчера|случилось|происходит|сч[её]т|матч|выиграл|победил|"
+                   r"выбор|курс|цена|стоит|вышел|вышла|релиз|когда выйдет|последн|недавно|"
+                   r"на этой неделе|\b20[2-3]\d\b")
+
+
 def web_search(query, n=4):
-    """Короткие выдержки из поиска DuckDuckGo: [(заголовок, текст)]."""
+    """Выдержки из интернета: [(заголовок, текст)]. Несколько источников по очереди."""
     def fetch():
-        page = _get("https://html.duckduckgo.com/html/?kl=ru-ru&q=" + urllib.parse.quote(query),
-                    timeout=10, raw=True)
-        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', page, flags=re.S)
-        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', page, flags=re.S)
-        clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()  # noqa: E731
         out = []
-        for t, sn in zip(titles, snippets):
-            if "ad_domain" in t:
+        for fn in ((_news, _ddg, _wiki) if NEWSY.search(query.lower()) else (_ddg, _wiki, _news)):
+            try:
+                out += fn(query, n)
+            except Exception:  # noqa: BLE001 — источник недоступен, берём следующий
                 continue
-            out.append((clean(t), clean(sn)))
-        return out[:n]
+            if len(out) >= 2:
+                break
+        return out[:n + 1]
     return _cached("q:" + query.lower(), 900, fetch)
 
 
@@ -193,5 +249,7 @@ def quick_answer(question):
     if not res:
         return "Ничего не нашёл. Попробуйте спросить иначе."
     title, snip = res[0]
-    snip = re.split(r"(?<=[.!?])\s", snip)
-    return " ".join(snip[:2]) if snip else title
+    if re.match(r"^\w{3}, \d", title):            # новость: (дата, заголовок)
+        return "Вот что пишут: " + "; ".join(t for _d, t in res[:2]) + "."
+    parts = re.split(r"(?<=[.!?])\s", snip)
+    return " ".join(parts[:2]) if snip else title
