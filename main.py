@@ -584,6 +584,7 @@ class HistoryList(QWidget):
         while self.lay.count():
             it = self.lay.takeAt(0)
             if it.widget():
+                it.widget().hide()
                 it.widget().deleteLater()
         if not items:
             self.lay.addWidget(label("Здесь появятся ваши команды.", 14, role="faint", wrap=True))
@@ -2211,6 +2212,7 @@ class ProfileScreen(Backdrop):
         while self.city_res_lay.count():
             it = self.city_res_lay.takeAt(0)
             if it.widget():
+                it.widget().hide()
                 it.widget().deleteLater()
         if status == "…":
             self.city_res_lay.addWidget(label("Ищу…", 13, role="muted"))
@@ -2234,6 +2236,7 @@ class ProfileScreen(Backdrop):
         while self.city_res_lay.count():
             it = self.city_res_lay.takeAt(0)
             if it.widget():
+                it.widget().hide()
                 it.widget().deleteLater()
         self.f_city_search.clear()
         self._flash("Город сохранён")
@@ -2277,6 +2280,7 @@ class ProfileScreen(Backdrop):
         while self.apps_lay.count():
             it = self.apps_lay.takeAt(0)
             if it.widget():
+                it.widget().hide()
                 it.widget().deleteLater()
         items = sites.all_apps()
         self.apps_count.setText(f"Знаю {len(items)} программ и игр")
@@ -2376,9 +2380,7 @@ class ProfileScreen(Backdrop):
             c.style().polish(c)
         self.comp_preview.kind = kind
         self.comp_preview.painter.animated = bool(s["companion_anim"])
-        self.t_comp_anim.blockSignals(True)
         self.t_comp_anim.setChecked(bool(s["companion_anim"]))
-        self.t_comp_anim.blockSignals(False)
         size = int(s["companion_size"] or 150)
         for px, b in self.comp_sizes.items():
             b.setChecked(px == size)
