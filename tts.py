@@ -110,3 +110,47 @@ def cache_path(text: str, speed: str) -> str:
     d.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha1(f"{VOICE_NAME}|{speed}|{text}".encode()).hexdigest()
     return str(d / f"{key}.wav")
+
+
+# ---------------- Голоса Яндекса (SpeechKit), по ключу API ----------------
+YANDEX_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
+YANDEX_VOICES = [
+    ("filipp", "Филипп", "мужской, спокойный"),
+    ("ermil", "Ермил", "мужской, мягкий"),
+    ("zahar", "Захар", "мужской, деловой"),
+    ("alexander", "Александр", "мужской"),
+    ("kirill", "Кирилл", "мужской"),
+    ("anton", "Антон", "мужской"),
+    ("alena", "Алёна", "женский, как у Алисы"),
+    ("jane", "Джейн", "женский"),
+    ("marina", "Марина", "женский"),
+    ("dasha", "Даша", "женский"),
+]
+YANDEX_SPEED = {"slow": "0.9", "normal": "1.0", "fast": "1.15"}
+
+
+def yandex_synth(text: str, path: str, key: str, voice: str = "filipp", speed: str = "normal"):
+    """Синтез голосом Яндекса в WAV (48 кГц). Ключ — API-ключ сервисного аккаунта Yandex Cloud."""
+    import urllib.error
+    import urllib.parse
+    data = urllib.parse.urlencode({
+        "text": text, "lang": "ru-RU", "voice": voice, "format": "lpcm",
+        "sampleRateHertz": "48000", "speed": YANDEX_SPEED.get(speed, "1.0"),
+    }).encode("utf-8")
+    req = urllib.request.Request(YANDEX_URL, data=data, method="POST",
+                                 headers={"Authorization": f"Api-Key {key.strip()}",
+                                          "User-Agent": "SenioreM"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            pcm = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise RuntimeError("Яндекс не принял ключ API — проверьте его в профиле.")
+        raise RuntimeError(f"Яндекс ответил ошибкой {e.code}.")
+    tmp = path + ".part"
+    with wave.open(tmp, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(pcm)
+    os.replace(tmp, path)
