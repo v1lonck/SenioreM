@@ -81,25 +81,139 @@ def load_voice():
 
 
 def _syn_config(scale):
-    """Ровная, спокойная речь: меньше «дрожания» интонации и пауз (noise / noise_w)."""
+    """Живая, но ровная интонация: noise — выразительность голоса, noise_w — разброс длины звуков."""
     from piper import SynthesisConfig
     try:
-        return SynthesisConfig(length_scale=scale, noise_scale=0.5, noise_w_scale=0.55)
+        return SynthesisConfig(length_scale=scale, noise_scale=0.6, noise_w_scale=0.7)
     except TypeError:
         return SynthesisConfig(length_scale=scale)
 
 
-def _pad(path, lead=0.12, tail=0.15):
-    """Тишина в начале и в конце: колонки и Bluetooth-наушники не «съедают» первый слог."""
+# паузы: после точки — короткая, как в живой речи; в начале и в конце — почти без тишины
+MAX_GAP = 0.24        # самая длинная пауза внутри фразы, сек
+LEAD, TAIL = 0.06, 0.05
+
+
+def _tighten(path, lead=LEAD, tail=TAIL, max_gap=MAX_GAP):
+    """Убирает лишнюю тишину: обрезает края и сокращает долгие паузы между предложениями.
+    Колонки и Bluetooth-наушники не «съедают» первый слог — короткая тишина в начале остаётся."""
+    import numpy as np
     with wave.open(path, "rb") as r:
         params = r.getparams()
-        frames = r.readframes(r.getnframes())
-    bpf = params.sampwidth * params.nchannels
-    pre = b"\x00" * (int(params.framerate * lead) * bpf)
-    post = b"\x00" * (int(params.framerate * tail) * bpf)
+        raw = r.readframes(r.getnframes())
+    if params.sampwidth != 2 or params.nchannels != 1:
+        return
+    a = np.frombuffer(raw, dtype=np.int16)
+    sr = params.framerate
+    win = max(1, int(sr * 0.01))                       # окна по 10 мс
+    n = len(a) // win
+    if n < 3:
+        return
+    rms = np.sqrt((a[:n * win].astype(np.float32).reshape(n, win) ** 2).mean(axis=1))
+    loud = rms > max(120.0, float(np.percentile(rms, 95)) * 0.04)
+    idx = np.nonzero(loud)[0]
+    if len(idx) == 0:
+        return
+    first, last = int(idx[0]), int(idx[-1])
+    keep = []
+    i = first
+    gap_max = int(max_gap / 0.01)
+    while i <= last:
+        if loud[i]:
+            keep.append(a[i * win:(i + 1) * win])
+            i += 1
+            continue
+        j = i
+        while j <= last and not loud[j]:
+            j += 1
+        span = j - i
+        if span > gap_max:
+            # сохраняем начало и конец паузы (затухание и вдох), середину выкидываем
+            h = gap_max // 2
+            keep.append(a[i * win:(i + h) * win])
+            keep.append(a[(j - (gap_max - h)) * win:j * win])
+        else:
+            keep.append(a[i * win:j * win])
+        i = j
+    keep.append(a[(last + 1) * win:min(len(a), (last + 4) * win)])    # мягкий хвост 30 мс
+    out = np.concatenate([np.zeros(int(sr * lead), np.int16)] + keep +
+                         [np.zeros(int(sr * tail), np.int16)])
     with wave.open(path, "wb") as w:
         w.setparams(params)
-        w.writeframes(pre + frames + post)
+        w.writeframes(out.tobytes())
+
+
+_PV = set("aɐʌɑeɛiɪɨoɵuʊəæyɯ")
+_STRESSED = {"а": "ɑ", "о": "o", "у": "u", "ы": "y", "и": "i", "е": "e", "э": "ɛ", "я": "a",
+             "ю": "u", "ё": "ɵ"}
+_REDUCED = {"о": "ʌ", "а": "ʌ", "е": "i", "я": "i"}
+_RU_V = "аеёиоуыэюя"
+_PH_FIX = {}
+
+
+def _move_stress(ph, word, mark):
+    """Переносит ударение в фонемах слова: «pˈoisk» + «по+иск» -> «pʌˈisk»."""
+    letters = [c for c in word if c in _RU_V]
+    k = sum(1 for c in mark[:mark.index("+")] if c in _RU_V)
+    clean = ph.replace("ˈ", "").replace("ˌ", "")
+    vpos = [i for i, c in enumerate(clean) if c in _PV]
+    if len(vpos) != len(letters) or k >= len(letters):
+        return None
+    j = None
+    n = 0
+    for c in ph:
+        if c == "ˈ":
+            j = n
+            break
+        if c in _PV:
+            n += 1
+    out = list(clean)
+    if j is not None and j != k:
+        out[vpos[j]] = _REDUCED.get(letters[j], out[vpos[j]])
+    out[vpos[k]] = _STRESSED.get(letters[k], out[vpos[k]])
+    out.insert(vpos[k], "ˈ")
+    return "".join(out)
+
+
+def _stress_fixes(voice, text):
+    """[(как голос читает, как надо)] для слов из словаря ударений, встречающихся в тексте."""
+    import re
+    import speechtext
+    fixes = []
+    for w in set(re.findall(r"[а-яё]+", text.lower())):
+        mark = speechtext.STRESS.get(w)
+        if not mark:
+            continue
+        if w not in _PH_FIX:
+            bad = "".join(sum(voice.phonemize(w), [])).strip(" .,!?")
+            good = _move_stress(bad, w, mark)
+            _PH_FIX[w] = (bad, good) if good and good != bad else None
+        if _PH_FIX[w]:
+            fixes.append(_PH_FIX[w])
+    return sorted(fixes, key=lambda x: -len(x[0]))
+
+
+def _synth_fixed(voice, text, wf, cfg):
+    """Синтез с исправленными ударениями (через фонемы). -> False, если исправлять нечего."""
+    import unicodedata
+    import numpy as np
+    fixes = _stress_fixes(voice, text)
+    if not fixes:
+        return False
+    parts = []
+    for sent in voice.phonemize(text):
+        joined = unicodedata.normalize("NFD", "".join(sent))
+        for bad, good in fixes:
+            joined = joined.replace(unicodedata.normalize("NFD", bad), unicodedata.normalize("NFD", good))
+        ids = voice.phonemes_to_ids(list(joined))
+        audio = voice.phoneme_ids_to_audio(ids, cfg)
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        parts.append(np.clip(audio * 32767.0, -32768, 32767).astype(np.int16))
+    wf.setframerate(voice.config.sample_rate)
+    wf.setsampwidth(2)
+    wf.setnchannels(1)
+    wf.writeframes(np.concatenate(parts).tobytes() if parts else b"")
+    return True
 
 
 def synth_wav(voice, text: str, path: str, speed: str = "normal"):
@@ -110,8 +224,15 @@ def synth_wav(voice, text: str, path: str, speed: str = "normal"):
     tmp = path + ".part"
     try:
         cfg = _syn_config(scale)
-        with wave.open(tmp, "wb") as wf:
-            voice.synthesize_wav(text, wf, syn_config=cfg)
+        done = False
+        try:
+            with wave.open(tmp, "wb") as wf:
+                done = _synth_fixed(voice, text, wf, cfg)
+        except Exception:  # noqa: BLE001 — старая версия piper и т.п.: синтезируем как обычно
+            done = False
+        if not done:
+            with wave.open(tmp, "wb") as wf:
+                voice.synthesize_wav(text, wf, syn_config=cfg)
     except ImportError:
         with wave.open(tmp, "wb") as wf:
             if hasattr(voice, "synthesize_wav"):
@@ -121,7 +242,10 @@ def synth_wav(voice, text: str, path: str, speed: str = "normal"):
                 wf.setsampwidth(2)
                 wf.setnchannels(1)
                 voice.synthesize(text, wf, length_scale=scale)
-    _pad(tmp)
+    try:
+        _tighten(tmp)
+    except Exception:  # noqa: BLE001
+        pass
     os.replace(tmp, path)
 
 
@@ -133,7 +257,7 @@ def wav_seconds(path: str) -> float:
 def cache_path(text: str, speed: str) -> str:
     d = config.local_dir() / "voice_cache"
     d.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha1(f"{VOICE_NAME}|v2|{speed}|{text}".encode()).hexdigest()
+    key = hashlib.sha1(f"{VOICE_NAME}|v3|{speed}|{text}".encode()).hexdigest()
     return str(d / f"{key}.wav")
 
 
@@ -180,5 +304,8 @@ def yandex_synth(text: str, path: str, key: str, voice: str = "filipp", speed: s
         w.setsampwidth(2)
         w.setframerate(48000)
         w.writeframes(pcm)
-    _pad(tmp)
+    try:
+        _tighten(tmp)
+    except Exception:  # noqa: BLE001
+        pass
     os.replace(tmp, path)
