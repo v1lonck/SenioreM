@@ -145,7 +145,11 @@ def _ddg(query, n):
 
 
 def _clean(s):
-    return html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+    s = html.unescape(re.sub(r"<[^>]+>", "", s or ""))
+    s = s.replace("\u0301", "").replace("\u0300", "")        # значки ударения
+    s = re.sub(r"\s*\((?:англ|лат|нем|фр|исп|итал|произносится)[^()]*(?:\([^()]*\)[^()]*)*\)", "", s)
+    s = re.sub(r"\s*\[[^\]]*\]", "", s)                       # транскрипции и сноски
+    return re.sub(r"\s{2,}", " ", s).strip()
 
 
 def _wiki(query, n):
@@ -161,7 +165,7 @@ def _wiki(query, n):
                    + urllib.parse.quote(title), timeout=8)
         for page in ext.get("query", {}).get("pages", {}).values():
             if page.get("extract"):
-                out.append((title, page["extract"].strip()))
+                out.append((_clean(title), _clean(page["extract"])))
     for h in hits[1:n]:
         out.append((h["title"], _clean(h.get("snippet", ""))))
     return out
@@ -220,9 +224,15 @@ def build_context(question, appearance):
         if city:
             parts.append(f"Пользователь находится в городе {city}.")
         if WEATHERY.search(q) or "погод" in q:
-            parts.append(weather_phrase(appearance, "now"))
-            parts.append(weather_phrase(appearance, "today"))
-            parts.append(weather_phrase(appearance, "tomorrow"))
+            d = weather(appearance)
+            c = d["current"]
+            parts.append(f"ТЕМПЕРАТУРА НА УЛИЦЕ СЕЙЧАС: {_deg(c['temperature_2m'], True)} "
+                         f"({WEATHER.get(int(c['weather_code']), '')}, ветер "
+                         f"{round(c['wind_speed_10m'])} м/с).")
+            if "завтра" in q:
+                parts.append(weather_phrase(appearance, "tomorrow"))
+            elif re.search(r"сегодня|вечер|днем|днём|ночью|будет", q):
+                parts.append(weather_phrase(appearance, "today"))
     except Exception:  # noqa: BLE001
         pass
     if re.search(r"курс|доллар|евро|юан|валют|рубл", q):
