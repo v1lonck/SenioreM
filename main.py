@@ -2,6 +2,7 @@
 import datetime
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -826,6 +827,8 @@ class HomeScreen(Backdrop):
         self._last_cmd = ""
         self._continue = False
         self._voice_cmd = False
+        self._confirm_pending = None      # опасная команда ждёт «да»
+        self._followup_cmd = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 22, 24, 30)
@@ -1379,6 +1382,55 @@ class HomeScreen(Backdrop):
         return (scenarios.match(t, self.settings) or timers.parse(t) or system.parse(t)
                 or control.parse(t) or commands.parse(t))
 
+    YES = re.compile(r"(да|да да|да конечно|подтверждаю|подтверди|точно|давай|да давай|конечно|"
+                     r"ага|угу|выполняй|делай|да удали|да удаляй|удаляй|да выключай|выключай)")
+    NO = re.compile(r"(нет|не надо|не нужно|отмена|отмени|стоп|не удаляй|не выключай|не|нет нет)")
+
+    @staticmethod
+    def _danger_text(intent):
+        """Описание опасной команды для вопроса «Точно…?» или None, если команда безопасная."""
+        a = intent.get("action")
+        if a == "delete_selected":
+            return "Удалить выделенное в корзину"
+        if a == "uninstall":
+            return f"Удалить программу «{intent.get('name', '')}»"
+        if a == "startup_off":
+            return f"Убрать «{intent.get('name', '')}» из автозапуска"
+        if a == "timer_add" and intent.get("kind") in ("shutdown", "restart"):
+            what = "Выключить" if intent["kind"] == "shutdown" else "Перезагрузить"
+            sec = int(intent.get("seconds") or 0)
+            when = f" через {sec // 60} мин" if sec >= 120 else ""
+            return f"{what} компьютер{when}"
+        return None
+
+    def _guard(self, text, intent, typed):
+        """Опасные действия не выполняются от случайно услышанной фразы: без «Сеньор» они
+        игнорируются, а с ним — сначала вопрос «Точно…?» и ответ «да»."""
+        pend = self._confirm_pending
+        t = commands.normalize(text)
+        if pend is not None:
+            self._confirm_pending = None
+            if time.time() - pend["t"] < 60 and self.YES.fullmatch(t):
+                done = dict(pend["intent"])
+                done["confirmed"] = True
+                return done
+            if self.NO.fullmatch(t):
+                self._on_action_done("Хорошо, отменил.", "")
+                return None
+        if intent.get("action") == "delete_folder" and not typed and self._followup_cmd:
+            return {"action": "empty"}               # удаление папки — только по обращению
+        what = self._danger_text(intent)
+        if not what or intent.get("confirmed"):
+            return intent
+        if not typed and self._followup_cmd:
+            self._followup_cmd = False
+            return {"action": "empty"}               # без обращения опасное не выполняем вовсе
+        self._confirm_pending = {"intent": dict(intent), "t": time.time()}
+        self._show_heard(t[:1].upper() + t[1:], False)
+        self._voice_cmd = not typed
+        self._on_action_done(f"{what}? Скажите «да», чтобы подтвердить, или «нет».", "")
+        return None
+
     def _voice_command(self, vosk_text, audio, strip_wake, followup=False, confs=None):
         """Простые команды (громкость, время, пауза…) выполняем сразу по быстрому распознаванию;
         названия программ, вопросы и всё сложное уточняем точным распознаванием (Whisper)."""
@@ -1458,6 +1510,10 @@ class HomeScreen(Backdrop):
             text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
         intent = (scenarios.match(text, self.settings) or timers.parse(text) or system.parse(text)
                   or control.parse(text) or commands.parse(text))
+        # опасные команды (удаление, выключение, автозапуск) — только с подтверждением
+        intent = self._guard(text, intent, typed)
+        if intent is None:
+            return
         intent["typed"] = typed
         self._hush = False
         # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
@@ -2971,7 +3027,9 @@ class ProfileScreen(Backdrop):
             "Тогда VPN, обход блокировок и другие программы, которым нужны права администратора, "
             "запускаются сразу — без окна «Разрешить изменения». Windows один раз спросит "
             "разрешение. Нажать «Да» в этом окне за вас не может ни одна программа — так устроена "
-            "защита Windows, поэтому права выдаются SenioreM заранее.", None)
+            "защита Windows, поэтому права выдаются SenioreM заранее. Включайте, только если это "
+            "действительно нужно: с правами администратора любая ошибка или вирус на компьютере "
+            "могут сделать больше.", None)
         self.t_admin.toggled.connect(self._admin_changed)
         self.admin_status = label("", 13, role="accent", wrap=True)
         lay.addWidget(self.admin_status)

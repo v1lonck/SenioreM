@@ -102,6 +102,49 @@ def download_gpu(progress=None):
     return server_exe(gpu=True) is not None
 
 
+_JOB = None
+
+
+def _bind_to_app(proc):
+    """Движок ИИ закрывается вместе с SenioreM — даже если программа упала или её сняли
+    в диспетчере задач (объект задания Windows с «убить при закрытии»)."""
+    global _JOB
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        if _JOB is None:
+            job = k32.CreateJobObjectW(None, None)
+
+            class BASIC(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                            ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                            ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t),
+                            ("ActiveProcessLimit", wintypes.DWORD), ("Affinity", ctypes.c_size_t),
+                            ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+            class IO(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_uint64) for n in ("a", "b", "c", "d", "e", "f")]
+
+            class EXT(ctypes.Structure):
+                _fields_ = [("Basic", BASIC), ("Io", IO), ("ProcessMemoryLimit", ctypes.c_size_t),
+                            ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                            ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            info = EXT()
+            info.Basic.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
+            _JOB = job
+        k32.AssignProcessToJobObject(_JOB, wintypes.HANDLE(int(proc._handle)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+IDLE_STOP = 30 * 60          # полчаса без вопросов — выключаем движок ИИ, чтобы не занимал память
+
+
 def _threads():
     """Потоки для ИИ: по числу настоящих ядер (не логических) — так быстрее всего."""
     try:
@@ -222,6 +265,7 @@ class AI:
         self.kind = None
         self.lock = threading.Lock()
         self.gpu = False
+        self.key = ""
         self.history = []
         self.last_time = 0.0
         self.started = 0.0
@@ -270,17 +314,38 @@ class AI:
         exe = server_exe(gpu=gpu)
         self.port = _free_port()
         threads = _threads()
+        import secrets
+        self.key = secrets.token_hex(16)        # только SenioreM может обращаться к своему движку ИИ
         args = [str(exe), "-m", str(model_file(kind)), "--host", "127.0.0.1", "--port", str(self.port),
+                "--api-key", self.key,
                 "-c", "4096", "-t", str(threads), "-tb", str(max(threads, os.cpu_count() or threads)),
                 "-b", "512"]
         if gpu:
             args += ["-ngl", "99"]
         log = open(ai_dir() / "server.log", "w", encoding="utf-8", errors="ignore")
         self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdout=log, stderr=subprocess.STDOUT,
-                                     creationflags=NO_WINDOW)
+                                     creationflags=NO_WINDOW | 0x00004000)  # BELOW_NORMAL: не тормозит ПК
+        _bind_to_app(self.proc)
+        self._watch_idle()
         self.kind = kind
         self.gpu = gpu
         self.started = time.time()
+
+    def _watch_idle(self):
+        if getattr(self, "_idle_thread", None) is not None:
+            return
+
+        def work():
+            while True:
+                time.sleep(60)
+                last = max(self.last_time, self.started)
+                if self.running() and time.time() - last > IDLE_STOP and self.lock.acquire(False):
+                    try:
+                        self.stop()
+                    finally:
+                        self.lock.release()
+        self._idle_thread = threading.Thread(target=work, daemon=True)
+        self._idle_thread.start()
 
     def _wait_ready(self, timeout):
         end = time.time() + timeout
@@ -388,9 +453,9 @@ class AI:
                     url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
                     data = None
                     if on_sentence is not None:
-                        reply = self._ask_stream(url, payload, on_sentence)
+                        reply = self._ask_stream(url, payload, on_sentence, self.key)
                     else:
-                        data = _post(url, payload)
+                        data = _post(url, payload, self.key)
                 if data is not None:
                     reply = clean_reply(data["choices"][0]["message"]["content"])
             except AIError:

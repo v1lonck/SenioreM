@@ -1,8 +1,10 @@
 """Окно загрузки: название, что умеет программа, прогресс.
 При первом запуске докачивает речевую модель (~45 МБ), затем загружает её в память."""
 import math
+import os
 import shutil
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -181,7 +183,11 @@ class UpdateChecker(QThread):
                 return
             for asset in data.get("assets", []):
                 if asset.get("name", "").lower().endswith("setup.exe"):
-                    self.found.emit(latest.lstrip("vV"), asset["browser_download_url"])
+                    url = asset["browser_download_url"]
+                    # только с GitHub этого же проекта
+                    if not url.startswith(f"https://github.com/{self.repo}/releases/download/"):
+                        return
+                    self.found.emit(latest.lstrip("vV"), url)
                     return
         except Exception:  # noqa: BLE001 — нет интернета и т.п.: просто запускаемся
             pass
@@ -212,9 +218,34 @@ class Updater(QThread):
                     done += len(chunk)
                     self.progress.emit(min(1.0, done / total),
                                        f"Скачиваю обновление · {done / 1e6:.0f} из {total / 1e6:.0f} МБ")
+            if not self._verify(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                self.failed.emit("Обновление скачалось с ошибкой (не совпала контрольная сумма). "
+                                 "Попробуйте позже.")
+                return
             self.ready.emit(path)
         except Exception:  # noqa: BLE001
             self.failed.emit("Не удалось скачать обновление. Попробуйте позже.")
+
+    def _verify(self, path):
+        """Сверяем SHA-256 установщика с суммой, опубликованной в том же релизе."""
+        import hashlib
+        try:
+            req = urllib.request.Request(self.url + ".sha256", headers={"User-Agent": "SenioreM"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                want = r.read().decode("ascii", "ignore").strip().lower()[:64]
+        except urllib.error.HTTPError as e:
+            return e.code == 404          # у старых версий суммы нет — не блокируем
+        except Exception:  # noqa: BLE001
+            return False
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest() == want
 
 
 class Mark(QWidget):

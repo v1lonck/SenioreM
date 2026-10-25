@@ -149,6 +149,7 @@ def _build_pack(images, name):
     Сохраняем все пригодные кадры и отмечаем позы: стоит (idle), сидит (sit), лежит (lie)."""
     import io
     from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 40_000_000           # огромные «картинки-бомбы» не открываем
     frames = []
     for _fname, data in sorted(images, key=lambda x: _natural(os.path.basename(x[0]))):
         try:
@@ -251,18 +252,28 @@ def import_path(path):
     stem = os.path.splitext(os.path.basename(path.rstrip("\\/")))[0]
     if os.path.isdir(path):
         top = os.path.dirname(path.rstrip("\\/"))
+        total = 0
         for root, _dirs, files in os.walk(path):
             for f in files:
-                if f.lower().endswith(IMG_EXT) and not f.lower().startswith(SKIP_NAMES):
+                fp = os.path.join(root, f)
+                if f.lower().endswith(IMG_EXT) and not f.lower().startswith(SKIP_NAMES) and \
+                        os.path.getsize(fp) <= 8_000_000 and total < 300_000_000:
+                    total += os.path.getsize(fp)
                     with open(os.path.join(root, f), "rb") as fh:
                         groups.setdefault(os.path.relpath(root, top), []).append((f, fh.read()))
     else:
+        total, count = 0, 0
         with zipfile.ZipFile(path) as z:
             for info in z.infolist():
                 base = os.path.basename(info.filename)
                 if info.is_dir() or not base.lower().endswith(IMG_EXT) or \
                         base.lower().startswith(SKIP_NAMES) or info.file_size > 8_000_000:
                     continue
+                # защита от «архивов-бомб»: не больше 600 картинок и 300 МБ после распаковки
+                total += info.file_size
+                count += 1
+                if count > 600 or total > 300_000_000:
+                    break
                 groups.setdefault(os.path.dirname(info.filename), []).append(
                     (base, z.read(info)))
     added = []
@@ -746,7 +757,7 @@ class PoseDialog:
     """Сетка всех кадров персонажа: отмечаете, какие кадры — «стоит», «сидит», «лежит»."""
 
     def __new__(cls, parent, kind):
-        from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+        from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QPushButton,
                                        QScrollArea, QVBoxLayout, QWidget)
         from theme import button, label
         pack = get_pack(kind)

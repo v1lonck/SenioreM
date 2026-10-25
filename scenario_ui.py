@@ -3,10 +3,10 @@ import copy
 import os
 import threading
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
-                               QLabel, QListWidget, QListWidgetItem, QScrollArea, QVBoxLayout,
+                               QListWidget, QListWidgetItem, QScrollArea, QVBoxLayout,
                                QWidget)
 
 import scenarios
