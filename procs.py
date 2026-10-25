@@ -380,3 +380,52 @@ def close(name, target=None):
     if wins:
         force_later(wins)
     return len(wins) + len(rest), names
+
+
+# ------------------------------------------------------------------ кто запускает программы
+WATCH_IGNORE = {"conhost.exe", "svchost.exe", "searchprotocolhost.exe", "searchfilterhost.exe",
+                "backgroundtaskhost.exe", "runtimebroker.exe", "dllhost.exe", "wmiprvse.exe",
+                "powershell.exe", "taskhostw.exe", "audiodg.exe", "smartscreen.exe", "consent.exe",
+                "llama-server.exe", "werfault.exe", "compattelrunner.exe", "sppsvc.exe"}
+
+
+def watch_new_processes(seconds=90):
+    """Первые полторы минуты после запуска SenioreM записываем все новые программы и кто их
+    запустил. Так видно, открывает ли что-то SenioreM или программа запускается сама."""
+    import threading
+
+    def work():
+        try:
+            import psutil
+            import sites
+            me = os.getpid()
+            seen = {p.pid for p in psutil.process_iter()}
+            end = time.time() + seconds
+            while time.time() < end:
+                time.sleep(0.4)
+                for p in psutil.process_iter(["pid", "name", "ppid"]):
+                    if p.info["pid"] in seen:
+                        continue
+                    seen.add(p.info["pid"])
+                    name = (p.info["name"] or "").lower()
+                    if not name or name in WATCH_IGNORE or name in SYSTEM:
+                        continue
+                    chain, mine = [], False
+                    try:
+                        cur = p
+                        for _ in range(5):
+                            par = cur.parent()
+                            if par is None:
+                                break
+                            if par.pid == me:
+                                mine = True
+                            chain.append((par.name() or "?"))
+                            cur = par
+                    except Exception:  # noqa: BLE001
+                        pass
+                    who = " → ".join(chain[:3]) or "неизвестно"
+                    why = ("ЗАПУСТИЛ SenioreM" if mine else "открылась сама") + f" (родитель: {who})"
+                    sites.log_launch(p.info["name"], ("process", name), "при старте: " + why)
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=work, daemon=True).start()

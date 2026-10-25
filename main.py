@@ -2464,7 +2464,7 @@ class ProfileScreen(Backdrop):
                 it.widget().deleteLater()
         items = sites.all_apps()
         self.apps_count.setText(f"Знаю {len(items)} программ и игр")
-        log = sites.LAUNCH_LOG[-6:]
+        log = sites.LAUNCH_LOG[-8:]
         self.launch_log.setText("\n".join(f"{t}  {n}  —  {why or 'команда'}" for t, n, _tg, why
                                            in reversed(log))
                                 or "С момента запуска SenioreM ничего не запускал. Полный список — "
@@ -3388,6 +3388,11 @@ def main():
         win.appear()
 
     ai.AI.kill_stale()
+    try:
+        import procs
+        procs.watch_new_processes(90)        # журнал: что открывается вместе с SenioreM и кем
+    except Exception:  # noqa: BLE001
+        pass
     splash = Splash()
     splash.done.connect(open_main)
     splash.cancelled.connect(lambda: os._exit(0))  # мгновенно, даже если идёт загрузка
