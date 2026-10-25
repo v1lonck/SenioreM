@@ -35,6 +35,7 @@ class Listener(QThread):
     final = Signal(str, object, object)   # текст, уверенность слов, звук фразы (PCM16)
     failed = Signal(str)
     ready = Signal()
+    stop_heard = Signal()                 # пока помощник говорил, сказали «стоп»
 
     def __init__(self, model, parent=None):
         """model — уже загруженная vosk.Model (готовится в окне загрузки)."""
@@ -44,8 +45,47 @@ class Listener(QThread):
         self._paused = False
         self._reset = False
         self.sensitivity = "high"
+        self.stop_words = ["стоп"]
+        self._stop_rec = None
+        self._stop_key = None
+
+    def set_stop_words(self, words):
+        """Слова, по которым помощник замолкает, пока говорит (по умолчанию «стоп»)."""
+        ws = [w.strip().lower().replace("ё", "е") for w in words if w and w.strip()]
+        self.stop_words = ws or ["стоп"]
+
+    def _stop_recognizer(self):
+        """Узкое распознавание только стоп-слов: пока помощник говорит, его собственная речь
+        почти не похожа на эти слова — ложных остановок нет."""
+        key = tuple(self.stop_words)
+        if self._stop_rec is None or self._stop_key != key:
+            from vosk import KaldiRecognizer
+            vocab = sorted({w for phrase in key for w in phrase.split()})
+            grammar = json.dumps(list(key) + vocab + ["[unk]"], ensure_ascii=False)
+            try:
+                self._stop_rec = KaldiRecognizer(self.model, 16000, grammar)
+            except Exception:  # noqa: BLE001
+                self._stop_rec = KaldiRecognizer(self.model, 16000)
+            self._stop_key = key
+        return self._stop_rec
+
+    def _check_stop(self, data):
+        rec = self._stop_recognizer()
+        if getattr(self, "_stop_fresh", False):
+            rec.Reset()
+            self._stop_fresh = False
+        if rec.AcceptWaveform(data):
+            text = json.loads(rec.Result()).get("text", "")
+        else:
+            text = json.loads(rec.PartialResult()).get("partial", "")
+        text = text.lower().replace("ё", "е")
+        if text and any(w in text for w in self.stop_words):
+            rec.Reset()
+            self.stop_heard.emit()
 
     def set_paused(self, flag: bool):
+        if flag and not self._paused:
+            self._stop_fresh = True
         self._paused = flag
         if not flag:
             self._reset = True
@@ -65,6 +105,11 @@ class Listener(QThread):
             rec = KaldiRecognizer(self.model, 16000)
             try:
                 rec.SetWords(True)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                # быстрее понимать, что фраза закончилась: ~0,5 с тишины вместо ~1 с
+                rec.SetEndpointerDelays(5.0, 0.55, 15.0)
             except Exception:  # noqa: BLE001
                 pass
         except Exception as e:  # noqa: BLE001
@@ -101,6 +146,12 @@ class Listener(QThread):
                     continue
                 if self._paused:
                     utter.clear()
+                    try:
+                        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                        self._check_stop(np.clip(samples * max(1.0, gain), -32768, 32767)
+                                         .astype(np.int16).tobytes())
+                    except Exception:  # noqa: BLE001
+                        pass
                     continue
                 if self._reset:
                     utter.clear()

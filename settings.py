@@ -24,6 +24,7 @@ DEFAULTS = {
     "dialog_mode": True,
     "followup_seconds": 10,         # сколько слушать после ответа; 0 — сразу выключаться
     "wake_words": "",               # дополнительные слова-обращения
+    "stop_words": "стоп",           # чем остановить помощника, пока он говорит
     "autostart": False,
     "ai_enabled": True,
     "ai_auto_setup": False,         # ИИ уже настроен автоматически
