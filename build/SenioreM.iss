@@ -249,7 +249,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssInstall) and WizardSilent then
+  { при автообновлении из программы окно не показываем — SenioreM сам откроется снова }
+  if (CurStep = ssInstall) and WizardSilent and (ExpandConstant('{param:nosplash|0}') = '0') then
     ShowInstallSplash;
   if (CurStep = ssPostInstall) and (Splash <> nil) then
   begin

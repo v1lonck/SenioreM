@@ -100,7 +100,12 @@ ALIASES = {
     "доту": "dota", "кску": "counter strike", "контру": "counter strike", "впн": "vpn",
     "блюстакс": "bluestacks", "саундпад": "soundpad", "саунпад": "soundpad", "саунд пад": "soundpad",
     "соундпад": "soundpad", "амонг ас": "among us", "геншин": "genshin", "яндекс музыка": "yandex music", "яндекс музыку": "yandex music",
-    "ведьмак": "witcher", "ведьмака": "witcher", "гта": "grand theft auto", "пабг": "pubg",
+    "ведьмак": "witcher", "ведьмака": "witcher", "гта": "grand theft auto",
+    "гта5": "grand theft auto v", "гта 5": "grand theft auto v", "гта пять": "grand theft auto v",
+    "гтав": "grand theft auto v", "gta5": "grand theft auto v", "gta 5": "grand theft auto v",
+    "гта 4": "grand theft auto iv", "гта сан андреас": "san andreas", "самп": "samp",
+    "обход": "zapret", "обход дискорда": "zapret", "обход блокировок": "zapret",
+    "обход дс": "zapret", "обход ютуба": "zapret", "запрет дискорд": "zapret", "пабг": "pubg",
     "пубг": "pubg", "кс го": "counter strike", "майн": "minecraft", "симс": "sims",
     "фифа": "fifa", "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
 }
@@ -546,6 +551,20 @@ def _load_index():
         return []
 
 
+def all_targets():
+    """[(имя, цель, источник)] — программы, игры и скачанные папки/файлы, для выбора в настройках."""
+    out = [(o, t, src) for _n, o, t, src in _apps_full if src != "Эмулятор"]
+    seen = {o.lower() for o, _t, _s in out}
+    try:
+        for _n, o, t in refresh_local():
+            if o.lower() not in seen:
+                seen.add(o.lower())
+                out.append((o, t, "Папка" if os.path.isdir(t[1]) else "Файл"))
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(out, key=lambda x: x[0].lower())
+
+
 def all_apps():
     """[(имя, источник)] — для списка в профиле."""
     return sorted(((o, src) for _n, o, _t, src in _apps_full), key=lambda x: x[0].lower())
@@ -715,6 +734,8 @@ def _best(keys, items, threshold=0.8):
         if not emu_ok and n.endswith(" " + EMU_TAG):
             continue
         sc = max(_score(k, n) for k in keys)
+        if target[0] == "path" and os.path.isdir(target[1]):
+            sc -= 0.02                       # папка — только если нет ярлыка/игры с тем же именем
         if sc > best_score:
             best, best_score = (orig, target), sc
     return best if best_score >= threshold else None
@@ -752,16 +773,45 @@ def find_local(name: str, threshold=0.84):
     return None
 
 
+EXE_SKIP = ("unins", "crash", "report", "redist", "vcredist", "dxsetup", "setup", "install",
+            "update", "helper", "service", "cef", "subprocess", "error", "benchmark", "dotnet",
+            "vc_redist", "ue4prereq", "easyanticheat", "be_service", "uninstall")
+
+
+def _acronym(name):
+    """«Grand Theft Auto V» -> «gtav», «gta5»."""
+    words = _norm(_latinize(name)).split()
+    if len(words) < 2:
+        return set()
+    base = "".join(w[0] for w in words if not w.isdigit() and w not in ROMAN)
+    tail = "".join(ROMAN.get(w, w) for w in words if w.isdigit() or w in ROMAN)
+    out = {base}
+    if tail:
+        out |= {base + tail, base[:-1] + tail if len(base) > 2 else base + tail}
+        out.add("".join(w[0] for w in words[:-1]) + ROMAN.get(words[-1], words[-1]))
+    return out
+
+
 def _pick_launcher(folder: str):
-    """В папке программы выбираем, что запускать: .exe с похожим именем или главный .bat."""
+    """В папке программы выбираем, что запускать: лаунчер игры, .exe с похожим именем
+    или главный .bat. Ищем и в подпапках (bin, Binaries, x64)."""
     try:
         files = os.listdir(folder)
     except OSError:
         return None
-    key = _norm(os.path.basename(folder)).split(" ")[0]
-    exes = [f for f in files if f.lower().endswith(".exe") and not f.lower().startswith("unins")]
+    name = os.path.basename(folder.rstrip("\\/"))
+    key = _norm(name).split(" ")[0]
+    keys = {key} | _acronym(name)
+    exes = [f for f in files if f.lower().endswith(".exe")
+            and not any(x in f.lower() for x in EXE_SKIP)]
+    # «PlayGTAV.exe», «Launcher.exe», «GameLauncher.exe»
     for f in exes:
-        if key and key in _norm(f):
+        low = f.lower()
+        if low.startswith("play") or "launcher" in low:
+            return os.path.join(folder, f)
+    for f in exes:
+        nf = _norm(f).replace(" ", "")
+        if any(k and (k in nf) for k in keys):
             return os.path.join(folder, f)
     bats = [f for f in files if f.lower().endswith((".bat", ".cmd"))]
     for hint in LAUNCHER_HINTS:
@@ -770,6 +820,17 @@ def _pick_launcher(folder: str):
                 return os.path.join(folder, f)
     if len(exes) == 1:
         return os.path.join(folder, exes[0])
+    if exes:                                       # несколько — берём самый большой (это игра)
+        try:
+            return max((os.path.join(folder, f) for f in exes), key=os.path.getsize)
+        except OSError:
+            pass
+    for sub in ("bin", "Bin", "binaries", "Binaries", "x64", "bin64", "Game", "game"):
+        p = os.path.join(folder, sub)
+        if os.path.isdir(p):
+            hit = _pick_launcher(p)
+            if hit:
+                return hit
     return None
 
 
