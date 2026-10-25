@@ -23,7 +23,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\Output
 OutputBaseFilename=SenioreM-Setup
-SetupIconFile=setup.ico
+SetupIconFile=..\assets\icon.ico
 ChangesAssociations=yes
 UninstallDisplayIcon={app}\SenioreM.exe
 UninstallDisplayName=SenioreM
@@ -192,6 +192,17 @@ var
   Code: Integer;
 begin
   Result := True;
+  { SenioreM работает с правами администратора — обычный установщик не сможет заменить его
+    файлы. Перезапускаем установку с правами администратора (Windows спросит один раз). }
+  if (not IsAdmin) and FileExists(ExpandConstant('{userappdata}\SenioreM\admin_mode')) then
+    if ShellExec('runas', ExpandConstant('{srcexe}'),
+                 '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
+                 '/nosplash=' + ExpandConstant('{param:nosplash|0}'),
+                 '', SW_SHOWNORMAL, ewNoWait, Code) then
+    begin
+      Result := False;
+      Exit;
+    end;
   if not WizardSilent then
     if Exec(ExpandConstant('{srcexe}'),
             '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS',

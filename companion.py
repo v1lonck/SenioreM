@@ -321,8 +321,9 @@ class FigurePainter:
 
 # ------------------------------------------------------------------ окно над панелью задач
 class CompanionWindow(QWidget):
-    def __init__(self, on_click=None):
+    def __init__(self, on_click=None, on_remove=None, on_settings=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.on_remove, self.on_settings = on_remove, on_settings
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.painter = FigurePainter()
@@ -399,6 +400,34 @@ class CompanionWindow(QWidget):
             p.setPen(QColor(T.TEXT))
             p.drawText(r.adjusted(12, 8, -12, -8), Qt.TextWordWrap, self.text)
 
+    def contextMenuEvent(self, e):
+        """Правый клик по персонажу: убрать, сменить, открыть SenioreM."""
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: {T.SURFACE}; color: {T.TEXT}; border: 1px solid {T.LINE}; "
+            f"border-radius: 10px; padding: 6px; font-size: 14px; }}"
+            f"QMenu::item {{ padding: 8px 22px; border-radius: 6px; }}"
+            f"QMenu::item:selected {{ background: {T.rgba(T.ACCENT, 0.25)}; }}"
+            f"QMenu::separator {{ height: 1px; background: {T.LINE}; margin: 4px 8px; }}")
+        a_open = menu.addAction("Открыть SenioreM")
+        a_set = menu.addAction("Сменить персонажа…")
+        a_home = menu.addAction("Вернуть на место")
+        menu.addSeparator()
+        a_rm = menu.addAction("Убрать")
+        act = menu.exec(e.globalPos())
+        if act is a_open and self.on_click:
+            self.on_click()
+        elif act is a_set and self.on_settings:
+            self.on_settings()
+        elif act is a_home:
+            self._custom_pos = None
+            self.place()
+        elif act is a_rm:
+            self.hide()
+            if self.on_remove:
+                self.on_remove()
+
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -412,6 +441,8 @@ class CompanionWindow(QWidget):
                 self.move(pos)
 
     def mouseReleaseEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
         if self._moved:
             self._custom_pos = QPoint(self.pos())
         elif self.on_click:
