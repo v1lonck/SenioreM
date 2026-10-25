@@ -203,13 +203,19 @@ end;
   («Отказано в доступе» при замене файлов). }
 procedure KillApp;
 var
-  Code: Integer;
+  Code, Code2: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
-       ewWaitUntilTerminated, Code);
-  Sleep(1200);
+       ewWaitUntilTerminated, Code2);
+  { SenioreM работает с правами администратора — обычный установщик закрыть его не может
+    («Отказано в доступе»). Тогда закрываем с правами администратора (Windows спросит). }
+  if (Code = 1) or (Code2 = 1) then
+    ShellExec('runas', ExpandConstant('{sys}\cmd.exe'),
+              '/c taskkill /F /T /IM SenioreM.exe & taskkill /F /IM llama-server.exe', '',
+              SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(1500);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
