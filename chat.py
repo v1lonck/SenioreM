@@ -88,7 +88,9 @@ class ChatScreen(Backdrop):
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 22, 24, 28)
         top = QHBoxLayout()
-        back = button("←  Назад", "link", 15, QFont.Normal)
+        back = button("Назад", "link", 15, QFont.Normal)
+        import icons
+        icons.set_icon(back, "back", 16, T.MUTED)
         back.clicked.connect(self.back_requested.emit)
         top.addWidget(back)
         top.addSpacing(18)

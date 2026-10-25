@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QDialog, QFileDialog, QFrame, QGridLayout, QHBoxL
                                QListWidget, QListWidgetItem, QScrollArea, QVBoxLayout,
                                QWidget)
 
+import icons
 import scenarios
 import sites
 import theme as T
@@ -309,7 +310,8 @@ class ScenariosPage(QWidget):
         name.setFont(T.font(16, QFont.DemiBold))
         name.editingFinished.connect(lambda i=i, w=name: self._set(i, name=w.text().strip() or "Сценарий"))
         head.addWidget(name, 1)
-        test = button("▶  Проверить", "ghost", 13)
+        test = button("Проверить", "ghost", 13)
+        icons.set_icon(test, "play", 12, T.TEXT)
         test.clicked.connect(lambda _=False, i=i: self._test(i))
         head.addWidget(test)
         rm = button("Удалить", "link", 13, QFont.Normal)
@@ -375,11 +377,15 @@ class ScenariosPage(QWidget):
             t = Toggle(bool(st.get("admin")))
             t.toggled.connect(lambda v, i=i, j=j: self._set_step(i, j, admin=bool(v)))
             rl.addWidget(t)
-        up = button("↑", "link", 14, QFont.Normal)
+        up = button("", "link", 14, QFont.Normal)
+        icons.set_icon(up, "up", 14, T.MUTED)
+        up.setToolTip("Выше")
         up.setFixedWidth(28)
         up.clicked.connect(lambda _=False, i=i, j=j: self._move(i, j, -1))
         rl.addWidget(up)
-        x = button("✕", "link", 14, QFont.Normal)
+        x = button("", "link", 14, QFont.Normal)
+        icons.set_icon(x, "close", 13, T.MUTED)
+        x.setToolTip("Убрать шаг")
         x.setFixedWidth(28)
         x.clicked.connect(lambda _=False, i=i, j=j: self._del_step(i, j))
         rl.addWidget(x)
