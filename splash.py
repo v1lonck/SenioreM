@@ -82,6 +82,18 @@ class Loader(QThread):
 
         import tts
         result = {"model": None, "voice": None}
+        # голос качаем параллельно с речевой моделью — первый запуск заметно быстрее
+        voice_thread = None
+        if not tts.voice_ready():
+            import threading
+
+            def get_voice():
+                try:
+                    tts.download_voice()
+                except Exception:  # noqa: BLE001
+                    _log("Голос не скачался:\n" + traceback.format_exc())
+            voice_thread = threading.Thread(target=get_voice, daemon=True)
+            voice_thread.start()
         # ---- 1. распознавание речи
         try:
             path = config.model_dir()
@@ -97,6 +109,9 @@ class Loader(QThread):
                              "«Повторить».")
             return
         # ---- 2. голос (если не скачается — будет голос Windows)
+        if voice_thread is not None and voice_thread.is_alive():
+            self.progress.emit(0.6, "Первый запуск — докачиваю голос помощника")
+            voice_thread.join(600)
         if not tts.voice_ready():
             try:
                 self.progress.emit(0.46, "Первый запуск — скачиваю голос помощника")
@@ -211,7 +226,7 @@ class Updater(QThread):
                 total = int(r.headers.get("Content-Length") or 0) or 35_000_000
                 done = 0
                 while True:
-                    chunk = r.read(256 * 1024)
+                    chunk = r.read(1024 * 1024)
                     if not chunk:
                         break
                     f.write(chunk)
