@@ -312,9 +312,19 @@ begin
   WizardForm.ReadyLabel.Font.Color := TextC;
   { стандартное окно мастера не показываем вовсе — только своё окно с прогрессом
     (без перезапуска установщика самого себя: антивирусы такого не любят) }
-  WizardForm.Position := poDesigned;
-  WizardForm.Left := -32000;
-  WizardForm.Top := -32000;
+  if ExpandConstant('{param:showwizard|0}') = '0' then
+  begin
+    WizardForm.Position := poDesigned;
+    WizardForm.Left := -32000;
+    WizardForm.Top := -32000;
+  end;
+end;
+
+{ Страницы мастера не показываем вовсе — сразу установка }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpWelcome) or (PageID = wpSelectDir) or (PageID = wpSelectProgramGroup) or
+            (PageID = wpReady) or (PageID = wpFinished);
 end;
 
 { Если мастер всё-таки открылся — не ждём нажатия «Установить», ставим сразу }
