@@ -408,6 +408,11 @@ class Orb(QWidget):
         self._spin += dt * (0.35 + 0.9 * self._heat + 2.2 * energy)
         if (active or speaking or energy > 0.02) and not self.preview:
             T.mark_focus()                          # фон замирает, пока идёт разговор
+        # частота кадров: 60 — во время разговора, 30 — в покое (вдвое меньше нагрузки)
+        busy = active or speaking or energy > 0.02 or self._heat > 0.05 or bool(self._ripples)
+        want_ms = 16 if busy else 33
+        if not self.preview and self._timer.interval() != want_ms:
+            self._timer.setInterval(want_ms)
         for r in self._ripples:
             r[0] += dt * 0.65
             r[1] *= math.exp(-dt * 2.0)
@@ -3428,12 +3433,15 @@ class MainWindow(QWidget):
         if os.environ.get("SENIOREM_NO_DOWNLOADS"):
             pass
         elif s["ai_enabled"] and mode != "api":
+            # тяжёлое грузим не всё сразу, а по очереди — компьютер не «тормозит» при запуске:
+            # точное распознавание — через 8 секунд, ИИ — через 25
             if ai.local_ready(mode):
-                threading.Thread(target=lambda: self._warm_ai(mode), daemon=True).start()
+                QTimer.singleShot(25000, lambda: threading.Thread(
+                    target=lambda: self._warm_ai(mode), daemon=True).start())
             else:
-                ai.DOWNLOADS.start(mode)
+                QTimer.singleShot(25000, lambda: ai.DOWNLOADS.start(mode))
         if not asr.RECOGNIZER.available and not os.environ.get("SENIOREM_NO_DOWNLOADS"):
-            asr.DOWNLOADS.start()
+            QTimer.singleShot(8000, asr.DOWNLOADS.start)
         switch_page(self.stack, self.home)
         self.home.start(email, s)
         try:
@@ -3458,6 +3466,7 @@ class MainWindow(QWidget):
 
     @staticmethod
     def _warm_ai(mode):
+        config.low_priority_thread()
         try:
             ai.ENGINE.start_local(mode)
         except Exception:  # noqa: BLE001 — запустится при первом вопросе
@@ -3501,6 +3510,8 @@ class MainWindow(QWidget):
             return
 
         def work():
+            config.low_priority_thread()
+            time.sleep(12)               # не в самый момент запуска
             try:
                 import companion
                 added = companion.auto_import()

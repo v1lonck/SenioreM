@@ -136,6 +136,8 @@ class Downloader:
         self.text = "Готовлю точное распознавание"
 
         def work():
+            import config
+            config.low_priority_thread()
             try:
                 download(self._progress)
                 RECOGNIZER.load()

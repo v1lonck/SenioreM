@@ -145,3 +145,17 @@ def startup_mark(stage):
             f.write(f"{time.strftime('%H:%M:%S')} +{time.time() - _T0:5.1f}s  pid {os.getpid()}  {stage}\n")
     except OSError:
         pass
+
+
+def low_priority_thread():
+    """Фоновая работа (поиск программ, загрузка моделей, уборка) — с низким приоритетом,
+    чтобы компьютер не «тормозил», пока SenioreM запускается."""
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetThreadPriority(k32.GetCurrentThread(), -2)       # THREAD_PRIORITY_LOWEST
+    except Exception:  # noqa: BLE001
+        pass
