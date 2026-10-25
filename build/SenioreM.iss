@@ -11,6 +11,15 @@ AppName=SenioreM
 AppVersion={#AppVersion}
 AppVerName=SenioreM {#AppVersion}
 AppPublisher=SenioreM
+AppPublisherURL=https://github.com/v1lonck/SenioreM
+AppSupportURL=https://github.com/v1lonck/SenioreM/issues
+AppUpdatesURL=https://github.com/v1lonck/SenioreM/releases
+VersionInfoVersion={#AppVersion}
+VersionInfoCompany=SenioreM
+VersionInfoDescription=Установщик SenioreM — голосовой помощник для Windows
+VersionInfoProductName=SenioreM
+VersionInfoProductVersion={#AppVersion}
+VersionInfoCopyright=© 2026 v1lonck
 DefaultDirName={code:InstallDir}
 UsePreviousAppDir=no
 DisableDirPage=yes
@@ -25,11 +34,11 @@ OutputDir=..\Output
 OutputBaseFilename=SenioreM-Setup
 SetupIconFile=..\assets\icon.ico
 ChangesAssociations=yes
-UninstallDisplayIcon={app}\SenioreM.exe
+UninstallDisplayIcon={app}\SenioreM.ico
 UninstallDisplayName=SenioreM
 Compression=lzma2/ultra64
 SolidCompression=yes
-LZMAUseSeparateProcess=yes
+LZMAUseSeparateProcess=no
 WizardStyle=modern
 WizardSizePercent=110
 WizardImageFile=wizard_164.bmp,wizard_410.bmp
@@ -47,6 +56,8 @@ ru.FinishedLabel=SenioreM установлен, ярлык — на рабоче
 
 [Files]
 Source: "install_logo.bmp"; Flags: dontcopy
+; значок ярлыка отдельным файлом — Windows показывает его сразу, без задержки кэша значков
+Source: "..\assets\icon.ico"; DestDir: "{app}"; DestName: "SenioreM.ico"; Flags: ignoreversion
 Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
@@ -54,8 +65,8 @@ Source: "..\dist\SenioreM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 Type: filesandordirs; Name: "{localappdata}\Programs\SenioreM"; Check: OldDirDiffers
 
 [Icons]
-Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
-Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.exe"; Comment: "SenioreM — голосовой помощник"
+Name: "{autodesktop}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.ico"; Comment: "SenioreM — голосовой помощник"
+Name: "{autoprograms}\SenioreM"; Filename: "{app}\SenioreM.exe"; IconFilename: "{app}\SenioreM.ico"; Comment: "SenioreM — голосовой помощник"
 
 [Run]
 ; сразу после установки запускаем программу
@@ -185,8 +196,6 @@ begin
   Splash.Repaint;
 end;
 
-{ Окна мастера не показываем: установщик перезапускает себя в тихом режиме
-  и показывает только своё тёмное окно с прогрессом. }
 { Можно ли заменить уже установленные файлы без прав администратора?
   Если прошлое обновление ставилось с правами администратора, файлы принадлежат
   администраторам — обычная установка получит «Отказано в доступе». }
@@ -221,38 +230,62 @@ begin
       Result := False;
       Exit;
     end;
-  if not WizardSilent then
-    if Exec(ExpandConstant('{srcexe}'),
-            '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS',
-            '', SW_SHOWNORMAL, ewNoWait, Code) then
-      Result := False;
 end;
 
 { Перед установкой закрываем запущенный SenioreM и движок ИИ, иначе их файлы заняты
   («Отказано в доступе» при замене файлов). }
 procedure KillApp;
 var
-  Code, Code2: Integer;
+  Code, Code2, I: Integer;
 begin
+  { SenioreM не запущен (его файл можно заменить) — ничего не ждём, ставим сразу }
+  if CanReplaceInstalled then
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
+         ewWaitUntilTerminated, Code2);
+    Exit;
+  end;
   { сначала просим SenioreM закрыться самому (работает, даже если он запущен от администратора) }
   ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
   SaveStringToFile(ExpandConstant('{userappdata}\SenioreM\quit.flag'), '1', False);
-  Sleep(2500);
+  for I := 1 to 12 do
+  begin
+    Sleep(250);
+    if CanReplaceInstalled then
+      Break;
+  end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code2);
   { SenioreM работает с правами администратора — обычный установщик закрыть его не может
     («Отказано в доступе»). Тогда закрываем с правами администратора (Windows спросит). }
-  if (Code = 1) or (Code2 = 1) then
-    ShellExec('runas', ExpandConstant('{sys}\cmd.exe'),
-              '/c taskkill /F /T /IM SenioreM.exe & taskkill /F /IM llama-server.exe', '',
+  if ((Code = 1) or (Code2 = 1)) and not CanReplaceInstalled then
+  begin
+    ShellExec('runas', ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '',
               SW_HIDE, ewWaitUntilTerminated, Code);
-  Sleep(1500);
+    ShellExec('runas', ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '',
+              SW_HIDE, ewWaitUntilTerminated, Code2);
+  end;
+  for I := 1 to 8 do
+  begin
+    if CanReplaceInstalled then
+      Break;
+    Sleep(250);
+  end;
+end;
+
+function WantSplash: Boolean;
+begin
+  { при автообновлении из программы (/nosplash=1) окно не нужно — SenioreM сам откроется }
+  Result := ExpandConstant('{param:nosplash|0}') = '0';
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  { наше окно с прогрессом — сразу, ещё до закрытия старой версии }
+  if WantSplash and (Splash = nil) then
+    ShowInstallSplash;
   KillApp;
   Result := '';
 end;
@@ -277,13 +310,30 @@ begin
   WizardForm.StatusLabel.Font.Color := TextC;
   WizardForm.FilenameLabel.Font.Color := Muted;
   WizardForm.ReadyLabel.Font.Color := TextC;
+  { стандартное окно мастера не показываем вовсе — только своё окно с прогрессом
+    (без перезапуска установщика самого себя: антивирусы такого не любят) }
+  if ExpandConstant('{param:showwizard|0}') = '0' then
+  begin
+    WizardForm.Position := poDesigned;
+    WizardForm.Left := -32000;
+    WizardForm.Top := -32000;
+  end;
+end;
+
+{ Страницы мастера не показываем вовсе — сразу установка }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpWelcome) or (PageID = wpSelectDir) or (PageID = wpSelectProgramGroup) or
+            (PageID = wpReady) or (PageID = wpFinished);
 end;
 
 { Если мастер всё-таки открылся — не ждём нажатия «Установить», ставим сразу }
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  { «нажимаем» кнопку «Установить» сообщением окну (BM_CLICK) — сработает, как только
+    страница покажется; сам мастер вынесен за пределы экрана, его не видно }
   if CurPageID = wpReady then
-    WizardForm.NextButton.OnClick(WizardForm.NextButton);
+    PostMessage(WizardForm.NextButton.Handle, $00F5, 0, 0);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -293,7 +343,7 @@ begin
   { при автообновлении из программы окно не показываем — SenioreM сам откроется снова }
   { при ручной установке показываем окно (чтобы не нажимали установщик повторно);
     при автообновлении из программы (/nosplash=1) — не показываем: SenioreM сам откроется }
-  if (CurStep = ssInstall) and WizardSilent and (ExpandConstant('{param:nosplash|0}') = '0') then
+  if (CurStep = ssInstall) and WantSplash and (Splash = nil) then
     ShowInstallSplash;
   { после установки с правами администратора разрешаем обычному пользователю менять файлы —
     чтобы следующие обновления ставились без окон и ошибок }

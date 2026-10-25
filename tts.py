@@ -50,7 +50,7 @@ def download(urls, dest: Path, progress=None, expect=0):
                 total = int(r.headers.get("Content-Length") or 0) or expect
                 done = 0
                 while True:
-                    chunk = r.read(256 * 1024)
+                    chunk = r.read(1024 * 1024)
                     if not chunk:
                         break
                     f.write(chunk)
