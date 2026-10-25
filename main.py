@@ -3035,12 +3035,21 @@ class MainWindow(QWidget):
             return
         if self.companion is None:
             from companion import CompanionWindow
-            self.companion = CompanionWindow(on_click=self.bring_to_front)
+            self.companion = CompanionWindow(on_click=self.bring_to_front,
+                                             on_remove=self._remove_companion,
+                                             on_settings=lambda: (self.smooth_restore(),
+                                                                  self.open_profile("companion")))
             self.speaker.speaking.connect(self.companion.set_speaking)
             self.speaker.said.connect(lambda t: self.companion.say(t, 4 + len(t) / 14))
         self.companion.configure(kind, bool(s["companion_anim"]), int(s["companion_size"] or 150))
         self.companion.show()
         self.companion.raise_()
+
+    def _remove_companion(self):
+        """«Убрать» в меню персонажа: выключаем компаньона (вернуть — профиль → «Компаньон»)."""
+        if self.settings is not None:
+            self.settings.set("companion", "none")
+        self.apply_companion()
 
     def open_chat(self):
         if self.settings is None:
