@@ -108,6 +108,12 @@ ALIASES = {
     "обход дс": "zapret", "обход ютуба": "zapret", "запрет дискорд": "zapret", "пабг": "pubg",
     "пубг": "pubg", "кс го": "counter strike", "майн": "minecraft", "симс": "sims",
     "фифа": "fifa", "кап кат": "capcut", "капкат": "capcut", "нотпад": "notepad", "гит": "git",
+    # точное распознавание иногда пишет короткие названия латиницей
+    "ks": "counter strike", "cs": "counter strike", "cs2": "counter strike", "cs 2": "counter strike",
+    "ks2": "counter strike", "ks 2": "counter strike", "csgo": "counter strike", "cs go": "counter strike",
+    "ks go": "counter strike", "кс2": "counter strike", "кс 2": "counter strike", "кс два": "counter strike",
+    "ксго": "counter strike", "контр страйк": "counter strike", "каунтер страйк": "counter strike",
+    "dota": "dota", "dota 2": "dota", "gta": "grand theft auto", "ds": "discord", "tg": "telegram",
 }
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n",
