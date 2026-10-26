@@ -115,7 +115,7 @@ def cloud_transcribe(pcm16: bytes, rate: int = 16000):
     import time
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=6) as r:
+        with urllib.request.urlopen(req, timeout=4) as r:
             text = (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
         _CLOUD_FAILS[0] = 0
         config.voice_log(f"облако распознало за {time.time() - t0:.1f} с: «{text}»")

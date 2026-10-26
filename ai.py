@@ -290,6 +290,12 @@ def _stream(url, payload, key="", timeout=120):
                 yield delta
 
 
+def _whole_sentences(text):
+    """Ответ оборвался по длине — оставляем только законченные предложения."""
+    m = list(re.finditer(r"[.!?…](\s|$)", text or ""))
+    return text[:m[-1].end()].strip() if m and m[-1].end() > len(text) * 0.4 else text
+
+
 def strip_think(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
 
@@ -499,7 +505,7 @@ class AI:
             elif chat:
                 max_tok = 2000 if long_ask else 1000
             else:
-                max_tok = 700 if long_ask else 400
+                max_tok = 1000 if long_ask else 600
             payload = {"messages": msgs, "temperature": 0.2 if prefer == "code" else 0.4, "top_p": 0.9,
                        "max_tokens": max_tok, "stream": False, "cache_prompt": True,
                        "model_hint": "pro" if long_ask else "flash"}
@@ -533,6 +539,8 @@ class AI:
                         raise
                 if data is not None:
                     reply = strip_think(data["choices"][0]["message"]["content"])
+                    if data["choices"][0].get("finish_reason") == "length":
+                        reply = _whole_sentences(reply)     # не обрываем на полуслове
                 reply = reply if chat else clean_reply(reply)
             except AIError:
                 raise

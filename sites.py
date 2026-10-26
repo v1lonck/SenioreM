@@ -901,10 +901,25 @@ def log_launch(name, target, why=""):
         pass
 
 
+# Голосовая команда: сначала помощник договаривает «Запускаю …», потом стартует программа
+# (игра при запуске забирает звук и процессор — фраза обрывалась). Задаёт main.py.
+DEFER = None
+
+
 def launch(target, name="", why=""):
     """Запуск без блокировки программы (ошибки Windows не «замораживают» помощника)."""
     kind, value = target
     log_launch(name or value, target, why)
+    if DEFER is not None and (kind != "path" or not os.path.isdir(value)):
+        try:
+            DEFER(lambda: _launch_now(kind, value))
+            return "Запускаю"
+        except Exception:  # noqa: BLE001
+            pass
+    return _launch_now(kind, value)
+
+
+def _launch_now(kind, value):
     if kind == "app":
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + value], creationflags=NO_WINDOW)
         return "Запускаю"
