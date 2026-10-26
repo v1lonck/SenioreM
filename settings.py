@@ -34,6 +34,9 @@ DEFAULTS = {
     "ai_api_model": "",
     "notes": "",
     "chat": [],
+    "chat_ai": "auto",            # какой ИИ в чате: auto / fast / smart / local
+    "ai_day_limit": 1500000,      # лимиты токенов облачного ИИ (чтобы хватило надолго)
+    "ai_month_limit": 20000000,
     "chat_speak": False,
     "companion": "none",            # фигура над панелью задач
     "companion_anim": True,

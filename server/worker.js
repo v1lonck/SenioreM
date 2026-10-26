@@ -4,6 +4,7 @@
 //                            ключ хранится только здесь), а если её нет или кончились деньги —
 //                            бесплатная модель Cloudflare Workers AI.
 //   /v1/audio/transcriptions — точное распознавание речи (Whisper в Cloudflare, бесплатно).
+//   /v1/images/generations   — картинки по описанию (FLUX в Cloudflare, бесплатно).
 //
 // Настройка Worker → Settings:
 //   Bindings → Workers AI, имя переменной: AI            (обязательно)
@@ -85,6 +86,18 @@ export default {
           audio: body.audio, language: "ru", initial_prompt: (body.prompt || "").slice(0, 400),
         });
         return json({ text: (r && r.text) || "" });
+      } catch (e) {
+        return json({ error: String(e) }, 503);
+      }
+    }
+
+    // ---- картинка по описанию: {prompt} -> {image: base64}
+    if (url.pathname.endsWith("/images/generations")) {
+      if (!env.AI) return json({ error: "no AI binding" }, 503);
+      try {
+        const r = await env.AI.run("@cf/black-forest-labs/flux-1-schnell",
+                                   { prompt: String(body.prompt || "").slice(0, 1500), steps: 6 });
+        return json({ image: r.image });
       } catch (e) {
         return json({ error: String(e) }, 503);
       }
