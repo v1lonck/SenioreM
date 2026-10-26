@@ -367,8 +367,18 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QMessageBox {{ background: {SURFACE}; }}
 QMessageBox QLabel {{ color: {TEXT}; }}
-QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; padding: 6px; }}
-"""
+QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; padding: 6px;
+    border-radius: 8px; }}
+QMenu {{
+    background: {rgba(_mix(SURFACE, "#FFFFFF", 0.03), 0.97)}; color: {TEXT};
+    border: 1px solid {rgba(_mix(LINE, A, 0.3), 0.95)}; border-radius: 12px; padding: 6px;
+}}
+QMenu::item {{ padding: 8px 26px 8px 14px; border-radius: 8px; margin: 1px 0; }}
+QMenu::item:selected {{ background: {rgba(A, 0.22)}; color: #FFFFFF; }}
+QMenu::item:disabled {{ color: {FAINT}; }}
+QMenu::separator {{ height: 1px; background: {LINE}; margin: 5px 8px; }}
+QMenu::icon {{ padding-left: 8px; }}
+""" + hover_qss(A)
 
 
 def label(text="", size=15, weight=QFont.Normal, role=None, display=False,
@@ -386,6 +396,8 @@ def button(text, role="primary", size=15, weight=QFont.DemiBold):
     b.setProperty("role", role)
     b.setFont(font(size, weight))
     b.setCursor(Qt.PointingHandCursor)
+    if role in ("primary", "ghost", "secondary", "nav", "danger", "dangerfill"):
+        HoverFX.attach(b)
     return b
 
 
@@ -428,8 +440,30 @@ def _apply_palette(app):
     app.setPalette(pal)
 
 
+def install_russian(app):
+    """Стандартные меню Qt (правый клик в поле ввода и т. п.) — по-русски."""
+    import os
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+    try:
+        import PySide6
+        dirs = [QLibraryInfo.path(QLibraryInfo.TranslationsPath),
+                os.path.join(os.path.dirname(PySide6.__file__), "translations")]
+    except Exception:  # noqa: BLE001
+        return
+    for d in dirs:
+        tr = QTranslator(app)
+        if tr.load("qtbase_ru", d):
+            app.installTranslator(tr)
+            app._ru_translator = tr
+            return
+
+
 def apply_app_theme(app):
     load_appearance()
+    try:
+        install_russian(app)
+    except Exception:  # noqa: BLE001
+        pass
     pick_fonts()
     app.setFont(font(15))
     _apply_palette(app)
@@ -751,8 +785,155 @@ class Toggle(QAbstractButton):
         p.drawEllipse(QPointF(13 + 20 * self._pos, 13), 9.5, 9.5)
 
 
+# ---------------------------------------------------------------- наведение на кнопки
+HOVER_STYLES = [
+    ("glass", "Жидкое стекло", "Стеклянный блик пробегает по кнопке"),
+    ("glow", "Свечение", "Мягкое свечение цветом темы"),
+    ("neon", "Неон", "Яркая неоновая обводка"),
+    ("fill", "Заливка", "Кнопка заливается цветом темы"),
+    ("lift", "Парение", "Кнопка «приподнимается» с тенью"),
+    ("classic", "Классика", "Только подсвеченная рамка"),
+]
+
+
+def hover_style():
+    s = APPEARANCE.get("hover") or "glass"
+    return s if s in dict((k, t) for k, t, _d in HOVER_STYLES) else "glass"
+
+
+def hover_qss(A):
+    st = hover_style()
+    sel = ('QPushButton[role="ghost"]:hover, QPushButton[role="secondary"]:hover, '
+           'QPushButton[role="nav"]:hover')
+    opt = 'QFrame[role="option"]:hover'
+    if st == "glass":
+        g = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.20), "
+             "stop:0.48 rgba(255,255,255,0.07), stop:0.52 rgba(255,255,255,0.03), stop:1 rgba(255,255,255,0.10))")
+        return (f"{sel} {{ background: {g}; color: #FFFFFF; border: 1px solid rgba(255,255,255,0.32);"
+                f" border-top: 1px solid rgba(255,255,255,0.62); }}\n"
+                f"{opt} {{ background: {g}; border: 1px solid rgba(255,255,255,0.32);"
+                f" border-top: 1px solid rgba(255,255,255,0.6); }}\n"
+                f'QPushButton[role="primary"]:hover {{ border-top: 1px solid rgba(255,255,255,0.75); }}\n')
+    if st == "glow":
+        return (f"{sel} {{ background: {rgba(A, 0.12)}; color: #FFFFFF; border: 1px solid {A}; }}\n"
+                f"{opt} {{ background: {rgba(A, 0.10)}; border: 1px solid {A}; }}\n")
+    if st == "neon":
+        return (f"{sel} {{ background: {rgba(A, 0.06)}; color: {_mix(A, '#FFFFFF', 0.55)};"
+                f" border: 2px solid {_mix(A, '#FFFFFF', 0.25)}; }}\n"
+                f"{opt} {{ border: 2px solid {_mix(A, '#FFFFFF', 0.25)}; }}\n")
+    if st == "fill":
+        return (f"{sel} {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {_mix(A, '#FFFFFF', 0.4)},"
+                f" stop:1 {A}); color: #0A0C10; border: 1px solid {A}; }}\n"
+                f"{opt} {{ background: {rgba(A, 0.22)}; border: 1px solid {A}; }}\n")
+    if st == "lift":
+        return (f"{sel} {{ background: rgba(255,255,255,0.07); color: #FFFFFF; border: 1px solid "
+                f"{rgba(A, 0.6)}; }}\n{opt} {{ background: rgba(255,255,255,0.05); }}\n")
+    return ""
+
+
+class HoverFX:
+    """Анимация при наведении: плавное свечение/тень, у «жидкого стекла» — пробегающий блик."""
+    _filter = None
+
+    @classmethod
+    def attach(cls, w):
+        from PySide6.QtCore import QObject
+
+        if cls._filter is None:
+            class _F(QObject):
+                def eventFilter(self, obj, e):
+                    from PySide6.QtCore import QEvent
+                    t = e.type()
+                    if t == QEvent.Enter:
+                        HoverFX._go(obj, True)
+                    elif t == QEvent.Leave:
+                        HoverFX._go(obj, False)
+                    return False
+            cls._filter = _F()
+        w.installEventFilter(cls._filter)
+
+    @staticmethod
+    def _go(w, on):
+        from PySide6.QtCore import QEasingCurve, QVariantAnimation
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        st = hover_style()
+        if st == "classic" or not w.isEnabled():
+            return
+        eff = w.graphicsEffect()
+        if on and not isinstance(eff, QGraphicsDropShadowEffect):
+            if eff is not None:
+                return                       # у виджета уже свой эффект — не мешаем
+            eff = QGraphicsDropShadowEffect(w)
+            eff.setBlurRadius(0)
+            eff.setOffset(0, 0)
+            eff.setColor(QColor(0, 0, 0, 0))
+            w.setGraphicsEffect(eff)
+        if not isinstance(eff, QGraphicsDropShadowEffect):
+            return
+        old = getattr(w, "_hover_anim", None)
+        start = old.currentValue() if old is not None else (0.0 if on else 1.0)
+        if old is not None:
+            old.stop()
+        anim = QVariantAnimation(w)
+        anim.setStartValue(float(start or 0.0))
+        anim.setEndValue(1.0 if on else 0.0)
+        anim.setDuration(260 if on else 320)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def step(v, w=w, eff=eff, st=st):
+            v = float(v)
+            if st == "lift":
+                c = QColor(0, 0, 0, int(150 * v))
+                eff.setOffset(0, 6 * v)
+                eff.setBlurRadius(22 * v)
+            else:
+                c = QColor("#FFFFFF" if st == "glass" else ACCENT)
+                c.setAlpha(int((110 if st == "glass" else 190) * v))
+                eff.setOffset(0, 0)
+                eff.setBlurRadius((26 if st == "glass" else 34) * v)
+            eff.setColor(c)
+            if st == "glass" and on:
+                HoverFX._shine(w, v)
+
+        def done(w=w, on=on):
+            if not on:
+                try:
+                    w.setGraphicsEffect(None)
+                    if getattr(w, "_shine_on", False):
+                        w._shine_on = False
+                        w.setStyleSheet(getattr(w, "_own_qss", ""))
+                except RuntimeError:
+                    pass
+        anim.valueChanged.connect(step)
+        anim.finished.connect(done)
+        w._hover_anim = anim
+        anim.start()
+
+    @staticmethod
+    def _shine(w, v):
+        """Блик «жидкого стекла» пробегает слева направо."""
+        from PySide6.QtWidgets import QPushButton
+        if not isinstance(w, QPushButton) or w.property("role") not in ("ghost", "secondary", "nav"):
+            return
+        if not getattr(w, "_shine_on", False):
+            w._own_qss = w.styleSheet()
+            w._shine_on = True
+        s = -0.2 + 1.4 * v
+        a, b = max(0.0, s - 0.18), min(1.0, s + 0.18)
+        mid = max(0.0, min(1.0, s))
+        w.setStyleSheet(
+            w._own_qss + "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0.4, "
+            f"stop:0 rgba(255,255,255,0.08), stop:{a:.3f} rgba(255,255,255,0.08), "
+            f"stop:{mid:.3f} rgba(255,255,255,0.30), stop:{b:.3f} rgba(255,255,255,0.08), "
+            "stop:1 rgba(255,255,255,0.10)); }")
+
+
 class Clickable(QFrame):
     clicked = Signal()
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        HoverFX.attach(self)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:

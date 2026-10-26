@@ -40,6 +40,7 @@ function openaiReply(text, stream) {
 
 // модель не указана — берём из списка сервиса: быстрая (flash) обычно, умная (pro) для длинных ответов
 let MODELS_CACHE = null;
+let NO_THINK_OK = null;     // понимает ли сервис просьбу «без размышлений»
 async function pickModel(env, smart) {
   if (env.LLM_MODEL) return env.LLM_MODEL;
   if (!MODELS_CACHE) {
@@ -49,10 +50,15 @@ async function pickModel(env, smart) {
       MODELS_CACHE = ((await r.json()).data || []).map((m) => m.id).filter(Boolean);
     } catch (e) { MODELS_CACHE = []; }
   }
-  const words = smart ? ["v4-pro", "pro", "reasoner", "v4", "chat"] : ["v4-flash", "flash", "chat", "mini", "v4"];
-  for (const w of words) {
-    const hit = MODELS_CACHE.find((id) => id.toLowerCase().includes(w) && !/embed|whisper|tts/i.test(id));
-    if (hit) return hit;
+  const words = smart ? ["v4-pro", "pro", "v4", "chat"] : ["v4-flash", "flash", "chat", "mini", "v4"];
+  // модели «с размышлением» (think/reasoner/r1) отвечают в разы дольше — берём их в последнюю очередь
+  const slow = /think|reason|\br1\b|-r1/i;
+  for (const pass of [false, true]) {
+    for (const w of words) {
+      const hit = MODELS_CACHE.find((id) => id.toLowerCase().includes(w) && !/embed|whisper|tts|image/i.test(id)
+                                            && (pass || !slow.test(id)));
+      if (hit) return hit;
+    }
   }
   return MODELS_CACHE[0] || "deepseek-chat";
 }
@@ -100,9 +106,18 @@ export default {
     if (url.pathname.endsWith("/images/generations")) {
       if (!env.AI) return json({ error: "no AI binding" }, 503);
       try {
-        const r = await env.AI.run("@cf/black-forest-labs/flux-1-schnell",
-                                   { prompt: String(body.prompt || "").slice(0, 1500), steps: 6 });
-        return json({ image: r.image });
+        let prompt = String(body.prompt || "").slice(0, 1500);
+        // FLUX понимает только английский: русское описание сначала переводим
+        if (/[а-яё]/i.test(prompt)) {
+          try {
+            const tr = await env.AI.run("@cf/meta/m2m100-1.2b",
+                                        { text: prompt, source_lang: "russian", target_lang: "english" });
+            if (tr && tr.translated_text) prompt = tr.translated_text;
+          } catch (e) { /* без перевода */ }
+        }
+        prompt += ", highly detailed, sharp focus, beautiful lighting, high quality";
+        const r = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt, steps: 8 });
+        return json({ image: r.image, prompt });
       } catch (e) {
         return json({ error: String(e) }, 503);
       }
@@ -112,7 +127,7 @@ export default {
     const out = {
       messages: (body.messages || []).slice(-20),
       temperature: Math.min(Number(body.temperature ?? 0.5), 1.2),
-      max_tokens: Math.min(Number(body.max_tokens ?? 300), 1500),
+      max_tokens: Math.min(Number(body.max_tokens ?? 600), 4000),
       stream: !!body.stream,
     };
     // программа подсказывает, какая модель нужна: быстрая (flash) или умная (pro)
@@ -120,11 +135,20 @@ export default {
     // 1) умная платная модель (если настроена)
     if (env.LLM_KEY && env.LLM_URL) {
       try {
-        const r = await fetch(env.LLM_URL, {
+        const model = await pickModel(env, smart);
+        const send = (extra) => fetch(env.LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.LLM_KEY}` },
-          body: JSON.stringify({ ...out, model: await pickModel(env, smart) }),
+          body: JSON.stringify({ ...out, model, ...extra }),
         });
+        // просим отвечать сразу, без долгого «размышления»; если сервис такого не знает — обычный запрос
+        let r = NO_THINK_OK === false ? await send({}) : await send({ thinking: { type: "disabled" } });
+        if (!r.ok && NO_THINK_OK !== true && [400, 422].includes(r.status)) {
+          NO_THINK_OK = false;
+          r = await send({});
+        } else if (r.ok && NO_THINK_OK === null) {
+          NO_THINK_OK = true;
+        }
         if (r.ok) {
           return new Response(r.body, {
             headers: { "Content-Type": r.headers.get("Content-Type") || "application/json" },

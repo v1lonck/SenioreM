@@ -29,7 +29,8 @@ def _english(prompt, settings):
             {"role": "system", "content": "Translate the image description to English for an image "
                                           "generator. Add 3-6 words about style and quality. "
                                           "Answer with the prompt only."},
-            {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 80, "stream": False}
+            {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 400, "stream": False,
+            "model_hint": "flash"}
         _r, data = ai.ENGINE._run(mode, settings, payload, None, False, True)
         out = ai.clean_reply(data["choices"][0]["message"]["content"]) if data else ""
         ai.usage_add(ai._estimate(payload["messages"], out, 0))
