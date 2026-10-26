@@ -24,7 +24,7 @@ def _co_init():
         pass
 
 
-MAX_GAIN = 14.0          # тихую речь и шёпот подтягиваем до нормальной громкости
+MAX_GAIN = 8.0           # тихую речь и шёпот подтягиваем (сильнее — раздувается шум)
 MAX_UTTERANCE = 16000 * 2 * 20   # не больше 20 секунд звука на фразу
 
 
@@ -47,6 +47,7 @@ class Listener(QThread):
         self._reset = False
         self.sensitivity = "high"
         self.device = ""               # название микрофона ("" — микрофон Windows по умолчанию)
+        self.recent = bytearray()      # последние ~6 с звука (то, что слышит распознавание) — для проверки
         self.stop_words = ["стоп"]
         self._stop_rec = None
         self._stop_key = None
@@ -150,7 +151,7 @@ class Listener(QThread):
                             return i, d["name"]
                     _vlog(f"выбранный микрофон «{self.device}» не найден — беру стандартный")
                 d = sd.query_devices(kind="input")
-                return None, d.get("name", "?")
+                return None, f"{d.get('name', '?')} (по умолчанию, {int(d.get('default_samplerate', 0))} Гц)"
             except Exception as e:  # noqa: BLE001
                 return None, f"? ({e})"
 
@@ -257,7 +258,7 @@ class Listener(QThread):
                     floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
                     floor = max(0.0005, min(floor, 0.05))
                     max_gain = MAX_GAIN
-                    if rms > floor * 1.6:                      # похоже на голос, а не тишину
+                    if rms > floor * 2.5:                      # похоже на голос, а не тишину
                         want = max(1.0, min(max_gain, 0.08 / max(rms, 1e-5)))
                     else:
                         want = max(1.0, gain * 0.98)           # в тишине шум не раздуваем
@@ -269,6 +270,9 @@ class Listener(QThread):
                     st["sum"] += rms
                     st["max"] = max(st["max"], rms)
                     self.level.emit(min(1.0, rms * 7))
+                    self.recent += data
+                    if len(self.recent) > 16000 * 2 * 6:
+                        del self.recent[: len(self.recent) - 16000 * 2 * 6]
                     utter += data
                     if len(utter) > MAX_UTTERANCE:
                         del utter[: len(utter) - MAX_UTTERANCE]
@@ -303,6 +307,24 @@ class Listener(QThread):
                 stream.close()
             except Exception:  # noqa: BLE001
                 pass
+
+def mic_test(model, pcm, wav_path):
+    """Проверка микрофона: сохраняем то, что услышали, и распознаём это заново. -> текст."""
+    import wave
+    with wave.open(wav_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+    from vosk import KaldiRecognizer
+    rec = KaldiRecognizer(model, 16000)
+    out = []
+    for i in range(0, len(pcm), 8000):
+        if rec.AcceptWaveform(pcm[i:i + 8000]):
+            out.append(json.loads(rec.Result()).get("text", ""))
+    out.append(json.loads(rec.FinalResult()).get("text", ""))
+    return " ".join(x for x in out if x).strip()
+
 
 def _wasapi_auto():
     try:

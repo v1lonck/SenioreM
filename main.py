@@ -49,6 +49,7 @@ class AIBridge(QObject):
     done = Signal(str)
     answer = Signal(str)
     admin_done = Signal(bool, str)
+    mic_result = Signal(str)            # проверка микрофона: что распознано
 
 
 class Bridge(QObject):
@@ -2566,6 +2567,54 @@ class ProfileScreen(Backdrop):
         self.mic_box.setCurrentIndex(max(0, int(i)))
         self.mic_box.blockSignals(False)
 
+    def _mic_test(self):
+        h = self.win.home
+        if h.listener is None or h.model is None:
+            self.mic_test_lbl.setText("Распознавание речи ещё не загружено.")
+            return
+        self.mic_test_btn.setEnabled(False)
+        self.mic_test_lbl.setText("Говорите… (4 секунды) — например: «Сеньор, который час»")
+        QTimer.singleShot(4200, self._mic_test_done)
+
+    def _mic_test_done(self):
+        import tempfile
+        h = self.win.home
+        pcm = bytes(h.listener.recent[-16000 * 2 * 4:]) if h.listener is not None else b""
+        path = os.path.join(tempfile.gettempdir(), "seniorem_mic_test.wav")
+
+        def work():
+            from voice import mic_test
+            try:
+                text = mic_test(h.model, pcm, path)
+            except Exception as e:  # noqa: BLE001
+                text = f"(ошибка: {e})"
+            config.voice_log(f"проверка микрофона: «{text}»")
+            self.ai_bridge.mic_result.emit(text)
+        import numpy as np
+        peak = float(np.max(np.abs(np.frombuffer(pcm, dtype=np.int16)))) / 32768 if pcm else 0.0
+        self._mic_peak = peak
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mic_test_result(self, text):
+        self.mic_test_btn.setEnabled(True)
+        peak = getattr(self, "_mic_peak", 0.0)
+        if peak < 0.01:
+            msg = "Микрофон почти ничего не прислал — выберите в списке другой микрофон."
+        elif text:
+            msg = f"Распознал: «{text}». Сейчас проиграю запись — так вас слышит помощник."
+        else:
+            msg = ("Звук есть, но слов не разобрал — послушайте запись: если там шум или искажения, "
+                   "выберите другой микрофон.")
+        self.mic_test_lbl.setText(msg)
+        if peak >= 0.01:
+            try:
+                import tempfile
+                import winsound
+                winsound.PlaySound(os.path.join(tempfile.gettempdir(), "seniorem_mic_test.wav"),
+                                   winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _mic_chosen(self, _i):
         self._set("mic_device", self.mic_box.currentData() or "")
         self.win.home.restart_listener()
@@ -2618,6 +2667,16 @@ class ProfileScreen(Backdrop):
         self.mic_heard = label("Скажите что-нибудь — здесь появится, что я слышу.", 13, role="muted",
                                wrap=True)
         lay.addWidget(self.mic_heard)
+        lay.addSpacing(8)
+        trow = QHBoxLayout()
+        self.mic_test_btn = button("Проверить микрофон", "ghost", 13)
+        self.mic_test_btn.setFixedWidth(230)
+        self.mic_test_btn.clicked.connect(self._mic_test)
+        trow.addWidget(self.mic_test_btn)
+        self.mic_test_lbl = label("Запишу 4 секунды, распознаю и дам послушать, что слышит помощник.",
+                                  12, role="faint", wrap=True)
+        trow.addWidget(self.mic_test_lbl, 1)
+        lay.addLayout(trow)
         self._mic_timer = QTimer(self)
         self._mic_timer.timeout.connect(self._mic_tick)
         self._mic_timer.start(80)
@@ -2869,6 +2928,7 @@ class ProfileScreen(Backdrop):
         self.ai_bridge.progress.connect(self._ai_progress)
         self.ai_bridge.done.connect(self._ai_done)
         self.ai_bridge.answer.connect(self._ai_answer)
+        self.ai_bridge.mic_result.connect(self._mic_test_result)
         self.ai_bridge.admin_done.connect(lambda ok, m: self._admin_done(ok, m))
 
     def _choose_ai(self, key):
