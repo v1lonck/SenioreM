@@ -14,6 +14,8 @@ AppPublisher=SenioreM
 AppPublisherURL=https://github.com/v1lonck/SenioreM
 AppSupportURL=https://github.com/v1lonck/SenioreM/issues
 AppUpdatesURL=https://github.com/v1lonck/SenioreM/releases
+; пока идёт установка, SenioreM не запускается поверх (ждёт её конца)
+SetupMutex=SenioreMSetup,Global\SenioreMSetup
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany=SenioreM
 VersionInfoDescription=Установщик SenioreM — голосовой помощник для Windows
@@ -222,7 +224,12 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code);
   if CanReplaceInstalled then
-    Exit;                                  { SenioreM не запущен — ничего не ждём }
+  begin
+    { в нашей папке не запущен; но мог быть открыт из другой папки (старая установка) }
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
+         ewWaitUntilTerminated, Code);
+    Exit;
+  end;
   ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
   SaveStringToFile(ExpandConstant('{userappdata}\SenioreM\quit.flag'), '1', False);
   for I := 1 to 12 do
@@ -455,7 +462,10 @@ begin
     SaveStringToFile(StorageFile, '{"path": "' + ExpandConstant('{param:storagepath|}') + '"}', False);
   end
   else if WantSplash and not WizardSilent then
+  begin
+    KillApp;          { старая версия могла открыться и качать обновление — закрываем, чтобы не было двух окон }
     AskStorage;
+  end;
 end;
 
 { Страницы мастера не показываем вовсе — сразу установка }
