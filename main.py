@@ -3584,7 +3584,9 @@ class MainWindow(QWidget):
                     target=lambda: self._warm_ai(mode), daemon=True).start())
             else:
                 QTimer.singleShot(25000, lambda: ai.DOWNLOADS.start(mode))
-        if not asr.RECOGNIZER.available and not os.environ.get("SENIOREM_NO_DOWNLOADS"):
+        # точное распознавание: в облаке (если настроено) — тогда на компьютер ничего не грузим
+        if not asr.cloud_url() and asr.RECOGNIZER.model is None \
+                and not os.environ.get("SENIOREM_NO_DOWNLOADS"):
             QTimer.singleShot(8000, asr.DOWNLOADS.start)
         switch_page(self.stack, self.home)
         self.home.start(email, s)
