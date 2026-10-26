@@ -29,6 +29,7 @@ DEFAULTS = {
     "ai_enabled": True,
     "ai_auto_setup": False,         # ИИ уже настроен автоматически
     "ai_mode": "smart",             # smart | fast | api
+    "cloud_switched": False,        # уже перевели на облачный сервер
     "ai_api_url": "",
     "ai_api_key": "",
     "ai_api_model": "",
