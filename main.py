@@ -61,6 +61,8 @@ class Bridge(QObject):
     ai_sentence = Signal(str)           # очередная готовая фраза ответа ИИ (озвучиваем сразу)
     downloads = Signal(int)             # сколько раз скачали SenioreM
     preview = Signal(int, str)          # точные субтитры, пока человек ещё говорит
+    reroute = Signal(str, object)       # ИИ понял, какая это команда — выполняем её
+    chat_reply = Signal(str, object)    # ответ в чат (текст, картинки)
 
 
 # ================================================================== вход
@@ -828,6 +830,7 @@ class HomeScreen(Backdrop):
         self.bridge.volume.connect(self._on_volume)
         self.bridge.recognized.connect(lambda t: self.execute(t))
         self.bridge.preview.connect(self._on_preview)
+        self.bridge.reroute.connect(self._rerouted)
         self.speaker.speaking.connect(self._on_speaking)
         self.arm_timer = QTimer(self)
         self.arm_timer.setSingleShot(True)
@@ -836,6 +839,7 @@ class HomeScreen(Backdrop):
         self._continue = False
         self._voice_cmd = False
         self._confirm_pending = None      # опасная команда ждёт «да»
+        self._rerouted_flag = False
         self._finals = 0                  # сколько фраз уже распознано (для точных субтитров)
         self._partial_shown = False
         self._preview_busy = False
@@ -1422,6 +1426,10 @@ class HomeScreen(Backdrop):
         a, b = commands.normalize(text), commands.normalize(last)
         return bool(a) and (a in b or SequenceMatcher(None, a, b).ratio() > 0.55)
 
+    def _rerouted(self, cmd, sink):
+        self._rerouted_flag = True
+        self.execute(cmd, typed=True, sink=sink)
+
     def _on_so_far(self, uid, pcm):
         """Пока человек говорит — точное распознавание обновляет субтитры (раз в ~0,8 с)."""
         if self._preview_busy or not self._partial_shown or not asr.RECOGNIZER.available:
@@ -1629,6 +1637,8 @@ class HomeScreen(Backdrop):
         if intent is None:
             return
         intent["typed"] = typed
+        intent["rerouted"] = bool(getattr(self, "_rerouted_flag", False))
+        self._rerouted_flag = False
         self._hush = False
         # фраза в режиме «продолжаю слушать» без «Сеньор»: случайные слова программы не запускают
         intent["followup"] = (not typed and sink is None and getattr(self, "_followup_cmd", False))
@@ -1695,6 +1705,14 @@ class HomeScreen(Backdrop):
             elif use_ai:
                 reply = actions.try_launch(intent.get("text", "")) \
                     if intent["action"] == "unknown" and not intent.get("followup") else None
+                # свободная формулировка команды («сделай потише», «вруби что-нибудь на ютубе»):
+                # быстрая модель переводит её в понятную команду, и SenioreM её выполняет
+                if reply is None and intent["action"] == "unknown" and not intent.get("followup") \
+                        and not intent.get("rerouted"):
+                    cmd = ai.ENGINE.route_command(text, s)
+                    if cmd and commands.normalize(cmd) != commands.normalize(text):
+                        self.bridge.reroute.emit(cmd, sink)
+                        return
                 if reply is None:
                     try:
                         ctx = live.build_context(text, T.APPEARANCE)
@@ -1706,7 +1724,9 @@ class HomeScreen(Backdrop):
                             sent.append(x)
                             self.bridge.ai_sentence.emit(x)
                         reply = ai.ENGINE.ask(text, s, ctx,
-                                              on_sentence=on_sentence if speak_now else None)
+                                              on_sentence=on_sentence if speak_now else None,
+                                              prefer=(s["chat_ai"] or "auto") if sink is not None else "auto",
+                                              chat=sink is not None)
                         ui = "ai_streamed" if sent else "ai"
                     except ai.AIError as e:
                         reply = str(e)
@@ -2399,6 +2419,39 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(10)
         self.ai_answer = label("", 14, role="muted", wrap=True)
         lay.addWidget(self.ai_answer)
+        lay.addSpacing(24)
+        # ---- расход токенов облачного ИИ и лимиты
+        lay.addWidget(label("Расход токенов", 17, QFont.DemiBold))
+        lay.addSpacing(4)
+        self.ai_usage = label("", 13, role="muted", wrap=True)
+        lay.addWidget(self.ai_usage)
+        lay.addSpacing(10)
+        self.limit_buttons = {}
+        for key, title, opts in (
+                ("ai_day_limit", "В день", ((500_000, "500 тыс."), (1_500_000, "1,5 млн"),
+                                            (5_000_000, "5 млн"), (10 ** 12, "без лимита"))),
+                ("ai_month_limit", "В месяц", ((10_000_000, "10 млн"), (20_000_000, "20 млн"),
+                                               (50_000_000, "50 млн"), (10 ** 12, "без лимита")))):
+            r = QHBoxLayout()
+            r.setSpacing(8)
+            t = label(title, 13, role="muted")
+            t.setFixedWidth(80)
+            r.addWidget(t)
+            grp = QButtonGroup(self)
+            for val, txt in opts:
+                b = button(txt, "ghost", 13, QFont.Normal)
+                b.setCheckable(True)
+                b.setFixedWidth(130)
+                b.clicked.connect(lambda _=False, k=key, v=val: (self._set(k, v), self._refresh_usage()))
+                grp.addButton(b)
+                r.addWidget(b)
+                self.limit_buttons[(key, val)] = b
+            r.addStretch(1)
+            lay.addLayout(r)
+            lay.addSpacing(6)
+        lay.addWidget(label("Когда лимит исчерпан, отвечает ИИ на компьютере (если скачан). "
+                            "250 млн токенов при лимите 20 млн в месяц хватит примерно на год.",
+                            12, role="faint", wrap=True))
         lay.addStretch(1)
 
         self.ai_bridge = AIBridge()
@@ -2411,9 +2464,22 @@ class ProfileScreen(Backdrop):
         self._set("ai_mode", key)
         self._refresh_ai()
 
+    def _refresh_usage(self):
+        if self.settings is None:
+            return
+        d = ai.usage_get()
+        day, month = ai.limits(self.settings)
+        lim = lambda v: "без лимита" if v >= 10 ** 11 else ai.fmt_tokens(v)  # noqa: E731
+        self.ai_usage.setText(f"Сегодня: {ai.fmt_tokens(d['day_tokens'])} из {lim(day)}   ·   "
+                              f"за месяц: {ai.fmt_tokens(d['month_tokens'])} из {lim(month)}")
+        for (k, v), b in self.limit_buttons.items():
+            cur = int(self.settings[k] or (ai.DAY_LIMIT if k == "ai_day_limit" else ai.MONTH_LIMIT))
+            b.setChecked(cur == v)
+
     def _refresh_ai(self):
         if self.settings is None:
             return
+        self._refresh_usage()
         mode = self.settings["ai_mode"] or "smart"
         for k, c in self.ai_cards.items():
             c.setProperty("selected", "true" if k == mode else "false")
@@ -3529,6 +3595,9 @@ class MainWindow(QWidget):
         self.chat.back_requested.connect(self._back_home)
         self.chat.send_requested.connect(
             lambda txt: self.home.execute(txt, typed=True, sink=self.chat.receive))
+        self.chat.send_images.connect(self._chat_images)
+        self.chat.draw_requested.connect(self._chat_draw)
+        self.home.bridge.chat_reply.connect(lambda t, im: self.chat.receive(t, im))
         for w in (self.auth, self.home, self.profile, self.chat):
             self.stack.addWidget(w)
 
@@ -3688,6 +3757,33 @@ class MainWindow(QWidget):
         if self.settings is not None:
             self.settings.set("companion", "none")
         self.apply_companion()
+
+    def _chat_images(self, text, images):
+        """Сообщение с фото: ИИ смотрит на картинки (или читает текст на них)."""
+        s = self.settings
+
+        def work():
+            try:
+                reply = ai.ENGINE.ask(text, s, images=images, prefer=s["chat_ai"] or "auto", chat=True)
+            except ai.AIError as e:
+                reply = str(e)
+            except Exception as e:  # noqa: BLE001
+                reply = f"Не получилось посмотреть фото: {e}"
+            self.home.bridge.chat_reply.emit(reply, None)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _chat_draw(self, prompt):
+        """«Нарисуй …» — картинка по описанию прямо в чат."""
+        s = self.settings
+
+        def work():
+            import imagegen
+            try:
+                path = imagegen.generate(prompt, s)
+                self.home.bridge.chat_reply.emit(f"Готово: {prompt}", [path])
+            except Exception as e:  # noqa: BLE001
+                self.home.bridge.chat_reply.emit(str(e), None)
+        threading.Thread(target=work, daemon=True).start()
 
     def open_chat(self):
         if self.settings is None:

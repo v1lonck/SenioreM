@@ -538,11 +538,13 @@ param([string]$img, [int]$x, [int]$y, [int]$w, [int]$h)
 Add-Type -Name D -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
 [W.D]::SetProcessDPIAware() | Out-Null
 Add-Type -AssemblyName System.Drawing
-$bmp = New-Object System.Drawing.Bitmap([int]$w, [int]$h)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
-$bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $bmp.Dispose()
+if ($w -gt 0) {
+  $bmp = New-Object System.Drawing.Bitmap([int]$w, [int]$h)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
+  $bmp.Save($img, [System.Drawing.Imaging.ImageFormat]::Png)
+  $g.Dispose(); $bmp.Dispose()
+}
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
@@ -601,6 +603,32 @@ def ocr_words(left, top, width, height):
         w["x"] += left
         w["y"] += top
     return data
+
+
+def ocr_file(path):
+    """Текст на картинке (файл): строки по порядку."""
+    import shutil
+    d = tempfile.gettempdir()
+    script = os.path.join(d, "seniorem_ocr.ps1")
+    with open(script, "w", encoding="utf-8-sig") as f:
+        f.write(OCR_PS)
+    img = os.path.join(d, "seniorem_ocr_file" + os.path.splitext(path)[1].lower())
+    shutil.copyfile(path, img)                 # латинский путь — WinRT не любит необычные пути
+    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                        img, "0", "0", "0", "0"],
+                       capture_output=True, timeout=40, creationflags=NO_WINDOW)
+    out = r.stdout.decode("utf-8", "ignore").strip()
+    if not out:
+        return ""
+    data = json.loads(out)
+    if isinstance(data, dict):
+        data = [data]
+    lines = []
+    for w in data:
+        ln = (w.get("line") or "").strip()
+        if ln and ln not in lines:
+            lines.append(ln)
+    return "\n".join(lines)
 
 
 def find_ocr(rect, text, min_score=0.72, words=None):
