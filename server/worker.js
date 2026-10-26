@@ -10,7 +10,8 @@
 //   Variables and Secrets:
 //     LLM_KEY   (Secret) — ключ посредника (VseGPT, ProxyAPI…) или DeepSeek/OpenRouter/Groq
 //     LLM_URL   (Text)   — адрес …/chat/completions этого сервиса (см. его документацию)
-//     LLM_MODEL (Text)   — модель, например deepseek-chat (как называет её сервис)
+//     LLM_MODEL (Text, необязательно) — модель; если не указать, сервер сам выберет
+//               быструю (flash) для обычных вопросов и умную (pro) для «расскажи подробно»
 //     APP_TOKEN (Text, необязательно) — пароль программы, по умолчанию "seniorem-app"
 
 const FREE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -32,6 +33,25 @@ function openaiReply(text, stream) {
   return new Response(`data: ${chunk}\n\ndata: [DONE]\n\n`, {
     headers: { "Content-Type": "text/event-stream; charset=utf-8" },
   });
+}
+
+// модель не указана — берём из списка сервиса: быстрая (flash) обычно, умная (pro) для длинных ответов
+let MODELS_CACHE = null;
+async function pickModel(env, smart) {
+  if (env.LLM_MODEL) return env.LLM_MODEL;
+  if (!MODELS_CACHE) {
+    try {
+      const r = await fetch(env.LLM_URL.replace(/\/chat\/completions$/, "/models"),
+                            { headers: { Authorization: `Bearer ${env.LLM_KEY}` } });
+      MODELS_CACHE = ((await r.json()).data || []).map((m) => m.id).filter(Boolean);
+    } catch (e) { MODELS_CACHE = []; }
+  }
+  const words = smart ? ["v4-pro", "pro", "reasoner", "v4", "chat"] : ["v4-flash", "flash", "chat", "mini", "v4"];
+  for (const w of words) {
+    const hit = MODELS_CACHE.find((id) => id.toLowerCase().includes(w) && !/embed|whisper|tts/i.test(id));
+    if (hit) return hit;
+  }
+  return MODELS_CACHE[0] || "deepseek-chat";
 }
 
 async function freeAnswer(env, out, light) {
@@ -83,7 +103,7 @@ export default {
         const r = await fetch(env.LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.LLM_KEY}` },
-          body: JSON.stringify({ ...out, model: env.LLM_MODEL || "deepseek-chat" }),
+          body: JSON.stringify({ ...out, model: await pickModel(env, out.max_tokens > 300) }),
         });
         if (r.ok) {
           return new Response(r.body, {
