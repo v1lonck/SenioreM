@@ -28,6 +28,8 @@ SITES = [
     (("ютуб", "музык"), "https://music.youtube.com", False),
     (("ютуб",), "https://www.youtube.com", False),
     (("ютюб",), "https://www.youtube.com", False),
+    (("юту",), "https://www.youtube.com", False),
+    (("youtube",), "https://www.youtube.com", False),
     (("рутуб",), "https://rutube.ru", False),
     (("вк", "музык"), "https://vk.com/audio", False),
     (("вконтакт",), "https://vk.com", False),

@@ -25,6 +25,17 @@ MODELS = {
     "fast": ("Qwen2.5-1.5B-Instruct-Q4_K_M.gguf", 990_000_000,
              "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/"),
 }
+CLOUD_TOKEN = "seniorem-app"   # не секрет: просто чтобы облачный адрес не дёргали посторонние боты
+
+
+def cloud_url():
+    """Адрес облачного ИИ (Cloudflare Worker), если он настроен в сборке."""
+    u = (config.load_config().get("ai_proxy_url") or "").strip().rstrip("/")
+    if u and not u.endswith("/chat/completions"):
+        u += "/v1/chat/completions"
+    return u
+
+
 MEMORY_TURNS = 8          # сколько последних реплик помнит
 MEMORY_CHARS = 600        # длинные реплики в памяти укорачиваем — меньше работы ИИ на каждый вопрос
 MEMORY_IDLE = 15 * 60     # через 15 минут тишины начинает разговор заново
@@ -159,6 +170,8 @@ def _threads():
 
 
 def local_ready(kind) -> bool:
+    if kind not in MODELS:
+        return False
     m = model_file(kind)
     return server_exe() is not None and m.is_file() and m.stat().st_size > 100_000_000
 
@@ -430,7 +443,29 @@ class AI:
             payload = {"messages": msgs, "temperature": 0.4, "top_p": 0.9,
                        "max_tokens": 420 if long_ask else 220, "stream": False, "cache_prompt": True}
             try:
-                if mode == "api":
+                if mode == "cloud" and not cloud_url():
+                    mode = recommended_kind()          # облако не настроено — работаем на компьютере
+                if mode == "cloud":
+                    payload.pop("cache_prompt", None)
+                    try:
+                        if on_sentence is not None:
+                            reply = self._ask_stream(cloud_url(), payload, on_sentence, CLOUD_TOKEN)
+                            data = None
+                        else:
+                            data = _post(cloud_url(), payload, CLOUD_TOKEN, 40)
+                    except Exception:  # noqa: BLE001 — нет интернета / облако занято: ИИ на компьютере
+                        kind = recommended_kind()
+                        if not local_ready(kind):
+                            raise
+                        payload["cache_prompt"] = True
+                        self.start_local(kind)
+                        url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
+                        data = None
+                        if on_sentence is not None:
+                            reply = self._ask_stream(url, payload, on_sentence, self.key)
+                        else:
+                            data = _post(url, payload, self.key)
+                elif mode == "api":
                     base = (settings["ai_api_url"] or "").strip().rstrip("/")
                     if not base:
                         raise AIError("Укажите адрес API в профиле → «ИИ-собеседник».")
