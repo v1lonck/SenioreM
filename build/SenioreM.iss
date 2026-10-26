@@ -413,10 +413,6 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   { при обычной установке — сначала спрашиваем, куда скачивать речь, голос и ИИ }
-  if ExpandConstant('{param:storagepath|}') <> '' then
-    SaveStringToFile(StorageFile, '{"path": "' + ExpandConstant('{param:storagepath|}') + '"}', False)
-  else if WantSplash and not WizardSilent then
-    AskStorage;
   { наше окно с прогрессом — сразу, ещё до закрытия старой версии }
   if WantSplash and (Splash = nil) then
     ShowInstallSplash;
@@ -452,6 +448,14 @@ begin
     WizardForm.Left := -32000;
     WizardForm.Top := -32000;
   end;
+  { папку для загрузок спрашиваем до того, как появится что-либо ещё }
+  if ExpandConstant('{param:storagepath|}') <> '' then
+  begin
+    ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
+    SaveStringToFile(StorageFile, '{"path": "' + ExpandConstant('{param:storagepath|}') + '"}', False);
+  end
+  else if WantSplash and not WizardSilent then
+    AskStorage;
 end;
 
 { Страницы мастера не показываем вовсе — сразу установка }
@@ -464,6 +468,12 @@ end;
 { Если мастер всё-таки открылся — не ждём нажатия «Установить», ставим сразу }
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  { Windows может вернуть окно мастера на экран — снова убираем его }
+  if ExpandConstant('{param:showwizard|0}') = '0' then
+  begin
+    WizardForm.Left := -32000;
+    WizardForm.Top := -32000;
+  end;
   { «нажимаем» кнопку «Установить» сообщением окну (BM_CLICK) — сработает, как только
     страница покажется; сам мастер вынесен за пределы экрана, его не видно }
   if CurPageID = wpReady then
