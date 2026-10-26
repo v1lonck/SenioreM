@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+# сборки одной ветки идут по очереди — две версии не получат один и тот же номер
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
