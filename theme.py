@@ -126,6 +126,10 @@ def on_theme_change(callback):
     _listeners.append(callback)
 
 
+QSS_KEYS = {"accent", "background", "glass", "panels", "hover"}
+BACKDROP_KEYS = {"accent", "background", "glass", "custom_bg", "custom_dim", "eco"}
+
+
 def set_appearance(app=None, **changes):
     """Меняет оформление и сразу применяет его ко всей программе."""
     for k, v in changes.items():
@@ -135,13 +139,15 @@ def set_appearance(app=None, **changes):
             APPEARANCE[k] = v
     _recompute()
     save_appearance()
-    if app is not None:
+    keys = set(changes)
+    # перестраиваем стиль всей программы только когда это нужно (иначе переключение «лагает»)
+    if app is not None and keys & QSS_KEYS:
         app.setStyleSheet(build_qss())
         _apply_palette(app)
+    if app is not None and keys & BACKDROP_KEYS:
         for w in app.allWidgets():
             if isinstance(w, Backdrop):
                 w.invalidate()
-            w.update()
     for cb in list(_listeners):
         try:
             cb()
@@ -816,12 +822,24 @@ def hover_qss(A):
            'QPushButton[role="nav"]:hover')
     opt = 'QFrame[role="option"]:hover'
     if st == "glass":
-        g = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.20), "
-             "stop:0.48 rgba(255,255,255,0.07), stop:0.52 rgba(255,255,255,0.03), stop:1 rgba(255,255,255,0.10))")
-        return (f"{sel} {{ background: {g}; color: #FFFFFF; border: 1px solid rgba(255,255,255,0.32);"
-                f" border-top: 1px solid rgba(255,255,255,0.62); }}\n"
-                f"{opt} {{ background: {g}; border: 1px solid rgba(255,255,255,0.32);"
-                f" border-top: 1px solid rgba(255,255,255,0.6); }}\n"
+        # «жидкое стекло» как в iOS: полупрозрачная матовая кнопка, светлая кромка сверху,
+        # при наведении — светлее, при нажатии — «вдавливается»
+        rest = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.09), "
+                "stop:1 rgba(255,255,255,0.03))")
+        hov = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.20), "
+               "stop:0.5 rgba(255,255,255,0.10), stop:1 rgba(255,255,255,0.07))")
+        base = 'QPushButton[role="ghost"], QPushButton[role="secondary"]'
+        return (f"{base} {{ background: {rest}; border: 1px solid rgba(255,255,255,0.13);"
+                f" border-top: 1px solid rgba(255,255,255,0.26); border-radius: 12px; }}\n"
+                f"{sel} {{ background: {hov}; color: #FFFFFF; border: 1px solid rgba(255,255,255,0.26);"
+                f" border-top: 1px solid rgba(255,255,255,0.55); border-bottom: 1px solid rgba(255,255,255,0.12); }}\n"
+                f'QPushButton[role="ghost"]:pressed, QPushButton[role="secondary"]:pressed {{ background: '
+                f'rgba(255,255,255,0.22); border-top: 1px solid rgba(255,255,255,0.35); }}\n'
+                f'QPushButton[role="ghost"]:checked {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, '
+                f'stop:0 {rgba(A, 0.34)}, stop:1 {rgba(A, 0.18)}); border: 1px solid {rgba(A, 0.7)};'
+                f' border-top: 1px solid rgba(255,255,255,0.45); color: #FFFFFF; }}\n'
+                f"{opt} {{ background: {hov}; border: 1px solid rgba(255,255,255,0.24);"
+                f" border-top: 1px solid rgba(255,255,255,0.5); }}\n"
                 f'QPushButton[role="primary"]:hover {{ border-top: 1px solid rgba(255,255,255,0.75); }}\n')
     if st == "glow":
         return (f"{sel} {{ background: {rgba(A, 0.12)}; color: #FFFFFF; border: 1px solid {A}; }}\n"
@@ -873,9 +891,10 @@ class HoverFX:
     def _go(w, on):
         from PySide6.QtCore import QEasingCurve, QVariantAnimation
         from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        from PySide6.QtWidgets import QPushButton
         st = hover_style()
-        if st == "classic" or not w.isEnabled():
-            return
+        if st in ("classic", "neon", "fill") or not w.isEnabled() or not isinstance(w, QPushButton):
+            return                         # у карточек и простых стилей — только плавная подсветка цветом
         eff = w.graphicsEffect()
         if on and not isinstance(eff, QGraphicsDropShadowEffect):
             if eff is not None:
@@ -905,44 +924,21 @@ class HoverFX:
                 eff.setBlurRadius(22 * v)
             else:
                 c = QColor("#FFFFFF" if st == "glass" else ACCENT)
-                c.setAlpha(int((110 if st == "glass" else 190) * v))
-                eff.setOffset(0, 0)
-                eff.setBlurRadius((26 if st == "glass" else 34) * v)
+                c.setAlpha(int((70 if st == "glass" else 190) * v))
+                eff.setOffset(0, 2 * v if st == "glass" else 0)
+                eff.setBlurRadius((22 if st == "glass" else 34) * v)
             eff.setColor(c)
-            if st == "glass" and on:
-                HoverFX._shine(w, v)
 
         def done(w=w, on=on):
             if not on:
                 try:
                     w.setGraphicsEffect(None)
-                    if getattr(w, "_shine_on", False):
-                        w._shine_on = False
-                        w.setStyleSheet(getattr(w, "_own_qss", ""))
                 except RuntimeError:
                     pass
         anim.valueChanged.connect(step)
         anim.finished.connect(done)
         w._hover_anim = anim
         anim.start()
-
-    @staticmethod
-    def _shine(w, v):
-        """Блик «жидкого стекла» пробегает слева направо."""
-        from PySide6.QtWidgets import QPushButton
-        if not isinstance(w, QPushButton) or w.property("role") not in ("ghost", "secondary", "nav"):
-            return
-        if not getattr(w, "_shine_on", False):
-            w._own_qss = w.styleSheet()
-            w._shine_on = True
-        s = -0.2 + 1.4 * v
-        a, b = max(0.0, s - 0.18), min(1.0, s + 0.18)
-        mid = max(0.0, min(1.0, s))
-        w.setStyleSheet(
-            w._own_qss + "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0.4, "
-            f"stop:0 rgba(255,255,255,0.08), stop:{a:.3f} rgba(255,255,255,0.08), "
-            f"stop:{mid:.3f} rgba(255,255,255,0.30), stop:{b:.3f} rgba(255,255,255,0.08), "
-            "stop:1 rgba(255,255,255,0.10)); }")
 
 
 class Clickable(QFrame):

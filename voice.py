@@ -36,6 +36,7 @@ class Listener(QThread):
     ready = Signal()
     stop_heard = Signal()                 # пока помощник говорил, сказали «стоп»
     so_far = Signal(int, object)          # № фразы и звук «на данный момент» — для точных субтитров
+    silent = Signal()                     # микрофон присылает только тишину (выключен / нет доступа)
 
     def __init__(self, model, parent=None):
         """model — уже загруженная vosk.Model (готовится в окне загрузки)."""
@@ -126,12 +127,19 @@ class Listener(QThread):
             except queue.Full:
                 pass
 
+        def open_stream():
+            s = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
+                                  channels=1, callback=callback)
+            s.start()
+            return s
+
         try:
-            stream = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
-                                       channels=1, callback=callback)
-        except Exception:  # noqa: BLE001
+            stream = open_stream()
+        except Exception as e:  # noqa: BLE001
+            _vlog(f"микрофон не открылся: {e}")
             self.failed.emit("Микрофон не найден. Подключите микрофон и перезапустите программу.")
             return
+        _vlog("микрофон слушает")
 
         last_partial = ""
         utter = bytearray()
@@ -139,75 +147,123 @@ class Listener(QThread):
         last_preview = 0.0
         gain = 1.0
         floor = 0.004            # оценка уровня тишины/шума
-        with stream:
-            self.ready.emit()
+        zero_t, warned_zero = 0.0, False
+        self.ready.emit()
+        last_data = time.monotonic()
+        try:
             while self._running:
                 try:
                     data = q.get(timeout=0.3)
                 except queue.Empty:
-                    continue
-                if self._paused:
-                    utter.clear()
-                    try:
-                        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                        self._check_stop(np.clip(samples * max(1.0, gain), -32768, 32767)
-                                         .astype(np.int16).tobytes())
-                    except Exception:  # noqa: BLE001
-                        pass
-                    continue
-                if self._reset:
-                    utter.clear()
-                    rec.Reset()
-                    self._reset = False
-                    last_partial = ""
-                    while not q.empty():
+                    # звук перестал приходить (сменили микрофон/наушники, игра забрала звук,
+                    # драйвер перезапустился) — переподключаемся сами, иначе помощник «оглохнет»
+                    if time.monotonic() - last_data > 3.0:
+                        last_data = time.monotonic()
+                        _vlog("звук с микрофона не приходит — переподключаю микрофон")
                         try:
-                            q.get_nowait()
-                        except queue.Empty:
-                            break
+                            stream.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            sd._terminate()          # заново находим устройства (новый микрофон)
+                            sd._initialize()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            stream = open_stream()
+                            _vlog("микрофон снова слушает")
+                        except Exception as e:  # noqa: BLE001
+                            _vlog(f"микрофон пока недоступен: {e}")
                     continue
+                last_data = time.monotonic()
+                try:
+                    if self._paused:
+                        utter.clear()
+                        try:
+                            samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                            self._check_stop(np.clip(samples * max(1.0, gain), -32768, 32767)
+                                             .astype(np.int16).tobytes())
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
+                    if self._reset:
+                        utter.clear()
+                        rec.Reset()
+                        self._reset = False
+                        last_partial = ""
+                        while not q.empty():
+                            try:
+                                q.get_nowait()
+                            except queue.Empty:
+                                break
+                        continue
 
-                # ---- автоусиление: тихая речь и шёпот подтягиваются до нормальной громкости
-                samples = np.frombuffer(data, dtype=np.int16)
-                if not samples.size:
-                    continue
-                f = samples.astype(np.float32)
-                rms = float(np.sqrt(np.mean(f * f))) / 32768.0
-                floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
-                floor = max(0.0005, min(floor, 0.05))
-                max_gain = MAX_GAIN
-                if rms > floor * 1.6:                      # похоже на голос, а не тишину
-                    want = max(1.0, min(max_gain, 0.08 / max(rms, 1e-5)))
-                else:
-                    want = max(1.0, gain * 0.98)           # в тишине шум не раздуваем
-                gain += (want - gain) * (0.5 if want < gain else 0.12)
-                if gain > 1.05:
-                    data = np.clip(f * gain, -32768, 32767).astype(np.int16).tobytes()
-                    rms *= gain
-                self.level.emit(min(1.0, rms * 7))
-                utter += data
-                if len(utter) > MAX_UTTERANCE:
-                    del utter[: len(utter) - MAX_UTTERANCE]
+                    # ---- автоусиление: тихая речь и шёпот подтягиваются до нормальной громкости
+                    samples = np.frombuffer(data, dtype=np.int16)
+                    if not samples.size:
+                        continue
+                    f = samples.astype(np.float32)
+                    rms = float(np.sqrt(np.mean(f * f))) / 32768.0
+                    # полная тишина долго — микрофон выключен или Windows не даёт к нему доступ
+                    if rms < 1e-6:
+                        zero_t = zero_t or time.monotonic()
+                        if not warned_zero and time.monotonic() - zero_t > 8:
+                            warned_zero = True
+                            _vlog("микрофон присылает абсолютную тишину")
+                            self.silent.emit()
+                    else:
+                        zero_t = 0.0
+                    floor = floor * 0.9 + rms * 0.1 if rms < floor else floor * 1.002
+                    floor = max(0.0005, min(floor, 0.05))
+                    max_gain = MAX_GAIN
+                    if rms > floor * 1.6:                      # похоже на голос, а не тишину
+                        want = max(1.0, min(max_gain, 0.08 / max(rms, 1e-5)))
+                    else:
+                        want = max(1.0, gain * 0.98)           # в тишине шум не раздуваем
+                    gain += (want - gain) * (0.5 if want < gain else 0.12)
+                    if gain > 1.05:
+                        data = np.clip(f * gain, -32768, 32767).astype(np.int16).tobytes()
+                        rms *= gain
+                    self.level.emit(min(1.0, rms * 7))
+                    utter += data
+                    if len(utter) > MAX_UTTERANCE:
+                        del utter[: len(utter) - MAX_UTTERANCE]
 
-                if rec.AcceptWaveform(data):
-                    res = json.loads(rec.Result())
-                    text = res.get("text", "").strip()
-                    confs = [float(w.get("conf", 1.0)) for w in res.get("result", [])]
-                    last_partial = ""
-                    if text:
-                        self.final.emit(text, confs, bytes(utter))
-                        utt_id += 1
-                    utter.clear()
-                else:
-                    p = json.loads(rec.PartialResult()).get("partial", "").strip()
-                    if p != last_partial:
-                        last_partial = p
-                        self.partial.emit(p)
-                    # раз в 0,8 с отдаём звук фразы — точное распознавание обновит субтитры
-                    now = time.monotonic()
-                    if p and now - last_preview > 0.8 and len(utter) > 16000 * 2 * 0.8:
-                        last_preview = now
-                        self.so_far.emit(utt_id, bytes(utter))
+                    if rec.AcceptWaveform(data):
+                        res = json.loads(rec.Result())
+                        text = res.get("text", "").strip()
+                        confs = [float(w.get("conf", 1.0)) for w in res.get("result", [])]
+                        last_partial = ""
+                        if text:
+                            self.final.emit(text, confs, bytes(utter))
+                            utt_id += 1
+                        utter.clear()
+                    else:
+                        p = json.loads(rec.PartialResult()).get("partial", "").strip()
+                        if p != last_partial:
+                            last_partial = p
+                            self.partial.emit(p)
+                        # раз в 0,8 с отдаём звук фразы — точное распознавание обновит субтитры
+                        now = time.monotonic()
+                        if p and now - last_preview > 0.8 and len(utter) > 16000 * 2 * 0.8:
+                            last_preview = now
+                            self.so_far.emit(utt_id, bytes(utter))
+
+                except Exception:  # noqa: BLE001 — одна ошибка не должна «оглушить» помощника
+                    import traceback
+                    _vlog("ошибка распознавания: " + traceback.format_exc().strip().splitlines()[-1])
+        finally:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+def _vlog(text):
+    try:
+        import config
+        config.voice_log(text)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _log(text):

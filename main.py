@@ -1347,6 +1347,7 @@ class HomeScreen(Backdrop):
             self.listener.ready.connect(self._on_ready)
             self.listener.stop_heard.connect(self._on_stop_heard)
             self.listener.so_far.connect(self._on_so_far)
+            self.listener.silent.connect(self._on_mic_silent)
             self.listener.set_stop_words((settings["stop_words"] or "стоп").split(","))
             self.listener.start()
         self._rest_state()
@@ -1488,6 +1489,11 @@ class HomeScreen(Backdrop):
     def _on_ready(self):
         self.mic = "ok"
         self._rest_state()
+
+    def _on_mic_silent(self):
+        self.reply.setText("Микрофон присылает полную тишину — я вас не слышу. Проверьте: «Параметры Windows "
+                           "→ Конфиденциальность → Микрофон» — доступ для приложений включён; в «Параметры → "
+                           "Система → Звук» выбран нужный микрофон и он не выключен.")
 
     def _on_failed(self, msg):
         config.voice_log(f"микрофон/распознавание: {msg}")
@@ -1668,7 +1674,8 @@ class HomeScreen(Backdrop):
                     "brightness_set", "brightness_delta", "brightness_get", "greet", "thanks", "help",
                     "yt_key", "press_key", "mouse_click", "scenario", "vpn", "vpn_off",
                     "startup_list", "sysinfo", "settings_page", "timer_add", "timer_cancel",
-                    "timer_left", "timer_alarm_stop", "timer_snooze", "game_play", "game_accept"}
+                    "timer_left", "timer_alarm_stop", "timer_snooze", "game_play", "game_accept",
+                    "game_move"}
 
     def _quick_intent(self, text):
         t = commands.fix_text(text)
@@ -1835,6 +1842,10 @@ class HomeScreen(Backdrop):
             self._on_action_done(self._timer_action(intent), "")
             return
         if intent["action"] == "stop":
+            try:
+                control.release_all()                 # в игре — сразу отпускаем все клавиши
+            except Exception:  # noqa: BLE001
+                pass
             self._hush = True
             timers.manager().stop_alarm()
             self.speaker.interrupt()
@@ -1857,7 +1868,7 @@ class HomeScreen(Backdrop):
                 use_ai = False     # пока ИИ скачивается — ответ по поиску в интернете
 
         defer = self._defer_launch if (self._voice_cmd and self.speaker.enabled) else None
-        if intent["action"] in ("game_play", "game_accept") and self._voice_cmd and s is not None:
+        if intent["action"] in ("game_play", "game_accept", "game_move") and self._voice_cmd and s is not None:
             addr = (s["address"] or "").strip()          # в игре — сразу короткое «Слушаю»
             self._last_spoken = f"Слушаю{', ' + addr if addr else ''}."
             self.speaker.say(self._last_spoken, force=True)
@@ -2817,6 +2828,45 @@ class ProfileScreen(Backdrop):
                                        "можно поменять каждую часть по отдельности. Всё применяется "
                                        "сразу.")
 
+        # разделы оформления — вкладками, чтобы не листать длинную страницу
+        from PySide6.QtWidgets import QStackedWidget as _QSW
+        tabs_row = QHBoxLayout()
+        tabs_row.setSpacing(8)
+        tab_grp = QButtonGroup(self)
+        self.look_stack = _QSW()
+        root_lay = lay
+        root_lay.addLayout(tabs_row)
+        root_lay.addSpacing(22)
+        root_lay.addWidget(self.look_stack)
+        root_lay.addStretch(1)
+        pages = []
+
+        def show_page(i):
+            from PySide6.QtWidgets import QSizePolicy as _SP
+            for k, w in enumerate(pages):
+                w.setSizePolicy(_SP.Preferred, _SP.Preferred if k == i else _SP.Ignored)
+            self.look_stack.setCurrentIndex(i)
+            self.look_stack.adjustSize()
+            T.fade_in(pages[i], 160)
+
+        def page(title):
+            if pages:
+                pages[-1].layout().addStretch(1)
+            w = QWidget()
+            pl = QVBoxLayout(w)
+            pl.setContentsMargins(0, 0, 0, 0)
+            pl.setSpacing(0)
+            idx = len(pages)
+            pages.append(w)
+            self.look_stack.addWidget(w)
+            b = button(title, "ghost", 14, QFont.DemiBold)
+            b.setCheckable(True)
+            b.setChecked(idx == 0)
+            b.clicked.connect(lambda _=False, i=idx: show_page(i))
+            tab_grp.addButton(b)
+            tabs_row.addWidget(b)
+            return pl
+
         def grid(cols=3):
             g = QGridLayout()
             g.setHorizontalSpacing(14)
@@ -2825,6 +2875,7 @@ class ProfileScreen(Backdrop):
             return g
 
         # ---- темы: всё сразу (цвет + фон + круг)
+        lay = page("Темы и фон")
         self._caption(lay, "Готовые темы — фон, цвет и круг одним нажатием")
         tg = grid()
         self.theme_cards = []
@@ -2890,6 +2941,7 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(30)
 
         # ---- круг
+        lay = page("Круг и цвет")
         self._caption(lay, "Круг в центре")
         og = grid()
         self.orb_cards = {}
@@ -2933,6 +2985,7 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(30)
 
         # ---- шрифт всех надписей
+        lay = page("Шрифт")
         self._caption(lay, "Шрифт — меняет все надписи в программе")
         fg = grid()
         self.font_cards = {}
@@ -2963,6 +3016,7 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(30)
 
         # ---- кнопки при наведении
+        lay = page("Кнопки и звуки")
         self._caption(lay, "Кнопки при наведении — наведите на вариант, чтобы увидеть")
         hg = grid()
         self.hover_buttons = {}
@@ -3014,6 +3068,7 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(30)
 
         # ---- главный экран: часы и виджеты
+        lay = page("Главный экран")
         self._caption(lay, "Главный экран")
         crow = QHBoxLayout()
         crow.setSpacing(10)
@@ -3068,6 +3123,8 @@ class ProfileScreen(Backdrop):
                                       None)
         self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         lay.addStretch(1)
+        tabs_row.addStretch(1)
+        show_page(0)
 
     def _choose_sys(self, key):
         self._set_look(sys_style=key)
@@ -3120,8 +3177,12 @@ class ProfileScreen(Backdrop):
             c.set_selected(k == orb)
         self.t_eco.setChecked(bool(a.get("eco")))
         bg = T.bg_style()
+        tkey = (acc, a.get("custom_bg"), a.get("custom_dim"))
+        redraw = tkey != getattr(self, "_thumb_key", None)    # картинки фонов — только при смене цвета
+        self._thumb_key = tkey
         for k, c in self.bg_cards.items():
-            c.set_pixmap(backgrounds.thumbnail(k, 464, 264))
+            if redraw:
+                c.set_pixmap(backgrounds.thumbnail(k, 464, 264))
             c.set_selected(k == bg)
         for c, tacc, tbg, torb in self.theme_cards:
             c.set_selected(tacc.lower() == acc and tbg == bg and torb == orb)
@@ -3139,7 +3200,8 @@ class ProfileScreen(Backdrop):
         if self._loading:
             return
         T.set_appearance(QApplication.instance(), **changes)
-        self.win.home.apply_widgets()
+        if set(changes) & {"widgets", "clock_style", "city", "city_lat", "city_lon"}:
+            self.win.home.apply_widgets()
         self._refresh_look()
 
     def _apply_theme(self, accent, bg, clock, orb):
@@ -4022,6 +4084,7 @@ class MainWindow(QWidget):
             if s["ai_mode"] != "api":
                 # облачный ИИ (если настроен) — сразу умный и ничего не нужно скачивать
                 s.set("ai_mode", "cloud" if ai.cloud_url() else ai.recommended_kind())
+        control.AI_PICK = lambda req, opts: ai.pick_option(req, opts, self.settings)
         if ai.cloud_url():                    # лимиты облака (их задаёт владелец на сервере)
             threading.Thread(target=lambda: ai.server_info(True), daemon=True).start()
         if ai.cloud_url() and not s["cloud_switched"]:
