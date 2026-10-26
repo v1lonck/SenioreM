@@ -69,7 +69,7 @@ def cloud_url():
     return u
 
 
-MEMORY_TURNS = 8          # сколько последних реплик помнит
+MEMORY_TURNS = 6          # сколько последних реплик помнит (меньше — дешевле и быстрее)
 MEMORY_CHARS = 600        # длинные реплики в памяти укорачиваем — меньше работы ИИ на каждый вопрос
 MEMORY_IDLE = 15 * 60     # через 15 минут тишины начинает разговор заново
 
@@ -453,79 +453,62 @@ class AI:
             on_sentence(tail)
         return clean_reply(full)
 
-    def ask(self, text, settings, context="", on_sentence=None):
+    def ask(self, text, settings, context="", on_sentence=None, images=None, prefer="auto",
+            chat=False):
         """-> ответ строкой. settings — профиль; context — свежие данные из интернета.
-        on_sentence(фраза) — вызывается по мере готовности каждой фразы (чтобы сразу озвучивать)."""
+        on_sentence(фраза) — вызывается по мере готовности каждой фразы (чтобы сразу озвучивать).
+        images — пути к картинкам (ИИ их «видит», если умеет; иначе — распознанный на них текст).
+        prefer — auto / fast / smart / local. chat — ответ в чат (можно длиннее, чем голосом)."""
         with self.lock:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
             system = self._system(name, settings["address"])
-            # системное сообщение не меняется между вопросами — сервер ИИ не пересчитывает его
-            # каждый раз (это главное ускорение); время и свежие данные — в конце
             msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
             extra = f"(Сейчас {datetime.datetime.now():%H:%M}.)"
             if context:
                 extra += ("\nСвежие данные из интернета (точные — отвечай по ним, называй конкретные "
-                          "числа; не говори, что у тебя нет доступа к интернету):\n" + context)
-            msgs.append({"role": "user", "content": text + "\n\n" + extra})
+                          "числа; не говори, что у тебя нет доступа к интернету):\n" + context[:2500])
+            user_text = (text or "Что на картинке?") + "\n\n" + extra
+            msgs.append({"role": "user", "content": user_text})
             mode = settings["ai_mode"] or "smart"
-            long_ask = re.search(r"подробн|расскажи|объясни|история|почему|как работает|сравни",
-                                 text.lower()) is not None
+            if mode == "cloud" and not cloud_url():
+                mode = recommended_kind()          # облако не настроено — работаем на компьютере
+            long_ask = prefer == "smart" or (prefer == "auto" and re.search(
+                r"подробн|расскажи|объясни|история|почему|как работает|сравни|напиши|придумай",
+                (text or "").lower()) is not None)
+            max_tok = (700 if long_ask else 400) if chat else (420 if long_ask else 220)
             payload = {"messages": msgs, "temperature": 0.4, "top_p": 0.9,
-                       "max_tokens": 420 if long_ask else 220, "stream": False, "cache_prompt": True}
-            try:
-                if mode == "cloud" and not cloud_url():
-                    mode = recommended_kind()          # облако не настроено — работаем на компьютере
-                if mode == "cloud":
-                    payload.pop("cache_prompt", None)
-                    try:
-                        if on_sentence is not None:
-                            reply = self._ask_stream(cloud_url(), payload, on_sentence, CLOUD_TOKEN)
-                            data = None
-                        else:
-                            data = _post(cloud_url(), payload, CLOUD_TOKEN, 40)
-                    except Exception:  # noqa: BLE001 — нет интернета / облако занято: ИИ на компьютере
-                        kind = recommended_kind()
-                        if not local_ready(kind):
-                            raise
-                        payload["cache_prompt"] = True
-                        self.start_local(kind)
-                        url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
-                        data = None
-                        if on_sentence is not None:
-                            reply = self._ask_stream(url, payload, on_sentence, self.key)
-                        else:
-                            data = _post(url, payload, self.key)
-                elif mode == "api":
-                    base = (settings["ai_api_url"] or "").strip().rstrip("/")
-                    if not base:
-                        raise AIError("Укажите адрес API в профиле → «ИИ-собеседник».")
-                    if not base.endswith("/chat/completions"):
-                        base += "/chat/completions"
-                    payload.pop("cache_prompt", None)
-                    key = (settings["ai_api_key"] or "").strip()
-                    payload["model"] = (settings["ai_api_model"] or "").strip() or \
-                        auto_model(base, key, long_ask)
-                    data = None
-                    if on_sentence is not None:
-                        try:              # потоком: первая фраза звучит, пока ИИ дописывает остальное
-                            reply = self._ask_stream(base, payload, on_sentence, key)
-                        except urllib.error.HTTPError:
-                            raise
-                        except Exception:  # noqa: BLE001 — сервис не умеет потоком
-                            data = _post(base, payload, key, 60)
-                    else:
-                        data = _post(base, payload, key, 60)
+                       "max_tokens": max_tok, "stream": False, "cache_prompt": True}
+            remote = mode in ("api", "cloud") and prefer != "local"
+            if remote and over_limit(settings):
+                if local_ready(recommended_kind()):
+                    remote, mode = False, recommended_kind()
                 else:
-                    self.start_local(mode)
-                    url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
-                    data = None
-                    if on_sentence is not None:
-                        reply = self._ask_stream(url, payload, on_sentence, self.key)
+                    raise AIError(limit_text(settings))
+            if not remote and mode in ("api", "cloud"):
+                mode = recommended_kind()
+                if not local_ready(mode):
+                    raise AIError("ИИ на компьютере ещё не скачан — профиль → «ИИ-собеседник».")
+            # картинки: облачная модель смотрит сама; на компьютере — только распознанный текст
+            vision = bool(images) and remote
+            if images and not vision:
+                msgs[-1]["content"] = user_text + _ocr_note(images)
+            elif vision:
+                msgs[-1]["content"] = [{"type": "text", "text": user_text}] + [
+                    {"type": "image_url", "image_url": {"url": _data_url(p)}} for p in images]
+            reply, data = "", None
+            try:
+                try:
+                    reply, data = self._run(mode, settings, payload, on_sentence, long_ask, remote)
+                except urllib.error.HTTPError as e:
+                    if vision and e.code in (400, 404, 415, 422):
+                        # модель не принимает картинки — отправляем распознанный на них текст
+                        msgs[-1]["content"] = user_text + _ocr_note(images)
+                        reply, data = self._run(mode, settings, payload, on_sentence, long_ask, remote)
                     else:
-                        data = _post(url, payload, self.key)
+                        raise
                 if data is not None:
                     reply = clean_reply(data["choices"][0]["message"]["content"])
             except AIError:
@@ -534,13 +517,195 @@ class AI:
                 raise AIError(f"Сервер ИИ ответил ошибкой {e.code}. Проверьте адрес, ключ и модель.")
             except Exception as e:  # noqa: BLE001
                 raise AIError(f"ИИ сейчас недоступен: {e}")
+            if remote:
+                usage_add(_estimate(msgs, reply, len(images or [])))
             if not reply:
                 reply = "Не знаю, что ответить. Спросите иначе."
-            self.history += [{"role": "user", "content": text[:MEMORY_CHARS]},
+            mark = " [фото]" if images else ""
+            self.history += [{"role": "user", "content": (text or "")[:MEMORY_CHARS] + mark},
                              {"role": "assistant", "content": reply[:MEMORY_CHARS]}]
             self.history = self.history[-MEMORY_TURNS:]
             self.last_time = time.time()
             return reply
+
+    def _run(self, mode, settings, payload, on_sentence, smart, remote):
+        """Один запрос к нужному ИИ. -> (ответ из потока, данные обычного ответа)."""
+        if remote and mode == "cloud":
+            payload.pop("cache_prompt", None)
+            try:
+                if on_sentence is not None:
+                    return self._ask_stream(cloud_url(), payload, on_sentence, CLOUD_TOKEN), None
+                return "", _post(cloud_url(), payload, CLOUD_TOKEN, 40)
+            except urllib.error.HTTPError:
+                raise
+            except Exception:  # noqa: BLE001 — нет интернета / облако занято: ИИ на компьютере
+                kind = recommended_kind()
+                if not local_ready(kind):
+                    raise
+                return self._run(kind, settings, payload, on_sentence, smart, False)
+        if remote and mode == "api":
+            base = (settings["ai_api_url"] or "").strip().rstrip("/")
+            if not base:
+                raise AIError("Укажите адрес API в профиле → «ИИ-собеседник».")
+            if not base.endswith("/chat/completions"):
+                base += "/chat/completions"
+            payload.pop("cache_prompt", None)
+            key = (settings["ai_api_key"] or "").strip()
+            payload["model"] = (settings["ai_api_model"] or "").strip() or auto_model(base, key, smart)
+            if on_sentence is not None:
+                try:              # потоком: первая фраза звучит, пока ИИ дописывает остальное
+                    return self._ask_stream(base, payload, on_sentence, key), None
+                except urllib.error.HTTPError:
+                    raise
+                except Exception:  # noqa: BLE001 — сервис не умеет потоком
+                    pass
+            return "", _post(base, payload, key, 60)
+        payload["cache_prompt"] = True
+        payload.pop("model", None)
+        self.start_local(mode)
+        url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
+        if on_sentence is not None:
+            return self._ask_stream(url, payload, on_sentence, self.key), None
+        return "", _post(url, payload, self.key)
+
+    def route_command(self, text, settings):
+        """Быстрая модель переводит свободную фразу в команду SenioreM. -> команда или None."""
+        mode = settings["ai_mode"] or "smart"
+        if mode == "cloud" and not cloud_url():
+            return None
+        if mode not in ("api", "cloud") or over_limit(settings):
+            return None
+        payload = {"messages": [{"role": "system", "content": ROUTER_PROMPT},
+                                {"role": "user", "content": text}],
+                   "temperature": 0.0, "max_tokens": 24, "stream": False}
+        try:
+            _r, data = self._run(mode, settings, payload, None, False, True)
+            out = clean_reply(data["choices"][0]["message"]["content"]) if data else ""
+        except Exception:  # noqa: BLE001
+            return None
+        usage_add(_estimate(payload["messages"], out, 0))
+        out = out.strip().strip("«»\"'.")
+        if out.upper().startswith("CMD:"):
+            cmd = out[4:].strip().strip("«»\"'.")
+            return cmd or None
+        return None
+
+
+ROUTER_PROMPT = (
+    "Ты переводишь фразы пользователя в команды голосового помощника SenioreM для Windows. "
+    "Если фраза — просьба что-то сделать на компьютере, ответь ОДНОЙ строкой «CMD: команда» в одном "
+    "из видов: «громкость 30», «громче», «тише», «выключи звук», «включи звук», «яркость 50», "
+    "«открой <программа или сайт>», «закрой <программа>», «сверни все окна», «найди <запрос>», "
+    "«найди ролик <запрос>», «включи ролик <запрос>», «пауза», «следующий трек», «таймер на 5 минут», "
+    "«разбуди в 7:30», «напомни через 10 минут <что>», «сделай скриншот», «заблокируй компьютер», "
+    "«погода», «курс доллара», «который час», «закрой эту вкладку», «нажми <клавиша>». "
+    "Если это вопрос, разговор или что-то другое — ответь ровно «ASK». Никаких пояснений."
+)
+
+
+# ---------------- картинки ----------------
+def _data_url(path, side=1024):
+    """Картинка -> data:image/jpeg;base64 (уменьшенная — меньше токенов и быстрее)."""
+    import base64
+    import io
+    from PIL import Image
+    im = Image.open(path)
+    im = im.convert("RGB")
+    im.thumbnail((side, side))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _ocr_note(images):
+    """Текст, распознанный на картинках (для ИИ, который картинки не видит)."""
+    parts = []
+    for p in images:
+        try:
+            import control
+            t = control.ocr_file(p)
+        except Exception:  # noqa: BLE001
+            t = ""
+        parts.append(t.strip()[:1500])
+    found = [t for t in parts if t]
+    if not found:
+        return ("\n\n(К сообщению приложена картинка, но разглядеть её этот ИИ не может и текста на ней "
+                "нет. Честно скажи об этом и предложи выбрать облачный ИИ.)")
+    return "\n\n(Текст, распознанный на приложенной картинке:\n" + "\n---\n".join(found) + ")"
+
+
+# ---------------- расход токенов и лимиты ----------------
+DAY_LIMIT = 1_500_000         # по умолчанию: ~1,5 млн токенов в день
+MONTH_LIMIT = 20_000_000      # и 20 млн в месяц — 250 млн хватит примерно на год
+
+
+def _usage_file():
+    return config.data_dir() / "ai_usage.json"
+
+
+def usage_get():
+    today = datetime.date.today()
+    try:
+        d = json.loads(_usage_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    if d.get("day") != today.isoformat():
+        d["day"], d["day_tokens"] = today.isoformat(), 0
+    if d.get("month") != today.strftime("%Y-%m"):
+        d["month"], d["month_tokens"] = today.strftime("%Y-%m"), 0
+    return d
+
+
+def usage_add(n):
+    d = usage_get()
+    d["day_tokens"] = int(d.get("day_tokens", 0)) + int(n)
+    d["month_tokens"] = int(d.get("month_tokens", 0)) + int(n)
+    try:
+        _usage_file().write_text(json.dumps(d), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def limits(settings):
+    day = int(settings["ai_day_limit"] or DAY_LIMIT) if settings is not None else DAY_LIMIT
+    month = int(settings["ai_month_limit"] or MONTH_LIMIT) if settings is not None else MONTH_LIMIT
+    return day, month
+
+
+def over_limit(settings):
+    d = usage_get()
+    day, month = limits(settings)
+    return d["day_tokens"] >= day or d["month_tokens"] >= month
+
+
+def limit_text(settings):
+    d = usage_get()
+    day, month = limits(settings)
+    if d["month_tokens"] >= month:
+        return ("Лимит токенов на этот месяц исчерпан. Его можно поднять в профиле → «ИИ-собеседник» "
+                "или скачать ИИ на компьютер.")
+    return "Лимит токенов на сегодня исчерпан — завтра снова. Поднять лимит: профиль → «ИИ-собеседник»."
+
+
+def _estimate(msgs, reply, images):
+    """Примерно сколько токенов ушло (русский текст ≈ 3 символа на токен)."""
+    chars = 0
+    for m in msgs:
+        c = m.get("content")
+        if isinstance(c, list):
+            chars += sum(len(x.get("text", "")) for x in c if isinstance(x, dict))
+        else:
+            chars += len(c or "")
+    return int((chars + len(reply or "")) / 3) + 900 * images
+
+
+def fmt_tokens(n):
+    n = int(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} млн".replace(".0 ", " ")
+    if n >= 1000:
+        return f"{n // 1000} тыс."
+    return str(n)
 
 
 ENGINE = AI()
