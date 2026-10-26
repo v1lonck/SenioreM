@@ -277,6 +277,133 @@ begin
     end;
 end;
 
+{ ---------- Папка для загрузок (распознавание речи, голос, ИИ) ---------- }
+var
+  StoreEdit: TNewEdit;
+  StoreErr: TNewStaticText;
+
+function StorageFile: String;
+begin
+  Result := ExpandConstant('{userappdata}\SenioreM\storage.json');
+end;
+
+{ Где сейчас лежат загрузки (как решает сама программа) }
+function CurrentStorage: String;
+var
+  Raw: AnsiString;
+  S: String;
+  P: Integer;
+begin
+  Result := '';
+  if LoadStringFromFile(StorageFile, Raw) then
+  begin
+    S := String(Raw);
+    P := Pos('"path": "', S);
+    if P > 0 then
+    begin
+      S := Copy(S, P + 9, Length(S));
+      P := Pos('"', S);
+      if P > 0 then
+      begin
+        Result := Copy(S, 1, P - 1);
+        StringChangeEx(Result, '\\', '\', True);
+      end;
+    end;
+  end;
+  if Result = '' then
+  begin
+    Result := ExpandConstant('{localappdata}\SenioreM');
+    if not IsAscii(Result) then
+      Result := ExpandConstant('{commonappdata}\SenioreM');
+  end;
+end;
+
+procedure StoreBrowse(Sender: TObject);
+var
+  D: String;
+begin
+  D := StoreEdit.Text;
+  if BrowseForFolder('Куда скачивать распознавание речи, голос и ИИ (до 3,5 ГБ)?', D, True) then
+  begin
+    if CompareText(ExtractFileName(RemoveBackslash(D)), 'SenioreM') <> 0 then
+      D := AddBackslash(D) + 'SenioreM';
+    if not IsAscii(D) then
+      StoreErr.Caption := 'В пути есть русские буквы — распознавание речи такие пути не понимает. ' +
+                          'Выберите папку вроде D:\SenioreM.'
+    else
+    begin
+      StoreErr.Caption := '';
+      StoreEdit.Text := D;
+    end;
+  end;
+end;
+
+{ Окно выбора папки перед установкой (только при обычной установке, не при автообновлении) }
+procedure AskStorage;
+var
+  F: TSetupForm;
+  W, H: Integer;
+  B, Ok: TNewButton;
+  Old, Path, Json: String;
+begin
+  W := ScaleX(640);
+  H := ScaleY(250);
+#if Ver >= 0x06040000
+  F := CreateCustomForm(W, H, False, False);
+#else
+  F := CreateCustomForm;
+#endif
+  F.BorderStyle := bsDialog;
+  F.ClientWidth := W;
+  F.ClientHeight := H;
+  F.Color := $120D0B;
+  F.Position := poScreenCenter;
+  F.Caption := 'SenioreM — папка для загрузок';
+  MakeText(F, ScaleX(28), ScaleY(24), 'Куда скачивать распознавание речи, голос и ИИ?', 13, $F5EFEC, True);
+  MakeText(F, ScaleX(28), ScaleY(56), 'Около 3,5 ГБ. Потом можно поменять в программе: профиль → «Запуск».', 9, $A6938A, False);
+  Old := CurrentStorage;
+  StoreEdit := TNewEdit.Create(F);
+  StoreEdit.Parent := F;
+  StoreEdit.Left := ScaleX(28);
+  StoreEdit.Top := ScaleY(96);
+  StoreEdit.Width := W - ScaleX(28 + 28 + 130);
+  StoreEdit.ReadOnly := True;
+  StoreEdit.Text := Old;
+  B := TNewButton.Create(F);
+  B.Parent := F;
+  B.Left := W - ScaleX(28 + 120);
+  B.Top := ScaleY(94);
+  B.Width := ScaleX(120);
+  B.Height := ScaleY(28);
+  B.Caption := 'Изменить…';
+  B.OnClick := @StoreBrowse;
+  StoreErr := MakeText(F, ScaleX(28), ScaleY(132), '', 9, $7A8AE5, False);
+  StoreErr.AutoSize := False;
+  StoreErr.WordWrap := True;
+  StoreErr.Width := W - ScaleX(56);
+  StoreErr.Height := ScaleY(40);
+  Ok := TNewButton.Create(F);
+  Ok.Parent := F;
+  Ok.Left := W - ScaleX(28 + 150);
+  Ok.Top := H - ScaleY(28 + 34);
+  Ok.Width := ScaleX(150);
+  Ok.Height := ScaleY(34);
+  Ok.Caption := 'Установить';
+  Ok.ModalResult := mrOk;
+  Ok.Default := True;
+  F.ShowModal;
+  Path := StoreEdit.Text;
+  F.Free;
+  { запоминаем выбор; если папка другая — программа сама перенесёт уже скачанное }
+  Json := Path;
+  StringChangeEx(Json, '\', '\\', True);
+  ForceDirectories(ExpandConstant('{userappdata}\SenioreM'));
+  if CompareText(RemoveBackslash(Path), RemoveBackslash(Old)) <> 0 then
+    SaveStringToFile(StorageFile, '{"path": "' + Json + '", "pending_move": true}', False)
+  else if not FileExists(StorageFile) then
+    SaveStringToFile(StorageFile, '{"path": "' + Json + '"}', False);
+end;
+
 function WantSplash: Boolean;
 begin
   { при автообновлении из программы (/nosplash=1) окно не нужно — SenioreM сам откроется }
@@ -285,6 +412,11 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  { при обычной установке — сначала спрашиваем, куда скачивать речь, голос и ИИ }
+  if ExpandConstant('{param:storagepath|}') <> '' then
+    SaveStringToFile(StorageFile, '{"path": "' + ExpandConstant('{param:storagepath|}') + '"}', False)
+  else if WantSplash and not WizardSilent then
+    AskStorage;
   { наше окно с прогрессом — сразу, ещё до закрытия старой версии }
   if WantSplash and (Splash = nil) then
     ShowInstallSplash;
@@ -353,10 +485,7 @@ begin
     Exec(ExpandConstant('{sys}\icacls.exe'), '"' + ExpandConstant('{app}') + '" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if (CurStep = ssPostInstall) and (Splash <> nil) then
-  begin
     BarFill.Width := BarW;
-    Splash.Repaint;
-  end;
 end;
 
 procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
@@ -368,8 +497,8 @@ begin
     NewW := Round(BarW * (CurProgress / MaxProgress));
     if NewW < ScaleX(8) then
       NewW := ScaleX(8);
-    BarFill.Width := NewW;
-    Splash.Repaint;
+    if NewW <> BarFill.Width then
+      BarFill.Width := NewW;            { перерисовывается только полоска — значок не мигает }
   end;
 end;
 

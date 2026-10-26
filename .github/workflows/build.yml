@@ -168,7 +168,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/showwizard=1" -PassThru
+          $p = Start-Process -FilePath "Output\SenioreM-Setup.exe" -ArgumentList "/showwizard=1","/storagepath=C:/SenioreMData" -PassThru
           if (-not $p.WaitForExit(120000)) {
             Add-Type -AssemblyName System.Windows.Forms, System.Drawing
             $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds

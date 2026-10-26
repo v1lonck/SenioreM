@@ -81,6 +81,13 @@ class Loader(QThread):
 
         import tts
         result = {"model": None, "voice": None}
+        # папку для загрузок выбрали в установщике — переносим туда уже скачанное
+        try:
+            err = config.apply_pending_move(lambda t: self.progress.emit(0.02, t))
+            if err:
+                _log(err)
+        except Exception:  # noqa: BLE001
+            _log(traceback.format_exc())
         # голос качаем параллельно с речевой моделью — первый запуск заметно быстрее
         voice_thread = None
         if not tts.voice_ready():
