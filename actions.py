@@ -213,6 +213,17 @@ def open_by_name(name, cfg):
         loose = sites.find_program(name, threshold=0.72)
         if loose:
             return _start(loose, f"открой {name} (похоже на {loose[0]})")
+    if "сайт" not in name:
+        # не нашли — список программ мог устареть (поставили игру, перенесли рабочий стол):
+        # обновляем его и ищем ещё раз
+        try:
+            sites.refresh_apps(force=True)
+            sites.refresh_local(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        prog = sites.find_program(name) or sites.find_local(name)
+        if prog:
+            return _start(prog, f"открой {name} (после обновления списка)")
     if "сайт" in name or len(pretty.split()) >= 3:
         webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote(pretty))
         return f"Ищу {pretty} в интернете."
