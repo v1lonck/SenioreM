@@ -1017,9 +1017,12 @@ class HomeScreen(Backdrop):
         self._dl_timer.timeout.connect(self._refresh_downloads)
         self._dl_timer.start(30 * 60 * 1000)
         QTimer.singleShot(3000, self._refresh_downloads)
+        self._upd_last = 0.0
+        self._upd_busy = False
+        self._upd_checker = None
         self._upd_timer = QTimer(self)
         self._upd_timer.timeout.connect(self._check_update)
-        self._upd_timer.start(30 * 60 * 1000)
+        self._upd_timer.start(10 * 60 * 1000)
         QTimer.singleShot(15 * 1000, self._check_update)
 
     def _refresh_downloads(self):
@@ -1049,10 +1052,19 @@ class HomeScreen(Backdrop):
         и в углу появляется кнопка «Обновить»."""
         if os.environ.get("SENIOREM_NO_DOWNLOADS") or getattr(self, "_upd_busy", False):
             return
+        old = getattr(self, "_upd_checker", None)
+        if old is not None and old.isRunning():
+            return
+        self._upd_last = time.time()
         from splash import UpdateChecker
         self._upd_checker = UpdateChecker(self.cfg)
         self._upd_checker.found.connect(self._update_found)
         self._upd_checker.start()
+
+    def maybe_check_update(self):
+        """Окно открыли/развернули — заодно проверяем обновления (не чаще раза в 3 минуты)."""
+        if time.time() - self._upd_last > 180:
+            self._check_update()
 
     def _update_found(self, version, url):
         from splash import Updater
@@ -1174,6 +1186,7 @@ class HomeScreen(Backdrop):
         avatars.apply(self.avatar, settings["avatar"] or "", (name or email or "?")[:1].upper(), 38)
         self.history.set_items(settings["history"])
         QTimer.singleShot(400, self._after_update_note)
+        QTimer.singleShot(2000, self.maybe_check_update)
         self.w_notes.set_text(settings["notes"] or "")
         self._tick_clock()
         self.heard.setText("")
@@ -3866,6 +3879,9 @@ class MainWindow(QWidget):
                 and e.oldState() & Qt.WindowMinimized:
             self.setWindowOpacity(0.0)
             QTimer.singleShot(0, lambda: self._animate_opacity(0.0, 1.0, 260))
+        if e.type() in (QEvent.ActivationChange, QEvent.WindowStateChange) and self.isActiveWindow() \
+                and not self.isMinimized() and self.settings is not None:
+            QTimer.singleShot(500, self.home.maybe_check_update)   # развернули — нет ли обновления
         super().changeEvent(e)
 
     def request_close(self):
