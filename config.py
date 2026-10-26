@@ -160,6 +160,34 @@ def move_storage(new, progress=None) -> str:
     return set_storage(new)
 
 
+def apply_pending_move(progress=None) -> str:
+    """Папку выбрали в установщике: переносим туда уже скачанное (один раз). -> "" или ошибка."""
+    import shutil
+    global _LOCAL
+    data = _read_json(_storage_file()) if _storage_file().is_file() else {}
+    if not data.get("pending_move"):
+        return ""
+    new = Path(data.get("path", ""))
+    err = check_storage_path(new)
+    old = default_storage()
+    if not err and old.resolve() != new.resolve():
+        try:
+            for name in STORAGE_ITEMS:
+                if (old / name).exists() and not (new / name).exists():
+                    if progress:
+                        progress(f"Переношу скачанное в {new}")
+                    shutil.move(str(old / name), str(new / name))
+        except OSError as e:
+            err = f"Не получилось перенести файлы: {e}"
+    data.pop("pending_move", None)
+    if err:
+        _storage_file().unlink(missing_ok=True)          # остаёмся в прежней папке
+    else:
+        _storage_file().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _LOCAL = None
+    return err
+
+
 def local_dir() -> Path:
     """Папка для всего, что программа скачивает (речь, голос, ИИ). Можно выбрать самому
     (storage.json). Движок распознавания не понимает русские буквы в пути (например, имя
