@@ -1,4 +1,5 @@
-"""Позы для SVG-персонажей (Аки, Мия, Рэй): стоит, сидит по-турецки, лежит на животе.
+"""Позы для SVG-персонажей (Аки, Мия, Рэй): стоит, сидит на краю (ноги свисают и качаются),
+лежит на животе.
 Все кадры рисуются на одном холсте 900×820, «пол» — y=806, центр фигуры — x=450."""
 import characters as C
 
@@ -138,3 +139,54 @@ def lie(p, swing=0.0):
         for o in (-20, 20))
     body = legs + thighs + hips + torso + hair_back + arms + head + hands
     return _svg(_shadow(560, 300) + body)
+
+
+HANG = 300            # насколько ниже «пола» свисают ноги (холст для этой позы выше)
+
+
+def _svg_tall(body):
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H + HANG}" '
+            f'viewBox="0 0 {W} {H + HANG}">{body}</svg>')
+
+
+def sit_edge(p, swing=0.0):
+    """Сидит на краю (панели задач): бёдра на поверхности, ноги свисают и качаются по очереди,
+    ладони упираются в поверхность по бокам. swing — фаза 0..2."""
+    import math
+    sp = p["spec"]
+    hip = sp["hip"]
+    seat = hip + 30                      # линия сиденья в координатах персонажа
+    leg, knee_col = sp["leg"], sp["knee"]
+    s = []
+    shins = []
+    for k, x in enumerate((168, 232)):
+        a = math.radians(13 * math.sin(swing * math.pi + k * math.pi * 0.9))
+        ky = seat + 34
+        L = 236
+        fx, fy = x + math.sin(a) * L, ky + math.cos(a) * L
+        nx, ny = math.cos(a), -math.sin(a)
+        w0, w1 = 21, 15
+        shins.append(
+            f'<path d="M {x - nx * w0:.1f} {ky - ny * w0:.1f} L {fx - nx * w1:.1f} {fy - ny * w1:.1f} '
+            f'L {fx + nx * w1:.1f} {fy + ny * w1:.1f} L {x + nx * w0:.1f} {ky + ny * w0:.1f} Z" '
+            f'fill="{leg}" stroke="{LINE}" stroke-width="2" stroke-linejoin="round"/>'
+            f'<path d="M {x - nx * 8:.1f} {ky + 30:.1f} L {fx - nx * 6:.1f} {fy - 26:.1f}" '
+            f'stroke="{C._shade(leg, 0.22)}" stroke-width="3" opacity="0.5"/>'
+            + f'<g transform="rotate({-math.degrees(a):.1f} {fx:.1f} {fy:.1f})">'
+            + _shoe(fx, fy + 4, sp) + '</g>')
+    s += shins
+    # бёдра «к зрителю»: короткие, колени — у края
+    for x in (168, 232):
+        s.append(f'<path d="M {x - 30} {seat - 22} C {x - 34} {seat + 10} {x - 26} {seat + 50} {x} {seat + 52} '
+                 f'C {x + 26} {seat + 50} {x + 34} {seat + 10} {x + 30} {seat - 22} Z" fill="{knee_col}" '
+                 f'stroke="{LINE}" stroke-width="2.2"/>')
+    if sp["skirt"]:
+        col, ln = sp["skirt"], sp["skirt_line"]
+        s.append(f'<path d="M 154 {hip - 10} L 246 {hip - 10} C 286 {hip + 10} 318 {seat + 6} 326 {seat + 26} '
+                 f'C 280 {seat + 40} 120 {seat + 40} 74 {seat + 26} C 82 {seat + 6} 114 {hip + 10} 154 {hip - 10} Z" '
+                 f'fill="{col}" stroke="{LINE}" stroke-width="2.2" stroke-linejoin="round"/>'
+                 + "".join(f'<path d="M {170 + i * 15} {hip - 4} Q {150 + i * 25} {seat} {104 + i * 48} {seat + 30}" '
+                           f'fill="none" stroke="{ln}" stroke-width="2"/>' for i in range(5)))
+    body = p["back"] + "".join(s) + p["upper"] + p["head"]   # ладони (из рук) — на поверхности
+    dy = FLOOR - seat
+    return _svg_tall(_shadow(CX, 130) + f'<g transform="translate({CX - 200} {dy})">{body}</g>')
