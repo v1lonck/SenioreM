@@ -28,6 +28,39 @@ MODELS = {
 CLOUD_TOKEN = "seniorem-app"   # не секрет: просто чтобы облачный адрес не дёргали посторонние боты
 
 
+_MODELS_CACHE = {}
+
+
+def auto_model(chat_url, key, smart=False):
+    """Модель не указана — берём из списка сервиса: обычно быструю (flash/mini/chat),
+    для просьб «расскажи подробно», «объясни» — самую умную (pro/reasoner)."""
+    base = chat_url.rsplit("/chat/completions", 1)[0]
+    ids = _MODELS_CACHE.get(base)
+    if ids is None:
+        ids = []
+        try:
+            req = urllib.request.Request(base + "/models", headers={
+                "Authorization": f"Bearer {key}", "User-Agent": "SenioreM"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                ids = [m.get("id", "") for m in json.load(r).get("data", []) if m.get("id")]
+        except Exception:  # noqa: BLE001
+            ids = []
+        _MODELS_CACHE[base] = ids
+    low = [(i, i.lower()) for i in ids]
+
+    def pick(*words):
+        for w in words:
+            for i, li in low:
+                if w in li and "embed" not in li and "whisper" not in li and "tts" not in li:
+                    return i
+        return None
+    if smart:
+        m = pick("v4-pro", "v4 pro", "pro", "reasoner", "v4", "chat")
+    else:
+        m = pick("v4-flash", "v4 flash", "flash", "chat", "mini", "v4")
+    return m or (ids[0] if ids else "deepseek-chat")
+
+
 def cloud_url():
     """Адрес облачного ИИ (Cloudflare Worker), если он настроен в сборке."""
     u = (config.load_config().get("ai_proxy_url") or "").strip().rstrip("/")
@@ -472,8 +505,9 @@ class AI:
                     if not base.endswith("/chat/completions"):
                         base += "/chat/completions"
                     payload.pop("cache_prompt", None)
-                    payload["model"] = (settings["ai_api_model"] or "").strip() or "gpt-4o-mini"
                     key = (settings["ai_api_key"] or "").strip()
+                    payload["model"] = (settings["ai_api_model"] or "").strip() or \
+                        auto_model(base, key, long_ask)
                     data = None
                     if on_sentence is not None:
                         try:              # потоком: первая фраза звучит, пока ИИ дописывает остальное
