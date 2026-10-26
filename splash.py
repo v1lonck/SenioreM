@@ -355,7 +355,9 @@ class Splash(QWidget):
         root.addLayout(head)
 
         root.addSpacing(40)
-        grid = QGridLayout()
+        self.features = QWidget()
+        grid = QGridLayout(self.features)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(40)
         grid.setVerticalSpacing(22)
         for i, (num, title, example) in enumerate(FEATURES):
@@ -370,7 +372,7 @@ class Splash(QWidget):
             txt.addWidget(label(example, 13, role="faint"))
             cell.addLayout(txt, 1)
             grid.addLayout(cell, i // 2, i % 2)
-        root.addLayout(grid)
+        root.addWidget(self.features)
 
         root.addStretch(1)
         self.update_row = QWidget()
@@ -393,7 +395,7 @@ class Splash(QWidget):
         sr = QVBoxLayout(self.store_row)
         sr.setContentsMargins(0, 0, 24, 16)
         sr.setSpacing(8)
-        self.store_lbl = label("", 14, QFont.DemiBold, wrap=True)
+        self.store_lbl = label("", 15, QFont.DemiBold, wrap=True)
         sr.addWidget(self.store_lbl)
         self.store_err = label("", 12, role="error", wrap=True)
         self.store_err.hide()
@@ -486,6 +488,7 @@ class Splash(QWidget):
             f"{path}   ·   свободно {free:.0f} ГБ")
         self.store_err.setText(err)
         self.store_err.setVisible(bool(err))
+        self.features.hide()                # освобождаем место под выбор папки
         self.store_row.show()
         self.status.setText("Выберите, куда скачивать — потом это можно поменять в профиле → «Запуск»")
 
@@ -509,6 +512,7 @@ class Splash(QWidget):
             self._show_storage(self._store_path, err)
             return
         self.store_row.hide()
+        self.features.show()
         self.start()
 
     def start(self):
