@@ -1338,8 +1338,20 @@ class HomeScreen(Backdrop):
         self.heard.setText("")
         self.reply.setText("")
         if self.listener is None:
+            self._make_listener()
+        self._rest_state()
+        self._poll_volume()
+        self._vol_timer.start(2000)
+
+    def _make_listener(self):
+        settings = self.settings
+        if True:
             self.mic = "loading"
             self.listener = Listener(self.model)
+            self.listener.device = settings["mic_device"] or ""
+            self.listener.level.connect(lambda v: setattr(self, "_mic_level", v))
+            self.listener.partial.connect(lambda x: setattr(self, "_raw_heard", x) if x else None)
+            self.listener.final.connect(lambda x, *_: setattr(self, "_raw_heard", x))
             self.listener.level.connect(self.orb.push_level)
             self.listener.partial.connect(self._on_partial)
             self.listener.final.connect(self._on_final)
@@ -1350,9 +1362,22 @@ class HomeScreen(Backdrop):
             self.listener.silent.connect(self._on_mic_silent)
             self.listener.set_stop_words((settings["stop_words"] or "стоп").split(","))
             self.listener.start()
-        self._rest_state()
-        self._poll_volume()
-        self._vol_timer.start(2000)
+
+    def restart_listener(self):
+        """Выбрали другой микрофон — переподключаемся."""
+        if self.listener is not None:
+            lst = self.listener
+            for sig in (lst.level, lst.partial, lst.final, lst.failed, lst.ready):
+                try:
+                    sig.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            lst.stop()
+            self._old_listeners.append(lst)
+            self.listener = None
+        if self.settings is not None:
+            self._make_listener()
+            self._rest_state()
 
     def stop(self):
         self._vol_timer.stop()
@@ -2451,6 +2476,33 @@ class ProfileScreen(Backdrop):
                          force=True, speed=speed, cache=True,
                          cloud=self.settings.cloud_voice if self.settings else None)
 
+    def _fill_mics(self):
+        from voice import input_devices
+        cur = (self.settings["mic_device"] if self.settings is not None else "") or ""
+        self.mic_box.blockSignals(True)
+        self.mic_box.clear()
+        self.mic_box.addItem("Микрофон Windows по умолчанию", "")
+        for n in input_devices():
+            self.mic_box.addItem(n, n)
+        i = self.mic_box.findData(cur)
+        self.mic_box.setCurrentIndex(max(0, int(i)))
+        self.mic_box.blockSignals(False)
+
+    def _mic_chosen(self, _i):
+        self._set("mic_device", self.mic_box.currentData() or "")
+        self.win.home.restart_listener()
+        self.mic_heard.setText("Переключаю микрофон… скажите что-нибудь.")
+
+    def _mic_tick(self):
+        if not self.isVisible() or not self.mic_box.isVisible():
+            return
+        h = self.win.home
+        self.mic_meter.target = min(1.0, float(getattr(h, "_mic_level", 0.0)) * 1.4)
+        heard = getattr(h, "_raw_heard", "")
+        if heard and heard != getattr(self, "_shown_heard", ""):
+            self._shown_heard = heard
+            self.mic_heard.setText(f"Слышу: «{heard}»")
+
     def _stop_words_changed(self):
         v = self.f_stop.text().strip() or "стоп"
         self._set("stop_words", v)
@@ -2461,6 +2513,37 @@ class ProfileScreen(Backdrop):
     def _build_wake(self, lay):
         self._title(lay, "Активация", "Как вы обращаетесь к помощнику и как он даёт понять, "
                                       "что слушает.")
+        self._caption(lay, "Микрофон")
+        from PySide6.QtWidgets import QComboBox
+        mrow = QHBoxLayout()
+        mrow.setSpacing(12)
+        self.mic_box = QComboBox()
+        self.mic_box.setFont(font(14))
+        self.mic_box.setMinimumWidth(420)
+        self.mic_box.setStyleSheet(
+            f"QComboBox {{ background: {T.rgba('#FFFFFF', 0.05)}; border: 1px solid {T.LINE}; "
+            f"border-radius: 10px; padding: 8px 12px; color: {T.TEXT}; }}"
+            f"QComboBox QAbstractItemView {{ background: {T.SURFACE}; color: {T.TEXT}; "
+            f"selection-background-color: {T.rgba(T.ACCENT, 0.3)}; }}")
+        self.mic_box.activated.connect(self._mic_chosen)
+        mrow.addWidget(self.mic_box)
+        refresh = button("Обновить список", "ghost", 13, QFont.Normal)
+        refresh.clicked.connect(self._fill_mics)
+        mrow.addWidget(refresh)
+        mrow.addStretch(1)
+        lay.addLayout(mrow)
+        lay.addSpacing(10)
+        self.mic_meter = VolumeMeter()
+        self.mic_meter.setFixedWidth(420)
+        lay.addWidget(self.mic_meter)
+        lay.addSpacing(6)
+        self.mic_heard = label("Скажите что-нибудь — здесь появится, что я слышу.", 13, role="muted",
+                               wrap=True)
+        lay.addWidget(self.mic_heard)
+        self._mic_timer = QTimer(self)
+        self._mic_timer.timeout.connect(self._mic_tick)
+        self._mic_timer.start(80)
+        lay.addSpacing(24)
         self._caption(lay, "Чем остановить, пока помощник говорит (через запятую)")
         self.f_stop = field("стоп")
         self.f_stop.editingFinished.connect(self._stop_words_changed)
@@ -3990,6 +4073,8 @@ class ProfileScreen(Backdrop):
             self._refresh_city()
         if key == "apps":
             self._fill_apps()
+        if key == "wake":
+            self._fill_mics()
         if key == "history" and self.settings is not None:
             self.full_history.set_items(self.settings["history"])
 

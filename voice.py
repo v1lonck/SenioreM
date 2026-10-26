@@ -46,6 +46,7 @@ class Listener(QThread):
         self._paused = False
         self._reset = False
         self.sensitivity = "high"
+        self.device = ""               # название микрофона ("" — микрофон Windows по умолчанию)
         self.stop_words = ["стоп"]
         self._stop_rec = None
         self._stop_key = None
@@ -127,10 +128,31 @@ class Listener(QThread):
             except queue.Full:
                 pass
 
+        def pick_device():
+            """Номер выбранного микрофона (или None — по умолчанию) и его название для журнала."""
+            try:
+                devs = sd.query_devices()
+                if self.device:
+                    for i, d in enumerate(devs):
+                        if d.get("max_input_channels", 0) > 0 and d.get("name") == self.device:
+                            return i, d["name"]
+                    _vlog(f"выбранный микрофон «{self.device}» не найден — беру стандартный")
+                d = sd.query_devices(kind="input")
+                return None, d.get("name", "?")
+            except Exception as e:  # noqa: BLE001
+                return None, f"? ({e})"
+
         def open_stream():
-            s = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
-                                  channels=1, callback=callback)
+            idx, name = pick_device()
+            try:
+                s = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
+                                      channels=1, callback=callback, device=idx)
+            except Exception:  # noqa: BLE001 — микрофон не умеет 16 кГц: просим Windows пересчитать
+                s = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16",
+                                      channels=1, callback=callback, device=idx,
+                                      extra_settings=_wasapi_auto())
             s.start()
+            _vlog(f"микрофон: {name}")
             return s
 
         try:
@@ -148,6 +170,7 @@ class Listener(QThread):
         gain = 1.0
         floor = 0.004            # оценка уровня тишины/шума
         zero_t, warned_zero = 0.0, False
+        st = {"t": time.monotonic(), "n": 0, "sum": 0.0, "max": 0.0, "parts": 0, "finals": 0}
         self.ready.emit()
         last_data = time.monotonic()
         try:
@@ -176,6 +199,12 @@ class Listener(QThread):
                             _vlog(f"микрофон пока недоступен: {e}")
                     continue
                 last_data = time.monotonic()
+                if last_data - st["t"] > 30:              # раз в 30 с — сводка в журнал слуха
+                    n = max(1, st["n"])
+                    _vlog(f"за 30 с: громкость средн. {st['sum'] / n:.4f}, макс. {st['max']:.3f}, "
+                          f"усиление x{gain:.1f}, черновиков {st['parts']}, фраз {st['finals']}, "
+                          f"пауза={'да' if self._paused else 'нет'}")
+                    st.update(t=last_data, n=0, sum=0.0, max=0.0, parts=0, finals=0)
                 try:
                     if self._paused:
                         utter.clear()
@@ -224,6 +253,9 @@ class Listener(QThread):
                     if gain > 1.05:
                         data = np.clip(f * gain, -32768, 32767).astype(np.int16).tobytes()
                         rms *= gain
+                    st["n"] += 1
+                    st["sum"] += rms
+                    st["max"] = max(st["max"], rms)
                     self.level.emit(min(1.0, rms * 7))
                     utter += data
                     if len(utter) > MAX_UTTERANCE:
@@ -235,6 +267,7 @@ class Listener(QThread):
                         confs = [float(w.get("conf", 1.0)) for w in res.get("result", [])]
                         last_partial = ""
                         if text:
+                            st["finals"] += 1
                             self.final.emit(text, confs, bytes(utter))
                             utt_id += 1
                         utter.clear()
@@ -242,6 +275,7 @@ class Listener(QThread):
                         p = json.loads(rec.PartialResult()).get("partial", "").strip()
                         if p != last_partial:
                             last_partial = p
+                            st["parts"] += 1
                             self.partial.emit(p)
                         # раз в 0,8 с отдаём звук фразы — точное распознавание обновит субтитры
                         now = time.monotonic()
@@ -257,6 +291,33 @@ class Listener(QThread):
                 stream.close()
             except Exception:  # noqa: BLE001
                 pass
+
+def _wasapi_auto():
+    try:
+        import sounddevice as sd
+        return sd.WasapiSettings(auto_convert=True)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def input_devices():
+    """Названия микрофонов в системе (без повторов)."""
+    try:
+        import sounddevice as sd
+        hostapis = sd.query_hostapis()
+        names = []
+        for d in sd.query_devices():
+            if d.get("max_input_channels", 0) <= 0:
+                continue
+            api = hostapis[d["hostapi"]]["name"] if d.get("hostapi") is not None else ""
+            if "MME" not in api and "WASAPI" not in api and api:
+                continue
+            if d["name"] not in names:
+                names.append(d["name"])
+        return names
+    except Exception:  # noqa: BLE001
+        return []
+
 
 def _vlog(text):
     try:
