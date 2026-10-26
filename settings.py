@@ -12,7 +12,8 @@ DEFAULTS = {
     "address": "",                  # обращение в ответах: «господин», «босс»…
     "wake_reply": "Слушаю вас",     # что сказать на «Сеньор»
     "speak_wake_reply": True,
-    "chime": True,
+    "chime": False,                 # «писк» при обращении — по умолчанию выключен
+    "chime_off_v2": False,          # один раз выключили писк у тех, у кого он был
     "voice_speed": "normal",
     "voice_engine": "piper",        # piper (Руслан, бесплатно) | yandex (по ключу)
     "yandex_key": "",

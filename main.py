@@ -819,6 +819,16 @@ COMMANDISH = re.compile(
     re.I)
 
 
+SUB_STYLES = [
+    ("glass", "Стекло", "Полупрозрачная плашка с подсветкой"),
+    ("cinema", "Кино", "Тёмная полоса и жирный текст, как субтитры в фильмах"),
+    ("karaoke", "Караоке", "Последнее слово подсвечивается, пока вы говорите"),
+    ("neon", "Неон", "Светящаяся рамка цветом темы"),
+    ("bubble", "Пузырь", "Яркая плашка цветом темы"),
+    ("minimal", "Только текст", "Без подложки — просто слова на фоне"),
+]
+
+
 class Subtitles(QWidget):
     """Субтитры: «стеклянная» плашка по центру; новые слова плавно проявляются, пока вы говорите
     (бледнее — черновик, ярче — точно распознанный текст). Пустая — плавно исчезает."""
@@ -852,7 +862,7 @@ class Subtitles(QWidget):
         self.ages = self.ages[:keep] + [0.0] * (len(new) - keep)
         self.words, self.faint = new, faint
         self._goal = 1.0
-        self.lbl.setFont(font(30 if len(text) < 90 else 24, QFont.Medium, display=True))
+        self.lbl.setFont(font(self.size_px(len(text) >= 90), QFont.Medium, display=True))
         self._render()
         self._relayout()
         self._t.start(16)
@@ -860,15 +870,41 @@ class Subtitles(QWidget):
     def text(self):
         return " ".join(self.words)
 
+    @staticmethod
+    def style():
+        s = T.APPEARANCE.get("subs_style") or "glass"
+        return s if s in dict((k, n) for k, n, _d in SUB_STYLES) else "glass"
+
+    @staticmethod
+    def size_px(long=False):
+        base = {"small": 24, "medium": 30, "large": 38}.get(T.APPEARANCE.get("subs_size") or "medium", 30)
+        return int(base * 0.8) if long else base
+
     def _render(self):
+        st = self.style()
         top = 0.62 if self.faint else 1.0
+        if st == "bubble":
+            rgb = (10, 12, 16)
+        elif st == "neon":
+            c = QColor(T.ACCENT).lighter(150)
+            rgb = (c.red(), c.green(), c.blue())
+        elif st == "cinema":
+            rgb = (255, 236, 160) if self.faint else (255, 255, 255)
+        else:
+            rgb = (255, 255, 255)
+        acc = QColor(T.ACCENT_SOFT)
         parts = []
-        for w, a in zip(self.words, self.ages):
+        n = len(self.words)
+        for i, (w, a) in enumerate(zip(self.words, self.ages)):
             k = min(1.0, a / 0.28)
             k = 1 - (1 - k) ** 3
             al = max(0.0, min(1.0, top * k * self._alpha))
             ww = w.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            parts.append(f'<span style="color: rgba(255,255,255,{al:.3f})">{ww}</span>')
+            col = rgb
+            if st == "karaoke" and i == n - 1 and self.faint:        # последнее слово — цветом темы
+                col = (acc.red(), acc.green(), acc.blue())
+            weight = "font-weight:700;" if st in ("cinema", "karaoke") else ""
+            parts.append(f'<span style="{weight}color: rgba({col[0]},{col[1]},{col[2]},{al:.3f})">{ww}</span>')
         self.lbl.setText(" ".join(parts))
 
     def _relayout(self):
@@ -909,25 +945,46 @@ class Subtitles(QWidget):
             self.lbl.setVisible(False)
             return
         self.lbl.setVisible(True)
+        st = self.style()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setOpacity(self._alpha)
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        bg = QColor(T.SURFACE)
-        bg.setAlphaF(0.55)
-        p.setPen(Qt.NoPen)
-        p.setBrush(bg)
-        p.drawRoundedRect(r, 22, 22)
-        g = QLinearGradient(r.topLeft(), r.topRight())
-        a1, a2 = QColor(T.ACCENT), QColor(T.ACCENT_SOFT)
-        a1.setAlphaF(0.0)
-        a2.setAlphaF(0.55)
-        g.setColorAt(0.0, a1)
-        g.setColorAt(0.5, a2)
-        g.setColorAt(1.0, a1)
-        p.setPen(QPen(QBrush(g), 1.4))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(r, 22, 22)
+        if st in ("glass", "karaoke"):
+            bg = QColor(T.SURFACE)
+            bg.setAlphaF(0.55)
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(r, 22, 22)
+            g = QLinearGradient(r.topLeft(), r.topRight())
+            a1, a2 = QColor(T.ACCENT), QColor(T.ACCENT_SOFT)
+            a1.setAlphaF(0.0)
+            a2.setAlphaF(0.55)
+            g.setColorAt(0.0, a1)
+            g.setColorAt(0.5, a2)
+            g.setColorAt(1.0, a1)
+            p.setPen(QPen(QBrush(g), 1.4))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r, 22, 22)
+        elif st == "cinema":                     # как в кино: тёмная полоса под текстом
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 175))
+            p.drawRoundedRect(r, 6, 6)
+        elif st == "bubble":                     # яркая «таблетка» цветом темы
+            g = QLinearGradient(r.topLeft(), r.bottomRight())
+            g.setColorAt(0, QColor(T.ACCENT_SOFT))
+            g.setColorAt(1, QColor(T.ACCENT))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(g))
+            p.drawRoundedRect(r, r.height() / 2 if r.height() < 90 else 28, r.height() / 2 if r.height() < 90 else 28)
+        elif st == "neon":                       # светящаяся рамка
+            for wdt, al in ((10, 0.08), (6, 0.14), (2, 0.9)):
+                c = QColor(T.ACCENT)
+                c.setAlphaF(al)
+                p.setPen(QPen(c, wdt))
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(r.adjusted(5, 5, -5, -5), 18, 18)
+        # minimal — без подложки, только текст
         if self.faint:                      # идёт речь — мягкая точка-«микрофон» слева
             import math
             k = 0.5 + 0.5 * math.sin(time.time() * 5)
@@ -1595,7 +1652,28 @@ class HomeScreen(Backdrop):
             return 10000
 
     # ---------- речь ----------
+    # как красиво показать в субтитрах разговорные названия, которые распознаются «по буквам»
+    PRETTY = {"кс": "КС", "кэс": "КС", "кес": "КС", "каэс": "КС", "кску": "КС-ку", "кэску": "КС-ку",
+              "кеску": "КС-ку", "кс2": "КС2", "ксго": "КС ГО", "рб": "РБ", "гта": "ГТА", "гта5": "ГТА 5",
+              "пабг": "ПАБГ", "пубг": "ПАБГ", "лол": "ЛОЛ", "обс": "OBS", "вк": "ВК", "мм": "ММ",
+              "мм-ку": "ММ-ку", "дм": "ДМ"}
+
+    def _pretty(self, text):
+        """Субтитры: обращение пишем так, как зовут помощника («синьер» → «Сеньор»),
+        разговорные названия — красиво («кэс» → «КС»)."""
+        wake = set(self.settings.wake_words) if self.settings is not None else set()
+        name = self.settings.name if self.settings is not None else "Сеньор"
+        out = []
+        for w in (text or "").split():
+            low = w.lower().strip(".,!?").replace("ё", "е")
+            if low in wake or low in ("синьер", "сеньер", "синьор", "сеньор", "синьёр", "сеньёр", "синор"):
+                out.append(name + w[len(w.rstrip(".,!?")):])
+            else:
+                out.append(self.PRETTY.get(low, w))
+        return " ".join(out)
+
     def _show_heard(self, text, faint):
+        text = self._pretty(text)
         self.heard.setText(text, faint)
 
     def _on_partial(self, text):
@@ -3182,6 +3260,38 @@ class ProfileScreen(Backdrop):
             self.widget_toggles[key] = b
         lay.addLayout(wg)
         lay.addSpacing(18)
+        self._caption(lay, "Субтитры — как показывать ваши слова на главном экране")
+        subg = grid()
+        self.sub_buttons = {}
+        subgrp = QButtonGroup(self)
+        for i, (key, title, desc) in enumerate(SUB_STYLES):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(176)
+            b.setToolTip(desc)
+            b.clicked.connect(lambda _=False, k=key: self._choose_subs(style=k))
+            subgrp.addButton(b)
+            subg.addWidget(b, 0, i)
+            self.sub_buttons[key] = b
+        lay.addLayout(subg)
+        lay.addSpacing(10)
+        szrow = QHBoxLayout()
+        szrow.setSpacing(10)
+        szrow.addWidget(label("Размер", 13, role="muted"))
+        szrow.addSpacing(6)
+        szgrp = QButtonGroup(self)
+        self.sub_size_buttons = {}
+        for key, title in (("small", "Маленькие"), ("medium", "Средние"), ("large", "Крупные")):
+            b = button(title, "ghost", 13, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(130)
+            b.clicked.connect(lambda _=False, k=key: self._choose_subs(size=k))
+            szgrp.addButton(b)
+            szrow.addWidget(b)
+            self.sub_size_buttons[key] = b
+        szrow.addStretch(1)
+        lay.addLayout(szrow)
+        lay.addSpacing(26)
         self._caption(lay, "Как показывать блок «Компьютер»")
         sysg = grid()
         self.sys_buttons = {}
@@ -3208,6 +3318,15 @@ class ProfileScreen(Backdrop):
         lay.addStretch(1)
         tabs_row.addStretch(1)
         show_page(0)
+
+    def _choose_subs(self, style=None, size=None):
+        if style is not None:
+            self._set_look(subs_style=style)
+        if size is not None:
+            self._set_look(subs_size=size)
+        h = self.win.home
+        h.heard.setText("Так будут выглядеть ваши слова", False)   # пример прямо на главном экране
+        self._flash("Субтитры: пример — на главном экране")
 
     def _choose_sys(self, key):
         self._set_look(sys_style=key)
@@ -3241,6 +3360,10 @@ class ProfileScreen(Backdrop):
         cur_font = a.get("font") or ""
         for k, b in getattr(self, "hover_buttons", {}).items():
             b.setChecked(k == T.hover_style())
+        for k, b in getattr(self, "sub_buttons", {}).items():
+            b.setChecked(k == Subtitles.style())
+        for k, b in getattr(self, "sub_size_buttons", {}).items():
+            b.setChecked(k == (a.get("subs_size") or "medium"))
         for k, b in getattr(self, "sys_buttons", {}).items():
             b.setChecked(k == (a.get("sys_style") or "bars"))
         for k, b in getattr(self, "sound_buttons", {}).items():
@@ -4172,6 +4295,9 @@ class MainWindow(QWidget):
         control.AI_PICK = lambda req, opts: ai.pick_option(req, opts, self.settings)
         if ai.cloud_url():                    # лимиты облака (их задаёт владелец на сервере)
             threading.Thread(target=lambda: ai.server_info(True), daemon=True).start()
+        if not s["chime_off_v2"]:             # писк после обращения мешал — выключаем один раз
+            s.set("chime_off_v2", True)
+            s.set("chime", False)
         if ai.cloud_url() and not s["cloud_switched"]:
             # появился облачный сервер — один раз переводим на него (свой сервер не трогаем)
             s.set("cloud_switched", True)
@@ -4879,6 +5005,13 @@ def run_uitest(out_dir):
             pump(600)
             h.w_system.grab().save(os.path.join(out_dir, f"03-system-{_st}.png"))
         T.set_appearance(app, sys_style="bars")
+        for _st, _n, _d in SUB_STYLES:
+            T.set_appearance(app, subs_style=_st)
+            h.heard.setText("Сеньор, запусти кс", _st == "karaoke")
+            pump(700)
+            h.heard.grab().save(os.path.join(out_dir, f"03-subs-{_st}.png"))
+        T.set_appearance(app, subs_style="glass")
+        h._show_heard("Расскажи анекдот", False)
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
