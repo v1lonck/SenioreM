@@ -13,7 +13,7 @@ from PySide6.QtCore import QLineF, QLockFile, QObject, QPointF, QRectF, Qt, QTim
 from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainterPath,
                            QLinearGradient, QPainter, QPen, QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QColorDialog, QGridLayout, QHBoxLayout, QLabel,
-                               QPushButton, QSlider,
+                               QFrame, QPushButton, QSizePolicy, QSlider,
                                QLineEdit, QMessageBox, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -809,6 +809,133 @@ class VolumeMeter(QWidget):
         p.drawRoundedRect(QRectF(0, 0, max(6, self.width() * self.value), 6), 3, 3)
 
 
+class Subtitles(QWidget):
+    """Субтитры: «стеклянная» плашка по центру; новые слова плавно проявляются, пока вы говорите
+    (бледнее — черновик, ярче — точно распознанный текст). Пустая — плавно исчезает."""
+
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.lbl = QLabel(self)
+        self.lbl.setTextFormat(Qt.RichText)
+        self.lbl.setWordWrap(True)
+        self.lbl.setAlignment(Qt.AlignCenter)
+        self.lbl.setFont(font(30, QFont.Medium, display=True))
+        self.words, self.ages, self.faint = [], [], False
+        self._alpha, self._goal = 0.0, 0.0
+        self._t = QTimer(self)
+        self._t.timeout.connect(self._tick)
+        self.setFixedHeight(0)
+        self.max_w = 1060
+
+    def setText(self, text, faint=False):
+        new = (text or "").split()
+        if not new:
+            self._goal = 0.0
+            self._t.start(16)
+            return
+        # общие слова в начале остаются как есть, новые — проявляются
+        keep = 0
+        while keep < min(len(new), len(self.words)) and \
+                new[keep].lower().strip(".,!?") == self.words[keep].lower().strip(".,!?"):
+            keep += 1
+        self.ages = self.ages[:keep] + [0.0] * (len(new) - keep)
+        self.words, self.faint = new, faint
+        self._goal = 1.0
+        self.lbl.setFont(font(30 if len(text) < 90 else 24, QFont.Medium, display=True))
+        self._render()
+        self._relayout()
+        self._t.start(16)
+
+    def text(self):
+        return " ".join(self.words)
+
+    def _render(self):
+        top = 0.62 if self.faint else 1.0
+        parts = []
+        for w, a in zip(self.words, self.ages):
+            k = min(1.0, a / 0.28)
+            k = 1 - (1 - k) ** 3
+            al = max(0.0, min(1.0, top * k * self._alpha))
+            ww = w.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            parts.append(f'<span style="color: rgba(255,255,255,{al:.3f})">{ww}</span>')
+        self.lbl.setText(" ".join(parts))
+
+    def _relayout(self):
+        pw = int(self.parentWidget().width()) if self.parentWidget() is not None else 1200
+        w = min(self.max_w, max(320, pw - 80))
+        self.lbl.setFixedWidth(w - 64)
+        h = int(self.lbl.heightForWidth(w - 64)) if self.words else 0
+        self.lbl.move(32, 16)
+        self.lbl.setFixedHeight(max(0, h))
+        self.setFixedHeight(h + 32 if self.words else 0)
+        self.setFixedWidth(w)
+
+    def _tick(self):
+        busy = False
+        for i, a in enumerate(self.ages):
+            if a < 0.28:
+                self.ages[i] = a + 0.016
+                busy = True
+        if busy:
+            self._render()
+        d = self._goal - self._alpha
+        if abs(d) > 0.01:
+            self._alpha += d * 0.18
+            busy = True
+            self._render()
+        else:
+            self._alpha = self._goal
+            if self._goal == 0.0 and self.words:
+                self.words, self.ages = [], []
+                self.lbl.setText("")
+                self._relayout()
+        self.update()
+        if not busy:
+            self._t.stop()
+
+    def paintEvent(self, _):
+        if not self.words or self._alpha <= 0.01:
+            self.lbl.setVisible(False)
+            return
+        self.lbl.setVisible(True)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setOpacity(self._alpha)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        bg = QColor(T.SURFACE)
+        bg.setAlphaF(0.55)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, 22, 22)
+        g = QLinearGradient(r.topLeft(), r.topRight())
+        a1, a2 = QColor(T.ACCENT), QColor(T.ACCENT_SOFT)
+        a1.setAlphaF(0.0)
+        a2.setAlphaF(0.55)
+        g.setColorAt(0.0, a1)
+        g.setColorAt(0.5, a2)
+        g.setColorAt(1.0, a1)
+        p.setPen(QPen(QBrush(g), 1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(r, 22, 22)
+        if self.faint:                      # идёт речь — мягкая точка-«микрофон» слева
+            import math
+            k = 0.5 + 0.5 * math.sin(time.time() * 5)
+            c = QColor(T.ACCENT)
+            c.setAlphaF(0.5 + 0.5 * k)
+            p.setPen(Qt.NoPen)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(18, r.center().y()), 3.5 + k, 3.5 + k)
+            if not self._t.isActive():
+                QTimer.singleShot(60, self.update)
+        p.end()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.words:
+            self._relayout()
+
+
 class HomeScreen(Backdrop):
     logout_requested = Signal()
     profile_requested = Signal()
@@ -979,10 +1106,8 @@ class HomeScreen(Backdrop):
         self.state_lbl.setAlignment(Qt.AlignCenter)
         center.addWidget(self.state_lbl)
         center.addSpacing(16)
-        self.heard = label("", 34, QFont.Light, display=True, wrap=True)
-        self.heard.setAlignment(Qt.AlignCenter)
-        self.heard.setMinimumHeight(48)
-        center.addWidget(self.heard)
+        self.heard = Subtitles()
+        center.addWidget(self.heard, 0, Qt.AlignHCenter)
         center.addSpacing(8)
         self.reply = label("", 18, role="muted", wrap=True)
         self.reply.setAlignment(Qt.AlignCenter)
@@ -1396,8 +1521,7 @@ class HomeScreen(Backdrop):
 
     # ---------- речь ----------
     def _show_heard(self, text, faint):
-        self.heard.setText(text)
-        self.heard.setStyleSheet(f"color: {T.FAINT if faint else T.TEXT};")
+        self.heard.setText(text, faint)
 
     def _on_partial(self, text):
         if not text:
@@ -1708,7 +1832,7 @@ class HomeScreen(Backdrop):
                 # свободная формулировка команды («сделай потише», «вруби что-нибудь на ютубе»):
                 # быстрая модель переводит её в понятную команду, и SenioreM её выполняет
                 if reply is None and intent["action"] == "unknown" and not intent.get("followup") \
-                        and not intent.get("rerouted"):
+                        and not intent.get("rerouted") and not (sink is not None and s["chat_ai"] == "code"):
                     cmd = ai.ENGINE.route_command(text, s)
                     if cmd and commands.normalize(cmd) != commands.normalize(text):
                         self.bridge.reroute.emit(cmd, sink)
@@ -1766,8 +1890,8 @@ class HomeScreen(Backdrop):
         if sink is not None:                       # ответ — в чат
             sink(reply)
             if reply and not streamed and self.settings is not None and self.settings["chat_speak"]:
-                self._last_spoken = reply
-                self.speaker.say(reply, cache=not from_ai)
+                self._last_spoken = ai.clean_reply(reply)
+                self.speaker.say(self._last_spoken, cache=not from_ai)
             self._rest_state()
             if ui == "minimize":
                 QTimer.singleShot(300, self.win.smooth_minimize)
@@ -2334,11 +2458,12 @@ class ProfileScreen(Backdrop):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
         self.ai_cards = {}
-        opts = [("smart", "Умный", "На компьютере · бесплатно · ~2 ГБ"),
-                ("fast", "Быстрый", "Для слабых ПК · бесплатно · ~1 ГБ"),
-                ("api", "Свой сервер", "OpenAI-совместимый API по ключу")]
+        opts = [("smart", "На компьютере", "Qwen 2.5 · без интернета · ~2 ГБ, нагружает компьютер"),
+                ("fast", "На компьютере · лёгкий", "Для слабых ПК · без интернета · ~1 ГБ"),
+                ("api", "Свой сервер", "Ваш ключ любого ИИ (OpenAI-совместимый API) · без лимитов")]
         if ai.cloud_url():
-            opts.insert(0, ("cloud", "Облачный", "Самый умный и быстрый · без скачивания · нужен интернет"))
+            opts.insert(0, ("cloud", "Облако SenioreM  ·  рекомендуем",
+                            "Сервер в интернете · компьютер не нагружается · ничего не нужно скачивать"))
         for i, (key, title, desc) in enumerate(opts):
             c = Clickable()
             c.setProperty("role", "option")
@@ -2346,12 +2471,74 @@ class ProfileScreen(Backdrop):
             cl = QVBoxLayout(c)
             cl.setContentsMargins(18, 14, 18, 14)
             cl.setSpacing(3)
-            cl.addWidget(label(title, 16, QFont.DemiBold))
+            cl.addWidget(label(title, 15, QFont.DemiBold))
             cl.addWidget(label(desc, 12, role="muted", wrap=True))
             c.clicked.connect(lambda k=key: self._choose_ai(k))
             grid.addWidget(c, 0, i)
             self.ai_cards[key] = c
         lay.addLayout(grid)
+        lay.addSpacing(18)
+
+        # облако: что умеет и сколько осталось
+        self.ai_cloud = QWidget()
+        cl_ = QVBoxLayout(self.ai_cloud)
+        cl_.setContentsMargins(0, 0, 0, 0)
+        cl_.setSpacing(10)
+        self._caption(cl_, "Что умеет облако SenioreM")
+        caps = QGridLayout()
+        caps.setHorizontalSpacing(12)
+        caps.setVerticalSpacing(12)
+        for i, (ic, title, engine, desc) in enumerate((
+                ("chat", "Ответы и команды", "DeepSeek V4 Flash",
+                 "Быстро отвечает на вопросы и понимает команды своими словами: «сделай потише»"),
+                ("check", "Подробно и код", "DeepSeek V4 Pro",
+                 "Длинные объяснения, задачи, программы — в чате выберите «Умный» или «Код»"),
+                ("image", "Понимает фото", "DeepSeek + распознавание текста",
+                 "Что на картинке, текст со скриншота — прикрепите фото в чате"),
+                ("brush", "Рисует картинки", "FLUX.1",
+                 "«Нарисуй кота в космосе» — картинка появится в чате"),
+                ("play", "Слышит речь", "Whisper large-v3",
+                 "Точно распознаёт, что вы сказали, даже тихо и с названиями игр"),
+                ("up", "Где работает", "Cloudflare",
+                 "Серверы по всему миру: ваш компьютер почти не нагружается"))):
+            c = QFrame()
+            c.setProperty("role", "card")
+            v = QVBoxLayout(c)
+            v.setContentsMargins(16, 14, 16, 14)
+            v.setSpacing(4)
+            h = QHBoxLayout()
+            h.setSpacing(8)
+            ico = QLabel()
+            ico.setPixmap(icons.pixmap(ic, 18, T.ACCENT, 1.7))
+            h.addWidget(ico)
+            h.addWidget(label(title, 14, QFont.DemiBold))
+            h.addStretch(1)
+            v.addLayout(h)
+            v.addWidget(label(engine, 12, QFont.DemiBold, "accent"))
+            v.addWidget(label(desc, 12, role="muted", wrap=True))
+            caps.addWidget(c, i // 3, i % 3)
+        cl_.addLayout(caps)
+        cl_.addSpacing(8)
+        self._caption(cl_, "Ваш лимит облака")
+        self.lim_rows = {}
+        for key, title in (("day", "Сегодня"), ("month", "В этом месяце")):
+            r = QHBoxLayout()
+            r.setSpacing(14)
+            t_ = label(title, 13, role="muted")
+            t_.setFixedWidth(120)
+            r.addWidget(t_)
+            meter = VolumeMeter()
+            meter.setFixedWidth(360)
+            r.addWidget(meter)
+            val = label("", 13)
+            r.addWidget(val)
+            r.addStretch(1)
+            cl_.addLayout(r)
+            self.lim_rows[key] = (meter, val)
+        cl_.addWidget(label("Лимиты одинаковые для всех и задаются владельцем SenioreM. Когда лимит "
+                            "закончится, ответит ИИ на компьютере (если скачан), а на следующий день "
+                            "лимит обновится.", 12, role="faint", wrap=True))
+        lay.addWidget(self.ai_cloud)
         lay.addSpacing(18)
 
         # локальный режим: скачивание
@@ -2420,38 +2607,6 @@ class ProfileScreen(Backdrop):
         self.ai_answer = label("", 14, role="muted", wrap=True)
         lay.addWidget(self.ai_answer)
         lay.addSpacing(24)
-        # ---- расход токенов облачного ИИ и лимиты
-        lay.addWidget(label("Расход токенов", 17, QFont.DemiBold))
-        lay.addSpacing(4)
-        self.ai_usage = label("", 13, role="muted", wrap=True)
-        lay.addWidget(self.ai_usage)
-        lay.addSpacing(10)
-        self.limit_buttons = {}
-        for key, title, opts in (
-                ("ai_day_limit", "В день", ((500_000, "500 тыс."), (1_500_000, "1,5 млн"),
-                                            (5_000_000, "5 млн"), (10 ** 12, "без лимита"))),
-                ("ai_month_limit", "В месяц", ((10_000_000, "10 млн"), (20_000_000, "20 млн"),
-                                               (50_000_000, "50 млн"), (10 ** 12, "без лимита")))):
-            r = QHBoxLayout()
-            r.setSpacing(8)
-            t = label(title, 13, role="muted")
-            t.setFixedWidth(80)
-            r.addWidget(t)
-            grp = QButtonGroup(self)
-            for val, txt in opts:
-                b = button(txt, "ghost", 13, QFont.Normal)
-                b.setCheckable(True)
-                b.setFixedWidth(130)
-                b.clicked.connect(lambda _=False, k=key, v=val: (self._set(k, v), self._refresh_usage()))
-                grp.addButton(b)
-                r.addWidget(b)
-                self.limit_buttons[(key, val)] = b
-            r.addStretch(1)
-            lay.addLayout(r)
-            lay.addSpacing(6)
-        lay.addWidget(label("Когда лимит исчерпан, отвечает ИИ на компьютере (если скачан). "
-                            "250 млн токенов при лимите 20 млн в месяц хватит примерно на год.",
-                            12, role="faint", wrap=True))
         lay.addStretch(1)
 
         self.ai_bridge = AIBridge()
@@ -2465,16 +2620,15 @@ class ProfileScreen(Backdrop):
         self._refresh_ai()
 
     def _refresh_usage(self):
-        if self.settings is None:
+        if self.settings is None or not hasattr(self, "lim_rows"):
             return
         d = ai.usage_get()
-        day, month = ai.limits(self.settings)
-        lim = lambda v: "без лимита" if v >= 10 ** 11 else ai.fmt_tokens(v)  # noqa: E731
-        self.ai_usage.setText(f"Сегодня: {ai.fmt_tokens(d['day_tokens'])} из {lim(day)}   ·   "
-                              f"за месяц: {ai.fmt_tokens(d['month_tokens'])} из {lim(month)}")
-        for (k, v), b in self.limit_buttons.items():
-            cur = int(self.settings[k] or (ai.DAY_LIMIT if k == "ai_day_limit" else ai.MONTH_LIMIT))
-            b.setChecked(cur == v)
+        day, month = ai.limits()
+        for key, used, total in (("day", d["day_tokens"], day), ("month", d["month_tokens"], month)):
+            meter, val = self.lim_rows[key]
+            left = max(0, total - int(used))
+            meter.target = left / max(1, total)
+            val.setText(f"осталось {round(100 * left / max(1, total))} %")
 
     def _refresh_ai(self):
         if self.settings is None:
@@ -2487,6 +2641,7 @@ class ProfileScreen(Backdrop):
             c.style().polish(c)
         self.ai_api.setVisible(mode == "api")
         self.ai_local.setVisible(mode not in ("api", "cloud"))
+        self.ai_cloud.setVisible(mode == "cloud")
         if mode == "cloud":
             return
         if mode != "api" and ai.DOWNLOADS.active and not getattr(self, "_ai_downloading", False):
@@ -2692,6 +2847,36 @@ class ProfileScreen(Backdrop):
         lay.addLayout(row)
         lay.addSpacing(30)
 
+        # ---- шрифт всех надписей
+        self._caption(lay, "Шрифт — меняет все надписи в программе")
+        fg = grid()
+        self.font_cards = {}
+        for i, (fam, title, desc) in enumerate(T.available_fonts()):
+            c = Clickable()
+            c.setProperty("role", "option")
+            c.setCursor(Qt.PointingHandCursor)
+            c.setFixedWidth(232)
+            v = QVBoxLayout(c)
+            v.setContentsMargins(16, 12, 16, 12)
+            v.setSpacing(2)
+            sample = QLabel("Сеньор, привет!")
+            f_ = QFont(fam or T.FAMILY)
+            f_.setPixelSize(21)
+            f_.setWeight(QFont.DemiBold)
+            sample.setFont(f_)
+            sample.setProperty("keepfont", True)
+            v.addWidget(sample)
+            t_ = QLabel(f"{title} · {desc}")
+            t_.setFont(font(12))
+            t_.setProperty("role", "muted")
+            t_.setWordWrap(True)
+            v.addWidget(t_)
+            c.clicked.connect(lambda f=fam: self._choose_font(f))
+            fg.addWidget(c, i // 4, i % 4)
+            self.font_cards[fam] = c
+        lay.addLayout(fg)
+        lay.addSpacing(30)
+
         # ---- главный экран: часы и виджеты
         self._caption(lay, "Главный экран")
         crow = QHBoxLayout()
@@ -2729,9 +2914,27 @@ class ProfileScreen(Backdrop):
         self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         lay.addStretch(1)
 
+    def _choose_font(self, family):
+        T.set_font(QApplication.instance(), family)
+        # образцы шрифтов в карточках оставляем своими
+        for fam, c in self.font_cards.items():
+            for lb in c.findChildren(QLabel):
+                if lb.property("keepfont"):
+                    f_ = QFont(fam or T.FAMILY)
+                    f_.setPixelSize(21)
+                    f_.setWeight(QFont.DemiBold)
+                    lb.setFont(f_)
+        self._refresh_look()
+        self._flash("Шрифт изменён")
+
     def _refresh_look(self):
         import backgrounds
         a = T.APPEARANCE
+        cur_font = a.get("font") or ""
+        for fam, c in getattr(self, "font_cards", {}).items():
+            c.setProperty("selected", "true" if fam == cur_font else "false")
+            c.style().unpolish(c)
+            c.style().polish(c)
         self._loading = True
         acc = (a.get("accent") or "").lower()
         for c, b in self.swatches.items():
@@ -3642,6 +3845,8 @@ class MainWindow(QWidget):
             if s["ai_mode"] != "api":
                 # облачный ИИ (если настроен) — сразу умный и ничего не нужно скачивать
                 s.set("ai_mode", "cloud" if ai.cloud_url() else ai.recommended_kind())
+        if ai.cloud_url():                    # лимиты облака (их задаёт владелец на сервере)
+            threading.Thread(target=lambda: ai.server_info(True), daemon=True).start()
         if ai.cloud_url() and not s["cloud_switched"]:
             # появился облачный сервер — один раз переводим на него (свой сервер не трогаем)
             s.set("cloud_switched", True)
@@ -3796,6 +4001,8 @@ class MainWindow(QWidget):
             return
         self.chat.load(self.settings, self.settings.name)
         switch_page(self.stack, self.chat)
+        for ms in (0, 60, 300):
+            QTimer.singleShot(ms, hide_stray_windows)
 
     def open_profile(self, section="address"):
         if self.settings is None:
@@ -4446,10 +4653,31 @@ def run_uitest(out_dir):
         pump(600)
         win.companion.grab().save(os.path.join(out_dir, "06-companion-window.png"))
         win.companion.set_speaking(False)
+        from PySide6.QtGui import QImageReader as _QIR
+        fmts = sorted(bytes(f).decode() for f in _QIR.supportedImageFormats())
+        log.append("image formats: " + " ".join(fmts))
+        if "jpg" not in fmts:
+            raise RuntimeError("нет модуля JPEG — фото в чате не откроются")
         win.open_chat()
         win.chat.send("Кто такой Павел Дуров?")
         win.chat.receive("Павел Дуров — российский предприниматель, основатель ВКонтакте и Telegram.")
+        _ci = QImage(640, 360, QImage.Format_RGB32)
+        _ci.fill(QColor("#845EC2"))
+        win.chat.attach(qimage=_ci)
+        _att = list(win.chat.pending)
+        win.chat._clear_pending()
+        win.chat._add("Что на картинке?", True, images=_att)
+        win.chat.receive("На картинке **фиолетовый** прямоугольник.\n\n- ровный цвет\n- без текста")
+        _gp = os.path.join(tempfile.mkdtemp(), "gen.jpg")
+        _ci.save(_gp, "JPG")
+        win.chat._add("Нарисуй кота", True)
+        win.chat.receive("Готово: кот", [_gp])
+        win.chat.attach(qimage=_ci)
+        win.chat._ai_changed("code")
         shot(win, "08-chat")
+        hide_stray_windows()
+        strays = [type(w).__name__ for w in app.topLevelWidgets() if w.isVisible()]
+        log.append("visible windows: " + ", ".join(strays))
         win._back_home()
         from PySide6.QtCore import QPoint as _QP2, QRect as _QR
         for st, _t, _d in ORB_STYLES:
@@ -4495,6 +4723,40 @@ def run_uitest(out_dir):
     with open(os.path.join(out_dir, "uitest.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(log))
     os._exit(0 if log and log[-1] == "OK" else 1)
+
+
+_STRAY = ("QWidget", "QLabel", "QFrame", "QPushButton", "Typing", "Thumb", "Bubble", "LogoMark",
+          "Toggle", "VolumeMeter", "LimitBar")
+
+
+def hide_stray_windows():
+    """Пустое окно без хозяина (появилось по ошибке) — прячем и пишем в журнал запуска,
+    чтобы на экране не мигали лишние «полоски»."""
+    app = QApplication.instance()
+    if app is None:
+        return
+    for w in app.topLevelWidgets():
+        try:
+            if w.isVisible() and w.parent() is None and type(w).__name__ in _STRAY \
+                    and w.windowType() in (Qt.Window, Qt.Widget):
+                startup_mark(f"лишнее окно спрятано: {type(w).__name__} {w.width()}x{w.height()}")
+                w.hide()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _trim_memory():
+    """Отдаём системе неиспользуемую память (в «Диспетчере задач» SenioreM занимает меньше)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        import gc
+        gc.collect()
+        k = ctypes.windll.kernel32
+        k.SetProcessWorkingSetSizeEx(k.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1), 0)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _wait_for_setup(limit=20.0):
@@ -4553,6 +4815,13 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SenioreM")
     apply_app_theme(app)
+    stray_timer = QTimer()
+    stray_timer.timeout.connect(hide_stray_windows)
+    stray_timer.start(1500)
+    trim_timer = QTimer()
+    trim_timer.timeout.connect(_trim_memory)
+    trim_timer.start(90_000)
+    QTimer.singleShot(20_000, _trim_memory)
 
     lock = QLockFile(str(config.data_dir() / "app.lock"))
     if not lock.tryLock(15000 if ("--restart" in sys.argv or "--elevated" in sys.argv) else 100):
