@@ -11,7 +11,12 @@
     "edge_voice": "ru-RU-DmitryNeural",
     "rate": "+0%"
   },
-  "wake_words": ["сеньор", "сеньер", "синьор"],
+  "wake_words": [
+    "сеньор",
+    "сеньер",
+    "синьор"
+  ],
   "search_url": "https://www.google.com/search?q=",
-  "home_url": "https://www.google.com"
+  "home_url": "https://www.google.com",
+  "ai_proxy_url": "https://seniorem.kb0330795.workers.dev"
 }

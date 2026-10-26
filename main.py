@@ -3642,6 +3642,12 @@ class MainWindow(QWidget):
             if s["ai_mode"] != "api":
                 # облачный ИИ (если настроен) — сразу умный и ничего не нужно скачивать
                 s.set("ai_mode", "cloud" if ai.cloud_url() else ai.recommended_kind())
+        if ai.cloud_url() and not s["cloud_switched"]:
+            # появился облачный сервер — один раз переводим на него (свой сервер не трогаем)
+            s.set("cloud_switched", True)
+            if s["ai_mode"] != "api":
+                s.set("ai_mode", "cloud")
+                s.set("ai_enabled", True)
         mode = s["ai_mode"] or "smart"
         if os.environ.get("SENIOREM_NO_DOWNLOADS"):
             pass
