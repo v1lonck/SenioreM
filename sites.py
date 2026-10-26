@@ -115,6 +115,11 @@ ALIASES = {
     "ксго": "counter strike", "контр страйк": "counter strike", "каунтер страйк": "counter strike",
     "dota": "dota", "dota 2": "dota", "gta": "grand theft auto", "ds": "discord", "tg": "telegram",
 }
+# разговорные названия игр и программ («кску», «рб», «гташку», «тг») — в отдельном словаре
+import slang_names as _slang  # noqa: E402
+for _k, _v in _slang.ALIASES.items():
+    ALIASES.setdefault(_k, _v)
+
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n",
                      "o", "p", "r", "s", "t", "u", "f", "h", "ts", "ch", "sh", "sch", "", "y",
