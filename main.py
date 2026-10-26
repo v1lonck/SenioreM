@@ -1508,6 +1508,20 @@ class HomeScreen(Backdrop):
         timers.manager().stop_alarm()
         self._show_heard("Стоп", False)
 
+    def _defer_launch(self, fn):
+        """Запустить программу, когда помощник договорит «Запускаю …» (не дольше 6 с)."""
+        def wait_then():
+            t0 = time.time()
+            while not self.speaking and time.time() - t0 < 2.5:     # ждём начала фразы
+                time.sleep(0.05)
+            while self.speaking and time.time() - t0 < 6.0:         # и её конца
+                time.sleep(0.05)
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                config.voice_log(f"запуск не удался: {e}")
+        threading.Thread(target=wait_then, daemon=True).start()
+
     def _on_said(self, _text):
         self._said_at = time.time()
 
@@ -1719,8 +1733,17 @@ class HomeScreen(Backdrop):
             return
         try:
             sure = not confs or (sum(confs) / len(confs) >= 0.8 and min(confs) >= 0.5)
-            if sure and self._quick_intent(vosk_text)["action"] in self.FAST_ACTIONS:
+            qi = self._quick_intent(vosk_text)
+            if sure and qi["action"] in self.FAST_ACTIONS:
                 self.execute(vosk_text)          # без ожидания — отвечает сразу
+                return
+            # «запусти кс», «открой телеграм»: программа точно нашлась — запускаем сразу,
+            # не дожидаясь точного распознавания
+            if sure and qi["action"] == "open" and qi.get("name") and \
+                    (sites.find_program(qi["name"], threshold=0.93) or
+                     sites.find_site(qi["name"])):
+                config.voice_log(f"сразу (уверенно): «{vosk_text}»")
+                self.execute(vosk_text)
                 return
         except Exception:  # noqa: BLE001
             pass
@@ -1833,7 +1856,16 @@ class HomeScreen(Backdrop):
             elif intent["action"] == "ask":
                 use_ai = False     # пока ИИ скачивается — ответ по поиску в интернете
 
+        defer = self._defer_launch if (self._voice_cmd and self.speaker.enabled) else None
+
         def work():
+            sites.DEFER = defer
+            try:
+                _work()
+            finally:
+                sites.DEFER = None
+
+        def _work():
             ui = ""
             if intent["action"] == "weather":
                 try:
@@ -1865,6 +1897,13 @@ class HomeScreen(Backdrop):
                     if intent["action"] == "unknown" and not intent.get("followup") else None
                 # свободная формулировка команды («сделай потише», «вруби что-нибудь на ютубе»):
                 # быстрая модель переводит её в понятную команду, и SenioreM её выполняет
+                # свежие данные из интернета готовим параллельно — не ждём их по очереди
+                ctx_box = {}
+                ctx_thread = None
+                if reply is None:
+                    ctx_thread = threading.Thread(
+                        target=lambda: ctx_box.update(c=live.build_context(text, T.APPEARANCE)), daemon=True)
+                    ctx_thread.start()
                 if reply is None and intent["action"] == "unknown" and not intent.get("followup") \
                         and not intent.get("rerouted") and not (sink is not None and s["chat_ai"] == "code") \
                         and COMMANDISH.search(text.lower()):
@@ -1874,7 +1913,9 @@ class HomeScreen(Backdrop):
                         return
                 if reply is None:
                     try:
-                        ctx = live.build_context(text, T.APPEARANCE)
+                        if ctx_thread is not None:
+                            ctx_thread.join(5.0)          # интернет медленный — отвечаем без него
+                        ctx = ctx_box.get("c", "")
                         speak_now = self.speaker.enabled and (sink is None or s["chat_speak"])
                         self._streamed = ""
                         sent = []

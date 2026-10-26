@@ -157,7 +157,7 @@ def crypto_phrase(coin="bitcoin"):
 # ------------------------------------------------------------------ поиск
 def _ddg(query, n):
     page = _get("https://html.duckduckgo.com/html/?kl=ru-ru&q=" + urllib.parse.quote(query),
-                timeout=8, raw=True)
+                timeout=4, raw=True)
     titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', page, flags=re.S)
     snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</(?:a|td|div)>', page, flags=re.S)
     return [(_clean(t), _clean(sn)) for t, sn in zip(titles, snippets)][:n]
@@ -174,14 +174,14 @@ def _clean(s):
 def _wiki(query, n):
     """Википедия: определения, факты, люди, места."""
     data = _get("https://ru.wikipedia.org/w/api.php?action=query&list=search&format=json"
-                "&utf8=1&srlimit=%d&srsearch=%s" % (n, urllib.parse.quote(query)), timeout=8)
+                "&utf8=1&srlimit=%d&srsearch=%s" % (n, urllib.parse.quote(query)), timeout=4)
     hits = data.get("query", {}).get("search", [])
     out = []
     if hits:
         title = hits[0]["title"]
         ext = _get("https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1"
                    "&explaintext=1&exsentences=3&format=json&utf8=1&titles="
-                   + urllib.parse.quote(title), timeout=8)
+                   + urllib.parse.quote(title), timeout=4)
         for page in ext.get("query", {}).get("pages", {}).values():
             if page.get("extract"):
                 out.append((_clean(title), _clean(page["extract"])))
@@ -193,7 +193,7 @@ def _wiki(query, n):
 def _news(query, n):
     """Свежие новости (Google News RSS)."""
     page = _get("https://news.google.com/rss/search?hl=ru&gl=RU&ceid=RU:ru&q="
-                + urllib.parse.quote(query), timeout=8, raw=True)
+                + urllib.parse.quote(query), timeout=4, raw=True)
     items = re.findall(r"<item>(.*?)</item>", page, flags=re.S)
     out = []
     for it in items[:n]:
