@@ -1668,7 +1668,7 @@ class HomeScreen(Backdrop):
                     "brightness_set", "brightness_delta", "brightness_get", "greet", "thanks", "help",
                     "yt_key", "press_key", "mouse_click", "scenario", "vpn", "vpn_off",
                     "startup_list", "sysinfo", "settings_page", "timer_add", "timer_cancel",
-                    "timer_left", "timer_alarm_stop", "timer_snooze"}
+                    "timer_left", "timer_alarm_stop", "timer_snooze", "game_play", "game_accept"}
 
     def _quick_intent(self, text):
         t = commands.fix_text(text)
@@ -1857,6 +1857,10 @@ class HomeScreen(Backdrop):
                 use_ai = False     # пока ИИ скачивается — ответ по поиску в интернете
 
         defer = self._defer_launch if (self._voice_cmd and self.speaker.enabled) else None
+        if intent["action"] in ("game_play", "game_accept") and self._voice_cmd and s is not None:
+            addr = (s["address"] or "").strip()          # в игре — сразу короткое «Слушаю»
+            self._last_spoken = f"Слушаю{', ' + addr if addr else ''}."
+            self.speaker.say(self._last_spoken, force=True)
 
         def work():
             sites.DEFER = defer
