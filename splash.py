@@ -1,6 +1,5 @@
 """Окно загрузки: название, что умеет программа, прогресс.
 При первом запуске докачивает речевую модель (~45 МБ), затем загружает её в память."""
-import math
 import os
 import shutil
 import time
@@ -10,7 +9,7 @@ import zipfile
 
 from PySide6.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt,
                             QThread, QTimer, Signal)
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 import config
@@ -264,30 +263,20 @@ class Updater(QThread):
 
 
 class Mark(QWidget):
-    """Иконка программы с мягко «дышащим» свечением."""
+    """Иконка программы с ровным неподвижным свечением (без пульсации — она «мигала»,
+    когда компьютер занят загрузкой)."""
 
     def __init__(self, size=150):
         super().__init__()
         self.setFixedSize(size, size)
-        self._t = 0.0
-        path = config.resource_path("assets/icon.png")
-        self._pix = QPixmap(str(path)) if path.exists() else QPixmap()
-        t = QTimer(self)
-        t.timeout.connect(self._tick)
-        t.start(16)
-
-    def _tick(self):
-        self._t += 0.016
-        self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         c = QPointF(self.width() / 2, self.height() / 2)
-        b = (math.sin(self._t * 2.2) + 1) / 2
         glow = QColor(T.ACCENT)
-        glow.setAlphaF(0.05 + 0.07 * b)
+        glow.setAlphaF(0.09)
         p.setPen(Qt.NoPen)
         p.setBrush(glow)
         p.drawEllipse(c, self.width() * 0.5, self.width() * 0.5)
