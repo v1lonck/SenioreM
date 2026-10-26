@@ -96,7 +96,7 @@ class Recognizer:
     def available(self):
         return self.model is not None
 
-    def transcribe(self, pcm16: bytes, rate: int = 16000) -> str:
+    def transcribe(self, pcm16: bytes, rate: int = 16000, preview=False) -> str:
         """pcm16 — моно 16 бит. Возвращает текст или "" (если ничего не разобрал)."""
         import numpy as np
         if self.model is None or not pcm16:
@@ -109,9 +109,13 @@ class Recognizer:
         if peak < 0.003:
             return ""
         audio = audio * min(8.0, 0.6 / peak)          # нормализуем громкость (шёпот)
+        if preview and not self.lock.acquire(False):
+            return ""                      # идёт основное распознавание — субтитры подождут
+        if preview:
+            self.lock.release()
         with self.lock:
             segments, _info = self.model.transcribe(
-                audio, language="ru", beam_size=2 if len(audio) < 16000 * 7 else 1,
+                audio, language="ru", beam_size=1 if preview else (2 if len(audio) < 16000 * 7 else 1),
                 initial_prompt=prompt(),
                 condition_on_previous_text=False, vad_filter=False,
                 no_speech_threshold=0.6, temperature=0.0)
