@@ -75,10 +75,102 @@ def _writable(d: Path) -> bool:
         return False
 
 
+_LOCAL = None
+STORAGE_ITEMS = ("model", "voice", "whisper-small", "ai", "voice_cache")   # что скачивает программа
+STORAGE_NEED_GB = 3.5           # речь, голос, точное распознавание и ИИ вместе — с запасом
+
+
+def _storage_file() -> Path:
+    return data_dir() / "storage.json"
+
+
+def storage_chosen() -> bool:
+    """Выбирал ли пользователь папку для загрузок (или она уже используется)."""
+    return _storage_file().is_file()
+
+
+def check_storage_path(path) -> str:
+    """-> "" если папка подходит, иначе — понятная причина."""
+    d = Path(path)
+    if not str(path).strip():
+        return "Папка не выбрана."
+    if not _ascii(d):
+        return ("В пути есть русские буквы или другие не латинские символы — движок распознавания "
+                "речи такие пути не понимает. Выберите папку вроде D:\\SenioreM.")
+    if not _writable(d):
+        return "В эту папку нельзя записывать. Выберите другую."
+    return ""
+
+
+def set_storage(path) -> str:
+    """Запомнить папку для загрузок. -> "" или причина, почему нельзя."""
+    global _LOCAL
+    err = check_storage_path(path)
+    if err:
+        return err
+    _storage_file().write_text(json.dumps({"path": str(Path(path))}, ensure_ascii=False),
+                               encoding="utf-8")
+    _LOCAL = None
+    return ""
+
+
+def free_gb(path) -> float:
+    import shutil
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return shutil.disk_usage(str(p)).free / 1e9
+    except OSError:
+        return 0.0
+
+
+def folder_size(path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def move_storage(new, progress=None) -> str:
+    """Перенести всё скачанное в новую папку и переключиться на неё. -> "" или ошибка."""
+    import shutil
+    old = local_dir()
+    new = Path(new)
+    err = check_storage_path(new)
+    if err:
+        return err
+    if old.resolve() == new.resolve():
+        return set_storage(new)
+    need = sum(folder_size(old / n) for n in STORAGE_ITEMS if (old / n).exists())
+    if free_gb(new) * 1e9 < need * 1.05:
+        return f"На диске мало места: нужно {need / 1e9:.1f} ГБ."
+    items = [n for n in STORAGE_ITEMS if (old / n).exists()]
+    for i, name in enumerate(items):
+        if progress:
+            progress(i / max(1, len(items)), f"Переношу {name}")
+        dst = new / name
+        if dst.exists():
+            shutil.rmtree(dst, ignore_errors=True)
+        shutil.move(str(old / name), str(dst))
+    return set_storage(new)
+
+
 def local_dir() -> Path:
-    """Папка для речевой модели. Движок распознавания не понимает русские буквы
-    в пути (например, имя пользователя Windows на кириллице), поэтому выбираем
-    первую подходящую папку с латинским путём."""
+    """Папка для всего, что программа скачивает (речь, голос, ИИ). Можно выбрать самому
+    (storage.json). Движок распознавания не понимает русские буквы в пути (например, имя
+    пользователя Windows на кириллице), поэтому по умолчанию — первая папка с латинским путём."""
+    global _LOCAL
+    if _LOCAL is not None:
+        return _LOCAL
+    chosen = _read_json(_storage_file()).get("path") if _storage_file().is_file() else None
+    if chosen and _ascii(chosen) and _writable(Path(chosen)):
+        _LOCAL = Path(chosen)
+        return _LOCAL
     candidates = []
     for env in ("LOCALAPPDATA", "ProgramData", "PUBLIC"):
         v = os.environ.get(env)
@@ -87,10 +179,29 @@ def local_dir() -> Path:
     candidates.append(Path(os.environ.get("SystemDrive", "C:") + "\\") / "SenioreM")
     for d in candidates:
         if _ascii(d) and _writable(d):
+            _LOCAL = d
             return d
     d = candidates[0] if candidates else Path.home() / "SenioreM"
     d.mkdir(parents=True, exist_ok=True)
+    _LOCAL = d
     return d
+
+
+def default_storage() -> Path:
+    """Куда программа положит загрузки, если ничего не выбирать."""
+    global _LOCAL
+    keep = _LOCAL
+    _LOCAL = None
+    f = _storage_file()
+    saved = f.read_text(encoding="utf-8") if f.is_file() else None
+    try:
+        if saved is not None:
+            f.unlink()
+        return local_dir()
+    finally:
+        if saved is not None:
+            f.write_text(saved, encoding="utf-8")
+        _LOCAL = keep
 
 
 def model_ready(path: Path) -> bool:
