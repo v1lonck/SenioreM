@@ -15,6 +15,8 @@ for leaked in ("SMTP_USER", "SMTP_PASSWORD"):
         print(f"::warning::Секрет {leaked} больше не используется и в программу не попадает — "
               f"удалите его в Settings → Secrets.")
 
+# облачный ИИ (Cloudflare Worker) — адрес не секретный: ключ Groq хранится на сервере, не в программе
+cfg["ai_proxy_url"] = os.environ.get("AI_PROXY_URL", "").strip() or cfg.get("ai_proxy_url", "")
 cfg["version"] = os.environ.get("APP_VERSION", "").strip() or "0.0.0"
 cfg["update_repo"] = os.environ.get("GITHUB_REPOSITORY", "").strip()
 print(f"Версия {cfg['version']}, обновления из {cfg['update_repo'] or '—'}")
