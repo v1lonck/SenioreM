@@ -3,7 +3,8 @@
 // только здесь, в «секретах» Worker, — в программу он не попадает).
 //
 // Настройка: Settings → Variables and Secrets:
-//   GROQ_KEY   (Secret) — ключ с https://console.groq.com/keys
+//   GROQ_KEY   (Secret) — ключ с https://console.groq.com/keys  (из России — регистрация через VPN)
+//   или OPENROUTER_KEY (Secret) — ключ с https://openrouter.ai/keys (работает без VPN, лимиты меньше)
 //   APP_TOKEN  (Text, необязательно) — пароль программы, по умолчанию "seniorem-app"
 
 const MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]; // умная, при лимите — быстрая
@@ -31,13 +32,18 @@ export default {
       max_tokens: Math.min(Number(body.max_tokens ?? 300), 600),
       stream: !!body.stream,
     };
-    for (const model of MODELS) {
-      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const groq = !!env.GROQ_KEY;
+    const api = groq ? "https://api.groq.com/openai/v1/chat/completions"
+                     : "https://openrouter.ai/api/v1/chat/completions";
+    const key = groq ? env.GROQ_KEY : env.OPENROUTER_KEY;
+    const models = groq ? MODELS : ["meta-llama/llama-3.3-70b-instruct:free", "google/gemma-3-27b-it:free"];
+    for (const model of models) {
+      const r = await fetch(api, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.GROQ_KEY}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify({ ...out, model }),
       });
-      if (r.status === 429 && model !== MODELS[MODELS.length - 1]) continue; // лимит — пробуем быструю
+      if (r.status === 429 && model !== models[models.length - 1]) continue; // лимит — пробуем запасную
       return new Response(r.body, {
         status: r.status,
         headers: { "Content-Type": r.headers.get("Content-Type") || "application/json" },
