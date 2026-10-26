@@ -314,77 +314,304 @@ class Bar(QWidget):
         p.drawRoundedRect(QRectF(0, 0, max(6, self.width() * self.value), 6), 3, 3)
 
 
-class SystemCard(QWidget):
+SYS_STYLES = [
+    ("bars", "Полоски", "Подписи и полоски загрузки"),
+    ("rings", "Кольца", "Круглые индикаторы, как на панели приборов"),
+    ("graph", "Графики", "Как менялась нагрузка за последние минуты"),
+    ("numbers", "Крупные цифры", "Только главное, крупно"),
+]
+GIB = 1024 ** 3
+
+
+def _load_color(frac):
+    """Цвет по нагрузке: спокойный цвет темы → жёлтый → красный."""
+    if frac < 0.6:
+        return QColor(T.ACCENT)
+    if frac < 0.85:
+        return QColor("#F2A33A")
+    return QColor("#E5484D")
+
+
+def _fmt_mb(b):
+    return f"{b / GIB:.1f} ГБ" if b >= GIB else f"{b / 1024 ** 2:.0f} МБ"
+
+
+def _fmt_rate(bps, bits=False):
+    v = bps * 8 / 1e6 if bits else bps / 1024 ** 2
+    unit = "Мбит/с" if bits else "МБ/с"
+    return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+
+
+class _SysData:
+    """Считает нагрузку так же, как «Диспетчер задач» Windows."""
+
+    def __init__(self):
+        self.ok = True
+        try:
+            import psutil
+            self.ps = psutil
+            psutil.cpu_percent(None)
+            self.me = psutil.Process()
+            self.me.cpu_percent(None)
+            self.ncpu = psutil.cpu_count() or 1
+            self._io = (psutil.disk_io_counters(), psutil.net_io_counters(), time_now())
+        except Exception:  # noqa: BLE001
+            self.ok = False
+        self._kids = {}
+        self._uss_t, self._uss = 0.0, 0
+        self.hist = {"cpu": [], "ram": [], "app": []}
+
+    def read(self):
+        ps = self.ps
+        d = {}
+        d["cpu"] = ps.cpu_percent(None) / 100
+        m = ps.virtual_memory()
+        used = m.total - m.available                    # как «Используется» в Диспетчере задач
+        d["ram"] = used / max(1, m.total)
+        d["ram_used"], d["ram_total"] = used, m.total
+        # SenioreM вместе с ИИ на компьютере (если запущен): процессор и память
+        cpu = self.me.cpu_percent(None)
+        procs = [self.me]
+        try:
+            for ch in self.me.children(recursive=True):
+                if ch.pid not in self._kids:
+                    self._kids[ch.pid] = ch
+                    ch.cpu_percent(None)
+                else:
+                    cpu += self._kids[ch.pid].cpu_percent(None)
+                procs.append(self._kids[ch.pid])
+        except Exception:  # noqa: BLE001
+            pass
+        d["app_cpu"] = cpu / self.ncpu / 100
+        now = time_now()
+        if now - self._uss_t > 6:                       # «Память» как в Диспетчере задач (частный набор)
+            self._uss_t = now
+            tot = 0
+            for pr in procs:
+                try:
+                    tot += pr.memory_full_info().uss
+                except Exception:  # noqa: BLE001
+                    try:
+                        tot += pr.memory_info().rss
+                    except Exception:  # noqa: BLE001
+                        pass
+            self._uss = tot
+        d["app_mem"] = self._uss
+        d["app"] = self._uss / max(1, m.total)
+        try:
+            dio, nio, t0 = self._io
+            dio2, nio2 = ps.disk_io_counters(), ps.net_io_counters()
+            dt = max(0.5, now - t0)
+            d["disk"] = ((dio2.read_bytes + dio2.write_bytes) - (dio.read_bytes + dio.write_bytes)) / dt
+            d["net"] = ((nio2.bytes_recv + nio2.bytes_sent) - (nio.bytes_recv + nio.bytes_sent)) / dt
+            self._io = (dio2, nio2, now)
+        except Exception:  # noqa: BLE001
+            d["disk"] = d["net"] = 0.0
+        try:
+            b = ps.sensors_battery()
+            d["bat"] = (b.percent, b.power_plugged) if b is not None else None
+        except Exception:  # noqa: BLE001
+            d["bat"] = None
+        for k in ("cpu", "ram", "app"):
+            h = self.hist[k]
+            h.append(d["app_cpu"] if k == "app" else d[k])
+            del h[:-60]
+        return d
+
+
+def time_now():
+    import time
+    return time.monotonic()
+
+
+class SysView(QWidget):
+    """Рисует нагрузку выбранным видом: полоски, кольца, графики или крупные цифры."""
+
     def __init__(self):
         super().__init__()
-        self.frame, lay = card((24, 20, 24, 22), 0)
+        self.d = None
+        self.hist = None
+        self.anim = {"cpu": 0.0, "ram": 0.0, "app": 0.0, "app_cpu": 0.0}
+        self.t = QTimer(self)
+        self.t.timeout.connect(self._tick)
+
+    def style(self):
+        s = T.APPEARANCE.get("sys_style") or "bars"
+        return s if s in dict((k, n) for k, n, _ in SYS_STYLES) else "bars"
+
+    def set_data(self, d, hist):
+        self.d, self.hist = d, hist
+        self.setFixedHeight({"bars": 186, "rings": 150, "graph": 196, "numbers": 150}[self.style()]
+                            + (24 if d.get("bat") else 0))
+        self.t.start(30)
+
+    def _tick(self):
+        busy = False
+        for k in self.anim:
+            goal = float(self.d.get(k, 0.0)) if self.d else 0.0
+            if abs(goal - self.anim[k]) > 0.002:
+                self.anim[k] += (goal - self.anim[k]) * 0.18
+                busy = True
+        self.update()
+        if not busy:
+            self.t.stop()
+
+    # ---- общие куски
+    def _text(self, p, x, y, w, h, s, size, weight=QFont.Normal, color=None, align=Qt.AlignLeft):
+        p.setFont(font(size, weight))
+        p.setPen(QColor(color or T.TEXT))
+        p.drawText(QRectF(x, y, w, h), int(align | Qt.AlignVCenter), s)
+
+    def _bar(self, p, x, y, w, frac):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(T.LINE))
+        p.drawRoundedRect(QRectF(x, y, w, 6), 3, 3)
+        c = _load_color(frac)
+        g = QLinearGradient(x, 0, x + w, 0)
+        g.setColorAt(0, c)
+        g.setColorAt(1, QColor(c).lighter(130))
+        p.setBrush(QBrush(g))
+        p.drawRoundedRect(QRectF(x, y, max(6.0, w * max(0.0, min(1.0, frac))), 6), 3, 3)
+
+    def _ring(self, p, cx, cy, r, frac, big, small):
+        pen = QPen(QColor(T.LINE), 7)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        p.drawArc(rect, 225 * 16, -270 * 16)
+        pen.setColor(_load_color(frac))
+        p.setPen(pen)
+        p.drawArc(rect, 225 * 16, int(-270 * 16 * max(0.0, min(1.0, frac))))
+        self._text(p, cx - r, cy - 13, 2 * r, 22, big, 16, QFont.DemiBold, align=Qt.AlignHCenter)
+        self._text(p, cx - r - 10, cy + r - 4, 2 * r + 20, 18, small, 11, color=T.MUTED, align=Qt.AlignHCenter)
+
+    def _spark(self, p, x, y, w, h, hist, frac):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 10))
+        p.drawRoundedRect(QRectF(x, y, w, h), 8, 8)
+        if len(hist) < 2:
+            return
+        from PySide6.QtGui import QPainterPath
+        n = 60
+        step = w / (n - 1)
+        pts = [QPointF(x + w - (len(hist) - 1 - i) * step, y + h - 3 - (h - 6) * max(0.0, min(1.0, v)))
+               for i, v in enumerate(hist)]
+        path = QPainterPath(pts[0])
+        for pt in pts[1:]:
+            path.lineTo(pt)
+        area = QPainterPath(path)
+        area.lineTo(pts[-1].x(), y + h)
+        area.lineTo(pts[0].x(), y + h)
+        area.closeSubpath()
+        c = _load_color(frac)
+        g = QLinearGradient(0, y, 0, y + h)
+        top = QColor(c)
+        top.setAlpha(90)
+        bot = QColor(c)
+        bot.setAlpha(0)
+        g.setColorAt(0, top)
+        g.setColorAt(1, bot)
+        p.setBrush(QBrush(g))
+        p.drawPath(area)
+        pen = QPen(c, 2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+    def paintEvent(self, _):
+        if not self.d:
+            return
+        d, a = self.d, self.anim
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W = self.width()
+        st = self.style()
+        ram_txt = f"{d['ram_used'] / GIB:.1f} из {d['ram_total'] / GIB:.1f} ГБ"
+        app_txt = f"{d['app_cpu'] * 100:.1f}% · {_fmt_mb(d['app_mem'])}"
+        io_txt = f"Диск {_fmt_rate(d['disk'])}   ·   Сеть {_fmt_rate(d['net'], True)}"
+        y = 0.0
+        if st == "bars":
+            for title, frac, val in (("Процессор", a["cpu"], f"{d['cpu'] * 100:.0f}%"),
+                                     ("Память", a["ram"], f"{d['ram'] * 100:.0f}%  ·  {ram_txt}"),
+                                     ("SenioreM", a["app_cpu"], app_txt)):
+                self._text(p, 0, y, W, 20, title, 13, QFont.DemiBold)
+                self._text(p, 0, y, W, 20, val, 12, color=T.MUTED, align=Qt.AlignRight)
+                self._bar(p, 0, y + 26, W, frac)
+                y += 46
+            self._text(p, 0, y + 2, W, 18, io_txt, 12, color=T.MUTED)
+            y += 26
+        elif st == "rings":
+            r = min(38.0, (W - 40) / 6)
+            for i, (frac, big, small) in enumerate((
+                    (a["cpu"], f"{d['cpu'] * 100:.0f}%", "процессор"),
+                    (a["ram"], f"{d['ram'] * 100:.0f}%", "память"),
+                    (a["app_cpu"], f"{d['app_cpu'] * 100:.0f}%", "SenioreM"))):
+                cx = W * (i * 2 + 1) / 6
+                self._ring(p, cx, 46, r, frac, big, small)
+            self._text(p, 0, 106, W, 18, f"Память: {ram_txt}  ·  SenioreM: {_fmt_mb(d['app_mem'])}", 11,
+                       color=T.MUTED, align=Qt.AlignHCenter)
+            self._text(p, 0, 126, W, 18, io_txt, 11, color=T.MUTED, align=Qt.AlignHCenter)
+            y = 150
+        elif st == "graph":
+            hist = self.hist or {}
+            for title, key, val in (("Процессор", "cpu", f"{d['cpu'] * 100:.0f}%"),
+                                    ("Память", "ram", f"{d['ram'] * 100:.0f}%  ·  {ram_txt}")):
+                self._text(p, 0, y, W, 18, title, 12, QFont.DemiBold)
+                self._text(p, 0, y, W, 18, val, 12, color=T.MUTED, align=Qt.AlignRight)
+                self._spark(p, 0, y + 22, W, 46, hist.get(key, []), a[key])
+                y += 76
+            self._text(p, 0, y, W, 18, f"SenioreM: {app_txt}", 12, color=T.MUTED)
+            self._text(p, 0, y + 20, W, 18, io_txt, 12, color=T.MUTED)
+            y += 44
+        else:
+            cells = ((f"{d['cpu'] * 100:.0f}%", "процессор"), (f"{d['ram'] * 100:.0f}%", "память"),
+                     (_fmt_mb(d["app_mem"]), "SenioreM"), (_fmt_rate(d["net"], True), "сеть"))
+            for i, (big, small) in enumerate(cells):
+                cx, cy = (i % 2) * W / 2, (i // 2) * 72
+                self._text(p, cx, cy, W / 2, 38, big, 28, QFont.DemiBold,
+                           color=_load_color(d["cpu"] if i == 0 else d["ram"] if i == 1 else 0).name())
+                self._text(p, cx, cy + 36, W / 2, 18, small, 12, color=T.MUTED)
+            y = 150
+        if d.get("bat"):
+            pct, plug = d["bat"]
+            self._text(p, 0, y, W, 18, f"Батарея {pct:.0f}%" + (" · заряжается" if plug else ""), 12,
+                       color=T.MUTED)
+        p.end()
+
+
+class SystemCard(QWidget):
+    """Блок «Компьютер»: нагрузка процессора, памяти и самого SenioreM — те же числа,
+    что и в «Диспетчере задач». Вид меняется в профиле → «Оформление»."""
+
+    def __init__(self):
+        super().__init__()
+        self.frame, lay = card((24, 20, 24, 20), 0)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.frame)
         lay.addWidget(caption("КОМПЬЮТЕР"))
         lay.addSpacing(12)
-        self.rows = {}
-        for key, title in (("cpu", "Процессор"), ("ram", "Память компьютера"),
-                           ("app", "Из них SenioreM"), ("bat", "Батарея")):
-            w = QWidget()
-            wl = QVBoxLayout(w)
-            wl.setContentsMargins(0, 0, 0, 10)
-            wl.setSpacing(6)
-            head = QHBoxLayout()
-            head.addWidget(label(title, 13, QFont.DemiBold))
-            head.addStretch(1)
-            val = label("—", 13, role="muted")
-            head.addWidget(val)
-            wl.addLayout(head)
-            bar = Bar()
-            wl.addWidget(bar)
-            lay.addWidget(w)
-            self.rows[key] = (w, val, bar)
+        self.view = SysView()
+        lay.addWidget(self.view)
+        self.data = _SysData()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(3000)
-        self.refresh()
+        self.timer.start(2000)
+        QTimer.singleShot(300, self.refresh)
 
     def refresh(self):
-        if not self.isVisible():
+        if not self.isVisible() or not self.data.ok:
             return
         try:
-            import psutil
+            d = self.data.read()
         except Exception:  # noqa: BLE001
             return
-        cpu = psutil.cpu_percent(None)
-        mem = psutil.virtual_memory()
-        self._set("cpu", cpu / 100, f"{cpu:.0f}%")
-        self._set("ram", mem.percent / 100,
-                  f"{mem.used / 1e9:.1f} из {mem.total / 1e9:.0f} ГБ")
-        try:
-            me = psutil.Process()
-            used = me.memory_info().rss
-            for ch in me.children(recursive=True):
-                try:
-                    used += ch.memory_info().rss
-                except Exception:  # noqa: BLE001
-                    pass
-            self._set("app", used / max(1, mem.total), f"{used / 1e9:.1f} ГБ")
-        except Exception:  # noqa: BLE001
-            pass
-        bat = None
-        try:
-            bat = psutil.sensors_battery()
-        except Exception:  # noqa: BLE001
-            pass
-        w, _v, _b = self.rows["bat"]
-        if bat is None:
-            w.hide()
-        else:
-            w.show()
-            self._set("bat", bat.percent / 100,
-                      f"{bat.percent:.0f}%{' · заряжается' if bat.power_plugged else ''}")
+        self.view.set_data(d, self.data.hist)
 
-    def _set(self, key, frac, text):
-        _w, val, bar = self.rows[key]
-        val.setText(text)
-        bar.target = max(0.0, min(1.0, frac))
+    def restyle(self):
+        if self.view.d:
+            self.view.set_data(self.view.d, self.data.hist)
 
 
 # ------------------------------------------------------------------ заметки

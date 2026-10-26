@@ -2998,12 +2998,35 @@ class ProfileScreen(Backdrop):
             wg.addWidget(b, i // 4, i % 4)
             self.widget_toggles[key] = b
         lay.addLayout(wg)
+        lay.addSpacing(18)
+        self._caption(lay, "Как показывать блок «Компьютер»")
+        sysg = grid()
+        self.sys_buttons = {}
+        sysgrp = QButtonGroup(self)
+        for i, (key, title, desc) in enumerate(widgets.SYS_STYLES):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(190)
+            b.setToolTip(desc)
+            b.clicked.connect(lambda _=False, k=key: self._choose_sys(k))
+            sysgrp.addButton(b)
+            sysg.addWidget(b, 0, i)
+            self.sys_buttons[key] = b
+        lay.addLayout(sysg)
+        lay.addSpacing(6)
+        lay.addWidget(label("Числа те же, что в «Диспетчере задач» Windows: процессор и память всего "
+                            "компьютера, сколько из них занимает SenioreM, скорость диска и интернета.",
+                            12, role="faint", wrap=True))
         lay.addSpacing(26)
         self.t_eco = self._toggle_row(lay, "Экономный режим",
                                       "Фон без анимации — меньше нагрузка на компьютер и батарею.",
                                       None)
         self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         lay.addStretch(1)
+
+    def _choose_sys(self, key):
+        self._set_look(sys_style=key)
+        self.win.home.w_system.restyle()
 
     def _choose_sound(self, sound=None, volume=None):
         import clicksounds
@@ -3033,6 +3056,8 @@ class ProfileScreen(Backdrop):
         cur_font = a.get("font") or ""
         for k, b in getattr(self, "hover_buttons", {}).items():
             b.setChecked(k == T.hover_style())
+        for k, b in getattr(self, "sys_buttons", {}).items():
+            b.setChecked(k == (a.get("sys_style") or "bars"))
         for k, b in getattr(self, "sound_buttons", {}).items():
             b.setChecked(k == (a.get("click_sound") or "none"))
         for v, b in getattr(self, "sound_vol_buttons", {}).items():
@@ -4655,6 +4680,12 @@ def run_uitest(out_dir):
         h._update_downloaded("")
         h.upd_btn.show()
         shot(win, "03-home-blue")
+        for _st, _n, _d in widgets.SYS_STYLES:
+            T.set_appearance(app, sys_style=_st)
+            h.w_system.refresh()
+            pump(600)
+            h.w_system.grab().save(os.path.join(out_dir, f"03-system-{_st}.png"))
+        T.set_appearance(app, sys_style="bars")
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
