@@ -182,7 +182,7 @@ class Listener(QThread):
         last_preview = 0.0
         gain = 1.0
         floor = 0.004            # оценка уровня тишины/шума
-        zero_t, warned_zero = 0.0, False
+        zero_t, warned_zero, quiet_windows = 0.0, False, 0
         st = {"t": time.monotonic(), "n": 0, "sum": 0.0, "max": 0.0, "parts": 0, "finals": 0}
         self.ready.emit()
         last_data = time.monotonic()
@@ -217,6 +217,10 @@ class Listener(QThread):
                     _vlog(f"за 30 с: громкость средн. {st['sum'] / n:.4f}, макс. {st['max']:.3f}, "
                           f"усиление x{gain:.1f}, черновиков {st['parts']}, фраз {st['finals']}, "
                           f"пауза={'да' if self._paused else 'нет'}")
+                    quiet_windows = quiet_windows + 1 if st["max"] < 0.002 else 0
+                    if quiet_windows == 4:                # 2 минуты почти полной тишины
+                        _vlog("микрофон 2 минуты почти не слышит звука")
+                        self.silent.emit()
                     st.update(t=last_data, n=0, sum=0.0, max=0.0, parts=0, finals=0)
                 try:
                     if self._paused:
@@ -324,6 +328,59 @@ def mic_test(model, pcm, wav_path):
             out.append(json.loads(rec.Result()).get("text", ""))
     out.append(json.loads(rec.FinalResult()).get("text", ""))
     return " ".join(x for x in out if x).strip()
+
+
+def mic_scan(model, seconds=4.5, names=None):
+    """Слушает ВСЕ микрофоны одновременно, пока человек говорит. -> [(название, пик, текст)],
+    лучшие — первыми (кто разобрал слова, потом кто громче)."""
+    import sounddevice as sd
+    names = names if names is not None else input_devices()
+    devs = sd.query_devices()
+    streams, bufs = [], {}
+    for name in names:
+        idx = next((i for i, d in enumerate(devs) if d.get("name") == name
+                    and d.get("max_input_channels", 0) > 0), None)
+        if idx is None:
+            continue
+        buf = bytearray()
+
+        def cb(indata, frames, t, status, buf=buf):
+            buf.extend(bytes(indata))
+        try:
+            s = sd.RawInputStream(samplerate=16000, blocksize=800, dtype="int16", channels=1,
+                                  callback=cb, device=idx)
+            s.start()
+            streams.append(s)
+            bufs[name] = buf
+        except Exception:  # noqa: BLE001
+            continue
+    time.sleep(seconds)
+    for s in streams:
+        try:
+            s.stop()
+            s.close()
+        except Exception:  # noqa: BLE001
+            pass
+    from vosk import KaldiRecognizer
+    out = []
+    for name, buf in bufs.items():
+        pcm = bytes(buf)
+        a = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) if pcm else np.zeros(1)
+        peak = float(np.max(np.abs(a))) / 32768 if a.size else 0.0
+        text = ""
+        if peak > 0.003:
+            g = min(8.0, 0.5 / max(peak, 1e-4))          # для распознавания — нормальная громкость
+            pcm2 = np.clip(a * g, -32768, 32767).astype(np.int16).tobytes()
+            rec = KaldiRecognizer(model, 16000)
+            parts = []
+            for i in range(0, len(pcm2), 8000):
+                if rec.AcceptWaveform(pcm2[i:i + 8000]):
+                    parts.append(json.loads(rec.Result()).get("text", ""))
+            parts.append(json.loads(rec.FinalResult()).get("text", ""))
+            text = " ".join(x for x in parts if x).strip()
+        out.append((name, peak, text))
+    out.sort(key=lambda x: (len(x[2].split()), x[1]), reverse=True)
+    return out
 
 
 def _wasapi_auto():

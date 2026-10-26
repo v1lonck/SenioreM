@@ -1574,9 +1574,9 @@ class HomeScreen(Backdrop):
         self._rest_state()
 
     def _on_mic_silent(self):
-        self.reply.setText("Микрофон присылает полную тишину — я вас не слышу. Проверьте: «Параметры Windows "
-                           "→ Конфиденциальность → Микрофон» — доступ для приложений включён; в «Параметры → "
-                           "Система → Звук» выбран нужный микрофон и он не выключен.")
+        self.reply.setText("Микрофон почти ничего не слышит. Откройте профиль → «Активация» → «Найти мой "
+                           "микрофон» и скажите фразу — я сам выберу микрофон, который вас слышит. Если не "
+                           "найдётся — включите микрофон на гарнитуре или в «Параметры → Система → Звук».")
 
     def _on_failed(self, msg):
         config.voice_log(f"микрофон/распознавание: {msg}")
@@ -2569,51 +2569,48 @@ class ProfileScreen(Backdrop):
 
     def _mic_test(self):
         h = self.win.home
-        if h.listener is None or h.model is None:
+        if h.model is None:
             self.mic_test_lbl.setText("Распознавание речи ещё не загружено.")
             return
         self.mic_test_btn.setEnabled(False)
-        self.mic_test_lbl.setText("Говорите… (4 секунды) — например: «Сеньор, который час»")
-        QTimer.singleShot(4200, self._mic_test_done)
-
-    def _mic_test_done(self):
-        import tempfile
-        h = self.win.home
-        pcm = bytes(h.listener.recent[-16000 * 2 * 4:]) if h.listener is not None else b""
-        path = os.path.join(tempfile.gettempdir(), "seniorem_mic_test.wav")
+        self.mic_test_lbl.setText("Говорите сейчас… (5 секунд): «Сеньор, который час». "
+                                  "Слушаю все микрофоны сразу и выберу тот, который вас слышит.")
 
         def work():
-            from voice import mic_test
+            from voice import mic_scan
             try:
-                text = mic_test(h.model, pcm, path)
+                res = mic_scan(h.model)
             except Exception as e:  # noqa: BLE001
-                text = f"(ошибка: {e})"
-            config.voice_log(f"проверка микрофона: «{text}»")
-            self.ai_bridge.mic_result.emit(text)
-        import numpy as np
-        peak = float(np.max(np.abs(np.frombuffer(pcm, dtype=np.int16)))) / 32768 if pcm else 0.0
-        self._mic_peak = peak
+                res = []
+                config.voice_log(f"проверка микрофонов не удалась: {e}")
+            for name, peak, text in res:
+                config.voice_log(f"проверка: «{name}» пик {peak:.3f} — «{text}»")
+            self._mic_scan = res
+            self.ai_bridge.mic_result.emit("")
         threading.Thread(target=work, daemon=True).start()
 
-    def _mic_test_result(self, text):
+    def _mic_test_result(self, _text):
         self.mic_test_btn.setEnabled(True)
-        peak = getattr(self, "_mic_peak", 0.0)
-        if peak < 0.01:
-            msg = "Микрофон почти ничего не прислал — выберите в списке другой микрофон."
-        elif text:
-            msg = f"Распознал: «{text}». Сейчас проиграю запись — так вас слышит помощник."
+        res = getattr(self, "_mic_scan", [])
+        if not res:
+            self.mic_test_lbl.setText("Не получилось открыть ни один микрофон. Проверьте, что микрофон "
+                                      "подключён и в Windows разрешён доступ к нему.")
+            return
+        name, peak, text = res[0]
+        if text:
+            self._set("mic_device", name)
+            self.win.home.restart_listener()
+            self._fill_mics()
+            self.mic_test_lbl.setText(f"Готово! Вас слышит «{name}» — выбрал его. Распознал: «{text}».")
+            set_role(self.mic_test_lbl, "accent")
+        elif peak > 0.01:
+            self.mic_test_lbl.setText(f"Звук есть («{name}»), но слов не разобрал. Говорите ближе к "
+                                      f"микрофону и чётче, и нажмите проверку ещё раз.")
         else:
-            msg = ("Звук есть, но слов не разобрал — послушайте запись: если там шум или искажения, "
-                   "выберите другой микрофон.")
-        self.mic_test_lbl.setText(msg)
-        if peak >= 0.01:
-            try:
-                import tempfile
-                import winsound
-                winsound.PlaySound(os.path.join(tempfile.gettempdir(), "seniorem_mic_test.wav"),
-                                   winsound.SND_FILENAME | winsound.SND_ASYNC)
-            except Exception:  # noqa: BLE001
-                pass
+            self.mic_test_lbl.setText("Ни один микрофон вас не услышал. Скорее всего, микрофон выключен: "
+                                      "кнопкой на гарнитуре или в «Параметры Windows → Система → Звук → "
+                                      "Ввод» (громкость микрофона 0 или он отключён).")
+            set_role(self.mic_test_lbl, "error")
 
     def _mic_chosen(self, _i):
         self._set("mic_device", self.mic_box.currentData() or "")
@@ -2669,11 +2666,11 @@ class ProfileScreen(Backdrop):
         lay.addWidget(self.mic_heard)
         lay.addSpacing(8)
         trow = QHBoxLayout()
-        self.mic_test_btn = button("Проверить микрофон", "ghost", 13)
+        self.mic_test_btn = button("Найти мой микрофон", "ghost", 13)
         self.mic_test_btn.setFixedWidth(230)
         self.mic_test_btn.clicked.connect(self._mic_test)
         trow.addWidget(self.mic_test_btn)
-        self.mic_test_lbl = label("Запишу 4 секунды, распознаю и дам послушать, что слышит помощник.",
+        self.mic_test_lbl = label("Нажмите и скажите фразу — проверю все микрофоны и выберу тот, который вас слышит.",
                                   12, role="faint", wrap=True)
         trow.addWidget(self.mic_test_lbl, 1)
         lay.addLayout(trow)
