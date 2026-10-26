@@ -1725,6 +1725,7 @@ class ProfileScreen(Backdrop):
     back_requested = Signal()
     logout_requested = Signal()
     account_changed = Signal(str)
+    bridge_store = Signal(str)         # перенос папки загрузок: ход и итог
 
     SECTIONS = [
         ("look", "Оформление"),
@@ -1745,6 +1746,7 @@ class ProfileScreen(Backdrop):
 
     def __init__(self, win, cfg, store: AuthStore, speaker: Speaker):
         super().__init__(glows=((0.15, 0.20, 0.45), (0.90, 0.90, 0.40)))
+        self.bridge_store.connect(self._on_store)
         self.win, self.cfg, self.store, self.speaker = win, cfg, store, speaker
         self.settings = None
         self.email = ""
@@ -3094,7 +3096,82 @@ class ProfileScreen(Backdrop):
         self.t_admin.toggled.connect(self._admin_changed)
         self.admin_status = label("", 13, role="accent", wrap=True)
         lay.addWidget(self.admin_status)
+        lay.addSpacing(28)
+        # ---- куда скачиваются речь, голос и ИИ
+        lay.addWidget(label("Папка для загрузок", 17, QFont.DemiBold))
+        lay.addSpacing(4)
+        lay.addWidget(label("Здесь лежит всё, что программа скачивает сама: распознавание речи, голос, "
+                            "точное распознавание и ИИ (до 3,5 ГБ). Можно перенести на другой диск — "
+                            "файлы переедут сами.", 13, role="muted", wrap=True))
+        lay.addSpacing(10)
+        self.store_path = label("", 14, QFont.DemiBold, wrap=True)
+        lay.addWidget(self.store_path)
+        lay.addSpacing(8)
+        srow = QHBoxLayout()
+        self.store_btn = button("Выбрать другую папку…", "ghost", 14)
+        self.store_btn.setFixedWidth(260)
+        self.store_btn.clicked.connect(self._move_storage)
+        srow.addWidget(self.store_btn)
+        srow.addStretch(1)
+        lay.addLayout(srow)
+        self.store_msg = label("", 13, role="accent", wrap=True)
+        lay.addWidget(self.store_msg)
         lay.addStretch(1)
+
+    def _refresh_storage(self):
+        d = config.local_dir()
+
+        def work():
+            size = config.folder_size(d)
+            self.bridge_store.emit(f"{d}   ·   занято {size / 1e9:.1f} ГБ   ·   свободно "
+                                   f"{config.free_gb(d):.0f} ГБ")
+        self.store_path.setText(str(d))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _move_storage(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Куда перенести распознавание речи, голос и ИИ",
+                                             str(config.local_dir()))
+        if not d:
+            return
+        d = os.path.normpath(d)
+        if os.path.basename(d).lower() != "seniorem":
+            d = os.path.join(d, "SenioreM")
+        err = config.check_storage_path(d)
+        if err:
+            set_role(self.store_msg, "error")
+            self.store_msg.setText(err)
+            return
+        set_role(self.store_msg, "accent")
+        self.store_msg.setText("Переношу файлы… Не закрывайте программу.")
+        self.store_btn.setEnabled(False)
+        try:
+            ai.ENGINE.stop()              # движок ИИ держит файл модели — останавливаем
+        except Exception:  # noqa: BLE001
+            pass
+
+        def work():
+            try:
+                err2 = config.move_storage(d, lambda f, t: self.bridge_store.emit("…" + t))
+            except Exception as e:  # noqa: BLE001
+                err2 = f"Не получилось перенести: {e}"
+            self.bridge_store.emit("__done__" + err2)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_store(self, text):
+        if text.startswith("__done__"):
+            err = text[8:]
+            self.store_btn.setEnabled(True)
+            set_role(self.store_msg, "error" if err else "accent")
+            self.store_msg.setText(err or "Готово. Перезапустите SenioreM, чтобы всё работало из новой папки.")
+            if not err:
+                self._refresh_storage()
+                QTimer.singleShot(1500, self.win.restart)
+            return
+        if text.startswith("…"):
+            self.store_msg.setText("Переношу: " + text[1:])
+            return
+        self.store_path.setText(text)
 
     def _admin_changed(self, on):
         if self._loading:
@@ -3336,6 +3413,8 @@ class ProfileScreen(Backdrop):
         switch_page(self.pages, self.page_widgets[key], 180)
         if key == "look":
             self._refresh_look()
+        if key == "startup":
+            self._refresh_storage()
         if key == "city":
             self._refresh_city()
         if key == "apps":
@@ -4050,6 +4129,8 @@ def run_uitest(out_dir):
         splash._on_progress(0.62, "Загружаю распознавание речи")
         pump(900)
         shot(splash, "01-splash")
+        splash._show_storage(config.local_dir())
+        shot(splash, "01-splash-storage")
         splash.close()
         win = MainWindow(config.load_config(), {})
         win.resize(1920, 1080)
