@@ -810,26 +810,32 @@ def find_ocr(rect, text, min_score=0.72, words=None):
 
 
 def click_in(win, texts, min_score=0.85):
-    """Нажать в окне первую найденную кнопку из списка надписей. -> надпись или None."""
+    """Нажать в окне первую найденную кнопку из списка надписей. -> надпись или None.
+    Сначала читаем то, что ВИДНО на экране (игры и лаунчеры рисуют кнопки сами, а в их
+    «невидимом» описании бывают скрытые кнопки), и только потом — описание окна."""
     _focus(win)
     hit = None
-    for t in texts:
-        try:
-            hit = find_uia(win.hwnd, t, limit_s=1.5, min_score=min_score)
-        except Exception:  # noqa: BLE001
-            hit = None
-        if hit:
-            break
+    rect = None
+    try:
+        rect = _rect(win.hwnd)
+        words = ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+        for t in texts:
+            hit = find_ocr(rect, t, min_score=min_score, words=words)
+            if hit:
+                break
+    except Exception:  # noqa: BLE001
+        hit = None
     if hit is None:
-        try:
-            rect = _rect(win.hwnd)
-            words = ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
-            for t in texts:
-                hit = find_ocr(rect, t, min_score=min_score, words=words)
-                if hit:
-                    break
-        except Exception:  # noqa: BLE001
-            hit = None
+        for t in texts:
+            try:
+                hit = find_uia(win.hwnd, t, limit_s=1.5, min_score=min_score)
+            except Exception:  # noqa: BLE001
+                hit = None
+            # кнопка должна быть внутри окна на экране, а не спрятанной
+            if hit and rect and not (rect[0] <= hit[0] <= rect[2] and rect[1] <= hit[1] <= rect[3]):
+                hit = None
+            if hit:
+                break
     if hit is None:
         return None
     x, y, name = hit
@@ -845,14 +851,15 @@ def click_text(text):
     _focus(win)
     hit = None
     try:
-        hit = find_uia(win.hwnd, text)
+        hit = find_ocr(_rect(win.hwnd), text)          # сначала — то, что видно на экране
     except Exception:  # noqa: BLE001
         hit = None
-    how = "кнопку"
     if hit is None:
         try:
-            hit = find_ocr(_rect(win.hwnd), text)
-            how = "надпись"
+            hit = find_uia(win.hwnd, text)
+            r = _rect(win.hwnd)
+            if hit and not (r[0] <= hit[0] <= r[2] and r[1] <= hit[1] <= r[3]):
+                hit = None
         except Exception:  # noqa: BLE001
             hit = None
     if hit is None:
