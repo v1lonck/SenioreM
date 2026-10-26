@@ -60,6 +60,7 @@ class Bridge(QObject):
     recognized = Signal(str)            # текст, уточнённый точным распознаванием
     ai_sentence = Signal(str)           # очередная готовая фраза ответа ИИ (озвучиваем сразу)
     downloads = Signal(int)             # сколько раз скачали SenioreM
+    preview = Signal(int, str)          # точные субтитры, пока человек ещё говорит
 
 
 # ================================================================== вход
@@ -826,6 +827,7 @@ class HomeScreen(Backdrop):
         self.bridge.ai_sentence.connect(self._on_ai_sentence)
         self.bridge.volume.connect(self._on_volume)
         self.bridge.recognized.connect(lambda t: self.execute(t))
+        self.bridge.preview.connect(self._on_preview)
         self.speaker.speaking.connect(self._on_speaking)
         self.arm_timer = QTimer(self)
         self.arm_timer.setSingleShot(True)
@@ -834,6 +836,10 @@ class HomeScreen(Backdrop):
         self._continue = False
         self._voice_cmd = False
         self._confirm_pending = None      # опасная команда ждёт «да»
+        self._finals = 0                  # сколько фраз уже распознано (для точных субтитров)
+        self._partial_shown = False
+        self._preview_busy = False
+        self._preview_text = ""
         self._followup_cmd = False
 
         root = QVBoxLayout(self)
@@ -1181,6 +1187,7 @@ class HomeScreen(Backdrop):
             self.listener.failed.connect(self._on_failed)
             self.listener.ready.connect(self._on_ready)
             self.listener.stop_heard.connect(self._on_stop_heard)
+            self.listener.so_far.connect(self._on_so_far)
             self.listener.set_stop_words((settings["stop_words"] or "стоп").split(","))
             self.listener.start()
         self._rest_state()
@@ -1387,7 +1394,9 @@ class HomeScreen(Backdrop):
                 return
             text = " ".join(words[i:])
         if self.orb.state in ("idle", "armed"):
-            self._show_heard(text, True)
+            if not self._preview_text:            # точные субтитры уже есть — грубые не показываем
+                self._show_heard(text, True)
+            self._partial_shown = True
             if self.armed:
                 self.arm_timer.start(getattr(self, "_arm_ms", self._listen_ms()))  # не перебиваем
 
@@ -1400,7 +1409,42 @@ class HomeScreen(Backdrop):
         a, b = commands.normalize(text), commands.normalize(last)
         return bool(a) and (a in b or SequenceMatcher(None, a, b).ratio() > 0.55)
 
+    def _on_so_far(self, uid, pcm):
+        """Пока человек говорит — точное распознавание обновляет субтитры (раз в ~0,8 с)."""
+        if self._preview_busy or not self._partial_shown or not asr.RECOGNIZER.available:
+            return
+        if uid < self._finals or self.orb.state not in ("idle", "armed"):
+            return
+        self._preview_busy = True
+
+        def work():
+            try:
+                t = asr.RECOGNIZER.transcribe(pcm, preview=True)
+            except Exception:  # noqa: BLE001
+                t = ""
+            self.bridge.preview.emit(uid, t)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_preview(self, uid, text):
+        self._preview_busy = False
+        if not text or uid < self._finals or not self._partial_shown:
+            return
+        words = commands.tokens(text)
+        if not self.armed:
+            wake = self.settings.wake_words if self.settings else None
+            i = commands.find_wake(words, wake, max_pos=2)
+            if i < 0:
+                return
+            words = words[i:]
+        shown = " ".join(words)
+        if shown and self.orb.state in ("idle", "armed"):
+            self._preview_text = shown
+            self._show_heard(shown[:1].upper() + shown[1:], True)
+
     def _on_final(self, text, confs=None, audio=None):
+        self._finals += 1
+        self._partial_shown = False
+        self._preview_text = ""
         if timers.ALARM.playing and any(w in commands.normalize(text) for w in
                                         ("стоп", "хватит", "выключи", "встал", "встаю", "проснул")):
             self.execute("выключи будильник")          # будильник выключается и без «Сеньор»

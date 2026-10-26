@@ -35,6 +35,7 @@ class Listener(QThread):
     failed = Signal(str)
     ready = Signal()
     stop_heard = Signal()                 # пока помощник говорил, сказали «стоп»
+    so_far = Signal(int, object)          # № фразы и звук «на данный момент» — для точных субтитров
 
     def __init__(self, model, parent=None):
         """model — уже загруженная vosk.Model (готовится в окне загрузки)."""
@@ -134,6 +135,8 @@ class Listener(QThread):
 
         last_partial = ""
         utter = bytearray()
+        utt_id = 0
+        last_preview = 0.0
         gain = 1.0
         floor = 0.004            # оценка уровня тишины/шума
         with stream:
@@ -193,12 +196,18 @@ class Listener(QThread):
                     last_partial = ""
                     if text:
                         self.final.emit(text, confs, bytes(utter))
+                        utt_id += 1
                     utter.clear()
                 else:
                     p = json.loads(rec.PartialResult()).get("partial", "").strip()
                     if p != last_partial:
                         last_partial = p
                         self.partial.emit(p)
+                    # раз в 0,8 с отдаём звук фразы — точное распознавание обновит субтитры
+                    now = time.monotonic()
+                    if p and now - last_preview > 0.8 and len(utter) > 16000 * 2 * 0.8:
+                        last_preview = now
+                        self.so_far.emit(utt_id, bytes(utter))
 
 
 def _log(text):
