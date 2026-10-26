@@ -4497,6 +4497,28 @@ def run_uitest(out_dir):
     os._exit(0 if log and log[-1] == "OK" else 1)
 
 
+def _wait_for_setup(limit=20.0):
+    """Идёт установка/обновление SenioreM — ждём её конца, чтобы не было двух окон сразу."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        t0 = time.time()
+        while time.time() - t0 < limit:
+            busy = False
+            for name in ("SenioreMSetup", "Global\\SenioreMSetup"):
+                h = k.OpenMutexW(0x00100000, False, name)
+                if h:
+                    k.CloseHandle(h)
+                    busy = True
+            if not busy:
+                return
+            time.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        startup_mark(f"проверка установщика: {e!r}")
+
+
 def main():
     if "--uitest" in sys.argv:
         i = sys.argv.index("--uitest")
@@ -4509,6 +4531,7 @@ def main():
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
     _install_error_log()
+    _wait_for_setup()
     startup_mark("старт " + " ".join(sys.argv[1:]) + f" (версия {config.load_config().get('version', '?')})")
     if sys.platform == "win32":
         try:
