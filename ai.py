@@ -624,6 +624,30 @@ class AI:
         return None
 
 
+def pick_option(request, options, settings):
+    """Какую надпись на экране нажать по просьбе пользователя. -> номер (с 0) или None."""
+    mode = (settings["ai_mode"] if settings is not None else "") or ""
+    if mode == "cloud" and not cloud_url() or mode not in ("api", "cloud") or over_limit(settings):
+        return None
+    listing = "\n".join(f"{i + 1}) {o}" for i, o in enumerate(options))
+    payload = {"messages": [
+        {"role": "system", "content": "Ты помогаешь нажать нужную кнопку на экране. Тебе дают просьбу "
+                                      "пользователя и пронумерованный список надписей, которые видны в окне. "
+                                      "Ответь ТОЛЬКО номером самой подходящей надписи, или 0, если ни одна "
+                                      "не подходит."},
+        {"role": "user", "content": f"Просьба: «{request}»\nНадписи:\n{listing}"}],
+        "temperature": 0.0, "max_tokens": 12, "stream": False, "model_hint": "flash"}
+    try:
+        _r, data = ENGINE._run(mode, settings, payload, None, False, True)
+        out = data["choices"][0]["message"]["content"] if data else ""
+    except Exception:  # noqa: BLE001
+        return None
+    usage_add(_estimate(payload["messages"], out, 0))
+    m = re.search(r"\d+", out or "")
+    n = int(m.group()) if m else 0
+    return n - 1 if 1 <= n <= len(options) else None
+
+
 ROUTER_PROMPT = (
     "Ты переводишь фразы пользователя в команды голосового помощника SenioreM для Windows. "
     "Если фраза — просьба что-то сделать на компьютере, ответь ОДНОЙ строкой «CMD: команда» в одном "

@@ -83,6 +83,84 @@ GAME_GO = ["Найти", "Поиск", "Go", "Start", "Начать", "Find", "�
 GAME_ACCEPT = ["Принять", "Accept", "Готов", "Ready"]
 
 
+# ------------------------------------------------------------------ движение в игре голосом
+# Это просто нажатия клавиш по вашей команде (как обычная клавиатура): «иди вперёд 3 секунды»,
+# «прыгни», «беги влево». Сам по себе SenioreM в игре ничего не делает.
+MOVE_KEYS = {"вперед": 0x57, "прямо": 0x57, "назад": 0x53, "влево": 0x41, "налево": 0x41,
+             "вправо": 0x44, "направо": 0x44}
+NUM_WORDS = {"одну": 1, "один": 1, "одна": 1, "две": 2, "два": 2, "три": 3, "четыре": 4, "пять": 5,
+             "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "пару": 2, "полсекунды": 0.5}
+_HELD = set()
+_HOLD_LOCK = __import__("threading").Lock()
+
+
+def _num(word, default):
+    if not word:
+        return default
+    word = word.strip()
+    try:
+        return float(word.replace(",", "."))
+    except ValueError:
+        return NUM_WORDS.get(word, default)
+
+
+def parse_move(t):
+    t = t.replace("ё", "е")
+    m = re.match(r"^(прыгни|прыгай|прыжок|подпрыгни)(\s+(\S+)\s+раз\w*)?$", t)
+    if m:
+        return {"action": "game_move", "kind": "jump", "times": int(_num(m.group(3), 1))}
+    m = re.match(r"^(иди|беги|двигайся|шагай|ходи|топай|отойди|пройди)\s+(вперед|прямо|назад|влево|налево|"
+                 r"вправо|направо)(\s+(на\s+)?(\S+)?\s*(секунд\w*|сек|с))?$", t)
+    if m:
+        sec = _num(m.group(5), 2) if m.group(3) else 2
+        return {"action": "game_move", "kind": "move", "key": MOVE_KEYS[m.group(2)],
+                "seconds": max(0.2, min(float(sec), 20)), "run": m.group(1) == "беги"}
+    if re.match(r"^(стой|остановись|замри|хватит идти|не иди)$", t):
+        return {"action": "game_move", "kind": "halt"}
+    return None
+
+
+def release_all():
+    with _HOLD_LOCK:
+        keys = list(_HELD)
+        _HELD.clear()
+    for k in keys:
+        try:
+            _send(k, up=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def game_move(intent):
+    kind = intent["kind"]
+    if kind == "halt":
+        release_all()
+        return "Стою."
+    win = _target_window()
+    if win is not None:
+        _focus(win)
+    if kind == "jump":
+        press([0x20], intent.get("times", 1))
+        return ""
+    key, sec = intent["key"], intent["seconds"]
+    keys = [0x10, key] if intent.get("run") else [key]
+
+    def hold():
+        with _HOLD_LOCK:
+            _HELD.update(keys)
+        for k in keys:
+            _send(k)
+        end = time.time() + sec
+        while time.time() < end:
+            with _HOLD_LOCK:
+                if key not in _HELD:          # сказали «стоп»/«стой»
+                    return
+            time.sleep(0.05)
+        release_all()
+    __import__("threading").Thread(target=hold, daemon=True).start()
+    return ""
+
+
 def parse_game(t):
     if re.match(r"^(прими|принять|прими игру|прими матч|прими катку|accept)$", t):
         return {"action": "game_accept"}
@@ -112,6 +190,11 @@ def game_play(mode):
     if mode:
         hit = click_in(win, mode, min_score=0.8)
         if not hit:
+            got = _ai_pick(win, "режим игры " + mode[0])
+            if got:
+                click_at(got[0], got[1])
+                hit = got[2]
+        if not hit:
             return (f"Не нашёл в меню режим «{mode[0]}». Откройте главное меню игры и повторите."
                     if not steps else f"Нажал «{steps[0]}», но не нашёл режим «{mode[0]}».")
         steps.append(hit)
@@ -129,7 +212,7 @@ def parse(text):
     t = _norm(text)
     if not t:
         return None
-    g = parse_game(t)
+    g = parse_game(t) or parse_move(t)
     if g:
         return g
     # --- «зайди в юту», «перейди на ютуб» — это сайт, а не кнопка в игре
@@ -773,11 +856,34 @@ def click_text(text):
         except Exception:  # noqa: BLE001
             hit = None
     if hit is None:
+        hit = _ai_pick(win, text)            # точной надписи нет — ИИ выбирает по смыслу
+    if hit is None:
         return f"Не нашёл «{text}» в окне «{win.title[:40]}»."
     x, y, name = hit
     _focus(win)
     click_at(x, y)
     return f"Нажал «{name}»."
+
+
+# ИИ выбирает, на что нажать, по смыслу («нажми выйти» → «Выход из аккаунта»). Задаёт main.py.
+AI_PICK = None
+
+
+def _ai_pick(win, text):
+    if AI_PICK is None:
+        return None
+    try:
+        rect, words = _window_words(win)
+        lines = [ln for ln in _lines(words) if 1 <= len(ln["text"]) <= 60][:120]
+        if not lines:
+            return None
+        k = AI_PICK(text, [ln["text"] for ln in lines])
+        if k is None or not (0 <= k < len(lines)):
+            return None
+        ln = lines[k]
+        return ln["x"], ln["y"], ln["text"]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ------------------------------------------------------------------ YouTube
@@ -1155,6 +1261,8 @@ def run(intent):
         return click_play()
     if a == "game_play":
         return game_play(intent.get("mode"))
+    if a == "game_move":
+        return game_move(intent)
     if a == "game_accept":
         win = _target_window()
         if win is None:
@@ -1190,4 +1298,5 @@ def run(intent):
 
 
 ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_find", "yt_key", "nth_item", "tabs",
-           "app_search", "enter_item", "click_play", "game_play", "game_accept")
+           "app_search", "enter_item", "click_play", "game_play", "game_accept",
+           "game_move")
