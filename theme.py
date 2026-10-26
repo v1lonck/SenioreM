@@ -582,7 +582,7 @@ def enable_glass(widget):
 
 
 class LogoMark(QWidget):
-    """Иконка программы (буква S) с мягким пульсирующим свечением."""
+    """Иконка программы (буква S) с ровным свечением."""
 
     def __init__(self, size=120, glow=True):
         super().__init__()
@@ -592,14 +592,7 @@ class LogoMark(QWidget):
         import config
         path = config.resource_path("assets/icon.png")
         self._pix = QPixmap(str(path)) if path.exists() else QPixmap()
-        if glow:
-            t = QTimer(self)
-            t.timeout.connect(self._tick)
-            t.start(33)
 
-    def _tick(self):
-        self._t += 0.033
-        self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -608,9 +601,8 @@ class LogoMark(QWidget):
         w = self.width()
         c = QPointF(w / 2, w / 2)
         if self.glow:
-            b = (math.sin(self._t * 2.0) + 1) / 2
-            g = QRadialGradient(c, w * 0.5)
-            g.setColorAt(0.45, qcolor(ACCENT, int(60 + 50 * b)))
+            g = QRadialGradient(c, w * 0.5)          # ровное свечение, без пульсации
+            g.setColorAt(0.45, qcolor(ACCENT, 85))
             g.setColorAt(1.0, qcolor(ACCENT, 0))
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(g))

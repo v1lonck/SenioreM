@@ -1,6 +1,5 @@
 """Окно загрузки: название, что умеет программа, прогресс.
 При первом запуске докачивает речевую модель (~45 МБ), затем загружает её в память."""
-import math
 import os
 import shutil
 import time
@@ -10,7 +9,7 @@ import zipfile
 
 from PySide6.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt,
                             QThread, QTimer, Signal)
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 import config
@@ -264,30 +263,20 @@ class Updater(QThread):
 
 
 class Mark(QWidget):
-    """Иконка программы с мягко «дышащим» свечением."""
+    """Иконка программы с ровным неподвижным свечением (без пульсации — она «мигала»,
+    когда компьютер занят загрузкой)."""
 
     def __init__(self, size=150):
         super().__init__()
         self.setFixedSize(size, size)
-        self._t = 0.0
-        path = config.resource_path("assets/icon.png")
-        self._pix = QPixmap(str(path)) if path.exists() else QPixmap()
-        t = QTimer(self)
-        t.timeout.connect(self._tick)
-        t.start(16)
-
-    def _tick(self):
-        self._t += 0.016
-        self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         c = QPointF(self.width() / 2, self.height() / 2)
-        b = (math.sin(self._t * 2.2) + 1) / 2
         glow = QColor(T.ACCENT)
-        glow.setAlphaF(0.05 + 0.07 * b)
+        glow.setAlphaF(0.09)
         p.setPen(Qt.NoPen)
         p.setBrush(glow)
         p.drawEllipse(c, self.width() * 0.5, self.width() * 0.5)
@@ -399,6 +388,29 @@ class Splash(QWidget):
         ur.addWidget(self.update_btn)
         self.update_row.hide()
         root.addWidget(self.update_row)
+        # первый запуск: куда скачивать речь, голос и ИИ
+        self.store_row = QWidget()
+        sr = QVBoxLayout(self.store_row)
+        sr.setContentsMargins(0, 0, 24, 16)
+        sr.setSpacing(8)
+        self.store_lbl = label("", 14, QFont.DemiBold, wrap=True)
+        sr.addWidget(self.store_lbl)
+        self.store_err = label("", 12, role="error", wrap=True)
+        self.store_err.hide()
+        sr.addWidget(self.store_err)
+        sb = QHBoxLayout()
+        sb.setSpacing(14)
+        sb.addStretch(1)
+        other = button("Выбрать другую папку…", "ghost", 14, QFont.Normal)
+        other.clicked.connect(self._pick_storage)
+        sb.addWidget(other)
+        here = button("Скачать сюда", "primary", 14)
+        here.setFixedWidth(190)
+        here.clicked.connect(self._storage_ok)
+        sb.addWidget(here)
+        sr.addLayout(sb)
+        self.store_row.hide()
+        root.addWidget(self.store_row)
         status_row = QHBoxLayout()
         self.status = label("Запускаю", 13, role="muted")
         self.pct = label("0 %", 13, role="faint")
@@ -465,7 +477,46 @@ class Splash(QWidget):
             self._anim.finished.connect(then)
         self._anim.start()
 
+    # ---------- папка для загрузок (первый запуск) ----------
+    def _show_storage(self, path, err=""):
+        self._store_path = str(path)
+        free = config.free_gb(path)
+        self.store_lbl.setText(
+            f"Распознавание речи, голос и ИИ (около {config.STORAGE_NEED_GB:.1f} ГБ) скачаются в папку\n"
+            f"{path}   ·   свободно {free:.0f} ГБ")
+        self.store_err.setText(err)
+        self.store_err.setVisible(bool(err))
+        self.store_row.show()
+        self.status.setText("Выберите, куда скачивать — потом это можно поменять в профиле → «Запуск»")
+
+    def _pick_storage(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Куда скачивать распознавание речи, голос и ИИ",
+                                             self._store_path)
+        if not d:
+            return
+        d = os.path.normpath(d)
+        if os.path.basename(d).lower() != "seniorem":
+            d = os.path.join(d, "SenioreM")
+        err = config.check_storage_path(d)
+        if not err and config.free_gb(d) < config.STORAGE_NEED_GB:
+            err = f"На этом диске меньше {config.STORAGE_NEED_GB:.1f} ГБ свободного места."
+        self._show_storage(d if not err else self._store_path, err)
+
+    def _storage_ok(self):
+        err = config.set_storage(self._store_path)
+        if err:
+            self._show_storage(self._store_path, err)
+            return
+        self.store_row.hide()
+        self.start()
+
     def start(self):
+        if not config.storage_chosen() and not config.model_ready(config.model_dir()):
+            self._show_storage(config.local_dir())
+            if not self._checker.isRunning() and not self._checker.isFinished():
+                self._checker.start()
+            return
         self.actions.hide()
         set_role(self.status, "muted")
         self.bar.color = T.ACCENT
