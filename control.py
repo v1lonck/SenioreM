@@ -61,11 +61,77 @@ def _norm(text):
     return commands.normalize(text)
 
 
+# ------------------------------------------------------------------ меню игр
+# «запусти катку», «запусти напы», «найди матч»: нажимаем кнопки в меню открытой игры
+# (по надписям на экране). Только меню — играть за вас SenioreM не будет.
+GAME_MODES = [
+    (r"нап(ы|арник\w*)|wingman|вингман", ["Напарники", "Wingman"]),
+    (r"мм(ку|ка)?|соревновательн\w*|компетитив\w*|competitive|ранкед|рейтинг\w*", ["Соревновательный",
+                                                                              "Competitive", "Рейтинговый",
+                                                                              "Ranked"]),
+    (r"премьер\w*|premier", ["Премьер", "Premier"]),
+    (r"бой насмерть|дм|дезматч|deathmatch", ["Бой насмерть", "Deathmatch"]),
+    (r"обычн\w*|казуал\w*|casual", ["Обычный", "Casual"]),
+    (r"арен\w*|arena", ["Арена", "Arena"]),
+    (r"дуэл\w*|1 на 1|один на один", ["Дуэль", "1v1", "Duel"]),
+    (r"трен\w*|практик\w*|practice", ["Тренировка", "Practice"]),
+]
+GAME_PLAY = ["Играть", "Play", "В бой", "Начать игру", "Найти игру", "Найти матч", "Find Match", "Start",
+             "Начать"]
+GAME_GO = ["Найти", "Поиск", "Go", "Start", "Начать", "Find", "Принять", "Accept", "Готов", "Ready",
+           "Подтвердить", "В бой"]
+GAME_ACCEPT = ["Принять", "Accept", "Готов", "Ready"]
+
+
+def parse_game(t):
+    if re.match(r"^(прими|принять|прими игру|прими матч|прими катку|accept)$", t):
+        return {"action": "game_accept"}
+    m = re.match(r"^(запусти|запустить|начни|найди|ищи|поищи|го|давай|кинь|ставь|поставь)\s+"
+                 r"(поиск\s+)?(катку|катки|матч|игру в поиск|поиск игры|поиск матча|игру)?\s*(в\s+|на\s+)?(.*)$", t)
+    if not m:
+        return None
+    what, rest = m.group(3), (m.group(5) or "").strip()
+    for rx, labels in GAME_MODES:
+        if rest and re.fullmatch(rf"({rx})", rest):
+            return {"action": "game_play", "mode": labels}
+    if what in ("катку", "катки", "матч", "поиск игры", "поиск матча", "игру в поиск") and not rest:
+        return {"action": "game_play", "mode": None}
+    return None
+
+
+def game_play(mode):
+    """Меню открытой игры: «Играть» → режим → «Найти/Начать»."""
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытой игры."
+    steps = []
+    hit = click_in(win, GAME_PLAY, min_score=0.8)
+    if hit:
+        steps.append(hit)
+        time.sleep(1.2)
+    if mode:
+        hit = click_in(win, mode, min_score=0.8)
+        if not hit:
+            return (f"Не нашёл в меню режим «{mode[0]}». Откройте главное меню игры и повторите."
+                    if not steps else f"Нажал «{steps[0]}», но не нашёл режим «{mode[0]}».")
+        steps.append(hit)
+        time.sleep(1.0)
+    hit = click_in(win, GAME_GO, min_score=0.8)
+    if hit:
+        steps.append(hit)
+    if not steps:
+        return "Не нашёл в игре кнопку «Играть». Откройте главное меню игры и повторите."
+    return "Готово: " + " → ".join(f"«{s}»" for s in steps) + "."
+
+
 def parse(text):
     """-> intent или None (если это не команда управления)."""
     t = _norm(text)
     if not t:
         return None
+    g = parse_game(t)
+    if g:
+        return g
     # --- «зайди в юту», «перейди на ютуб» — это сайт, а не кнопка в игре
     m = re.match(r"^(зайди|зайти|перейди|заходи|открой)\s+(в|на)\s+(.+)$", t)
     if m:
@@ -1087,6 +1153,14 @@ def run(intent):
         return enter_item(intent["text"])
     if a == "click_play":
         return click_play()
+    if a == "game_play":
+        return game_play(intent.get("mode"))
+    if a == "game_accept":
+        win = _target_window()
+        if win is None:
+            return "Не вижу открытой игры."
+        hit = click_in(win, GAME_ACCEPT, min_score=0.8)
+        return f"Нажал «{hit}»." if hit else "Не вижу кнопки «Принять»."
     if a == "press_key":
         win = _target_window()
         if win is None:
@@ -1116,4 +1190,4 @@ def run(intent):
 
 
 ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_find", "yt_key", "nth_item", "tabs",
-           "app_search", "enter_item", "click_play")
+           "app_search", "enter_item", "click_play", "game_play", "game_accept")
