@@ -1,20 +1,27 @@
-# Облачный ИИ для SenioreM (бесплатно)
+# Облачный сервер SenioreM
 
-Программа отправляет вопросы на ваш маленький сервер в Cloudflare (Worker), а он — в Groq.
-Ключ Groq хранится только на сервере, в программу он не попадает.
+Сервер в Cloudflare (Worker, бесплатно) снимает с компьютера самое тяжёлое:
+ответы ИИ и точное распознавание речи. Если сервер недоступен, программа сама
+работает на компьютере, как раньше.
 
-## 1. Ключ Groq
-1. Зарегистрируйтесь на https://console.groq.com (можно через Google).
-2. API Keys → Create API Key → скопируйте ключ (начинается с `gsk_`).
+## 1. Worker (бесплатно, без VPN)
+1. Зарегистрируйтесь на https://dash.cloudflare.com/sign-up и подтвердите почту.
+2. **Workers & Pages** → **Create** → **Create Worker** → имя `seniorem-ai` → **Deploy**.
+3. **Edit code** → удалите всё и вставьте содержимое файла `server/worker.js` → **Deploy**.
+4. **Settings** → **Bindings** → **Add** → **Workers AI** → имя переменной `AI` → сохранить.
+5. Проверьте адрес `https://seniorem-ai.ВАШЕ-ИМЯ.workers.dev/health` — должно быть `{"ok":true…}`.
 
-## 2. Worker в Cloudflare
-1. Зарегистрируйтесь на https://dash.cloudflare.com.
-2. Workers & Pages → Create → Create Worker → имя, например `seniorem-ai` → Deploy.
-3. Edit code → удалите всё и вставьте содержимое `server/worker.js` → Deploy.
-4. Settings → Variables and Secrets → Add → тип **Secret**, имя `GROQ_KEY`, значение — ключ Groq → Deploy.
-5. Адрес Worker вида `https://seniorem-ai.ИМЯ.workers.dev` — проверьте: `…/health` должен ответить `ok`.
+Уже на этом шаге работают бесплатная модель Llama и точное распознавание речи (Whisper).
+
+## 2. Умная модель за ~200 ₽ в месяц (по желанию)
+Пополните посредника, который продаёт доступ к DeepSeek за рубли (например, VseGPT или ProxyAPI),
+и возьмите у него ключ, адрес API и название модели (смотрите в его документации).
+В Worker: **Settings** → **Variables and Secrets** → добавьте:
+- `LLM_KEY` — тип **Secret**, ключ посредника;
+- `LLM_URL` — адрес, оканчивающийся на `/chat/completions`;
+- `LLM_MODEL` — название модели (например, `deepseek-chat` — как его называет сервис).
+
+Пока на счёте есть деньги, отвечает DeepSeek; закончились — бесплатная модель Cloudflare.
 
 ## 3. Подключить к программе
-GitHub → репозиторий → Settings → Secrets and variables → Actions → вкладка **Variables** →
-New repository variable: имя `AI_PROXY_URL`, значение — адрес Worker. Следующая версия программы
-сама начнёт пользоваться облачным ИИ (в профиле → «ИИ-собеседник» появится «Облачный»).
+Пришлите адрес Worker — он не секретный, его вошьют в программу (переменная `AI_PROXY_URL`).

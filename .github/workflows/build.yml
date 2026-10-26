@@ -3,7 +3,7 @@ name: Сборка SenioreM
 on:
   push:
     branches: [main, dev]
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "server/**"]
   workflow_dispatch:
 
 permissions:
