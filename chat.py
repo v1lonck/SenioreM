@@ -351,6 +351,7 @@ class ChatScreen(Backdrop):
             b.setFont(font(13, QFont.DemiBold))
             b.setToolTip(desc)
             b.setStyleSheet(_seg_qss())
+            T.click_feedback(b)
             b.clicked.connect(lambda _=False, k=key: self._ai_changed(k))
             self.ai_group.addButton(b)
             self.ai_buttons[key] = b

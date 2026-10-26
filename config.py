@@ -298,3 +298,17 @@ def low_priority_thread():
         k32.SetThreadPriority(k32.GetCurrentThread(), -2)       # THREAD_PRIORITY_LOWEST
     except Exception:  # noqa: BLE001
         pass
+
+
+def voice_log(text):
+    """Журнал слуха (voice.log): что услышано и почему не выполнено — чтобы разобраться,
+    если помощник «не слышит». Не больше ~300 КБ."""
+    import time
+    try:
+        p = data_dir() / "voice.log"
+        if p.exists() and p.stat().st_size > 300_000:
+            p.replace(data_dir() / "voice.old.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%m-%d %H:%M:%S')}  {text}\n")
+    except OSError:
+        pass
