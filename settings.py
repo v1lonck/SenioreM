@@ -18,6 +18,7 @@ DEFAULTS = {
     "yandex_key": "",
     "yandex_voice": "filipp",
     "mic_sensitivity": "normal",
+    "mic_device": "",               # выбранный микрофон ("" — по умолчанию в Windows)
     "assistant_name": "Сеньор",
     "speak_replies": True,
     "listen_seconds": 10,
