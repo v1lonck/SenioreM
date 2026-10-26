@@ -68,6 +68,10 @@ class Listener(QThread):
                 self._stop_rec = KaldiRecognizer(self.model, 16000, grammar)
             except Exception:  # noqa: BLE001
                 self._stop_rec = KaldiRecognizer(self.model, 16000)
+            try:
+                self._stop_rec.SetWords(True)
+            except Exception:  # noqa: BLE001
+                pass
             self._stop_key = key
         return self._stop_rec
 
@@ -76,14 +80,22 @@ class Listener(QThread):
         if getattr(self, "_stop_fresh", False):
             rec.Reset()
             self._stop_fresh = False
-        if rec.AcceptWaveform(data):
-            text = json.loads(rec.Result()).get("text", "")
-        else:
-            text = json.loads(rec.PartialResult()).get("partial", "")
-        text = text.lower().replace("ё", "е")
-        if text and any(w in text for w in self.stop_words):
+        # только законченное слово и с высокой уверенностью: иначе собственный голос помощника
+        # из колонок иногда «похож» на «стоп» — и он замолкал на полуслове
+        if not rec.AcceptWaveform(data):
+            return
+        res = json.loads(rec.Result())
+        text = (res.get("text", "") or "").lower().replace("ё", "е")
+        if not text:
+            return
+        words = res.get("result") or []
+        sure = {w.get("word", "").replace("ё", "е") for w in words if float(w.get("conf", 0)) >= 0.92}
+        if any(all(p in sure for p in sw.split()) for sw in self.stop_words):
+            _vlog(f"услышал «{text}», пока говорил — замолкаю")
             rec.Reset()
             self.stop_heard.emit()
+        elif any(sw in text for sw in self.stop_words):
+            _vlog(f"похоже на «стоп» («{text}»), но неуверенно — продолжаю говорить")
 
     def set_paused(self, flag: bool):
         if flag and not self._paused:
