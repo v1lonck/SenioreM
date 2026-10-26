@@ -76,6 +76,54 @@ def _stub_av():
         sys.modules["av"] = types.ModuleType("av")
 
 
+# ---------- облачное распознавание (Whisper в Cloudflare) — компьютер не нагружается ----------
+_CLOUD_FAILS = [0]
+
+
+def cloud_url():
+    try:
+        import ai
+        u = ai.cloud_url()
+    except Exception:  # noqa: BLE001
+        return ""
+    return u.replace("/chat/completions", "/audio/transcriptions") if u else ""
+
+
+def cloud_usable():
+    return bool(cloud_url()) and _CLOUD_FAILS[0] < 3
+
+
+def cloud_transcribe(pcm16: bytes, rate: int = 16000):
+    """-> текст или None, если облако недоступно."""
+    import base64
+    import io
+    import json
+    import urllib.request
+    import wave
+    import ai
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm16)
+    data = json.dumps({"audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+                       "prompt": prompt()[:400]}).encode("utf-8")
+    req = urllib.request.Request(cloud_url(), data=data, method="POST", headers={
+        "Content-Type": "application/json", "User-Agent": "SenioreM",
+        "Authorization": f"Bearer {ai.CLOUD_TOKEN}"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            text = (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
+        _CLOUD_FAILS[0] = 0
+        return text
+    except Exception:  # noqa: BLE001
+        _CLOUD_FAILS[0] += 1
+        if _CLOUD_FAILS[0] >= 3 and not ready():
+            DOWNLOADS.start()            # облако не отвечает — готовим распознавание на компьютере
+        return None
+
+
 class Recognizer:
     def __init__(self):
         self.model = None
@@ -94,12 +142,21 @@ class Recognizer:
 
     @property
     def available(self):
-        return self.model is not None
+        return self.model is not None or cloud_usable()
 
     def transcribe(self, pcm16: bytes, rate: int = 16000, preview=False) -> str:
         """pcm16 — моно 16 бит. Возвращает текст или "" (если ничего не разобрал)."""
         import numpy as np
-        if self.model is None or not pcm16:
+        if not pcm16:
+            return ""
+        if not preview and cloud_usable():
+            text = cloud_transcribe(pcm16, rate)
+            if text is not None:
+                low = text.lower()
+                if any(h in low for h in HALLUCINATIONS) or "программы:" in low:
+                    return ""
+                return text
+        if self.model is None:
             return ""
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         if rate != 16000:
