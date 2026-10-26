@@ -66,7 +66,17 @@ def parse(text):
     t = _norm(text)
     if not t:
         return None
-    # --- YouTube
+    # --- «зайди в юту», «перейди на ютуб» — это сайт, а не кнопка в игре
+    m = re.match(r"^(зайди|зайти|перейди|заходи|открой)\s+(в|на)\s+(.+)$", t)
+    if m:
+        import sites
+        site = sites.find_site(m.group(3))
+        if site and len(m.group(3).split()) <= 2:
+            return {"action": "open", "app": None, "name": m.group(3)}
+    # --- YouTube: найти/включить ролик, самый популярный/новый/старый, у любого автора
+    yt = _parse_yt_find(t)
+    if yt:
+        return yt
     m = re.search(r"\b(включи|открой|запусти|поставь|покажи|давай)\s+(\w+)\s+(видео|ролик|видос)\w*", t)
     if m and m.group(2) in ORDINALS:
         return {"action": "yt_nth", "n": ORDINALS[m.group(2)]}
@@ -300,6 +310,45 @@ def parse_app(t):
                     r"нажми плей|плей|присоединиться|зайди в игру|войди в игру|запусти игру)", t):
         return {"action": "click_play"}
     return None
+
+
+YT_SORTS = (
+    ("popular", r"(сам\w*\s+)?(популярн\w*|просматриваем\w*|топов\w*)|больше всего просмотров|"
+                r"с наибольшим числом просмотров|самый топ"),
+    ("oldest", r"(сам\w*\s+)?(старое|старый|старая|старые|старых|первое|первый|первые|ранние|раннее)"
+               r"(?!\s+(видео|ролик\w*|видос\w*)\s*$)"),
+    ("newest", r"(сам\w*\s+)?(новое|новый|новая|новые|новых|новенькое|последнее|последний|последние|"
+               r"свежее|свежий|свежие)"),
+)
+
+
+def _parse_yt_find(t):
+    """«найди ролик а4», «найди ролик выживание 24 часа в лесу», «включи самый популярный ролик а4»,
+    «найди самое старое видео а4». Когда YouTube уже открыт — «найди …» тоже ищет на YouTube."""
+    m = re.match(r"^(найди|поищи|покажи|ищи|включи|поставь|запусти|открой|врубай|давай)\s+(.+)$", t)
+    if not m:
+        return None
+    verb, rest = m.group(1), m.group(2)
+    has_video = re.search(r"\b(ролик\w*|видео\w*|видос\w*|клип\w*|ютуб\w*|youtube)\b", rest)
+    if not has_video and not (verb in ("найди", "поищи", "ищи") and _yt_hint(t)):
+        return None
+    if re.match(r"^(\w+)\s+(видео|ролик|видос)\w*$", rest) and rest.split()[0] in ORDINALS:
+        return None                                    # «включи первое видео» — отдельная команда
+    sort = None
+    for key, rx in YT_SORTS:
+        if re.search(rf"(^|\s)({rx})(\s|$)", rest):
+            sort = key
+            rest = re.sub(rf"(^|\s)({rx})(?=\s|$)", " ", rest)
+            break
+    q = re.sub(r"\b(ролик\w*|видео\w*|видос\w*|клип\w*)\b", " ", rest)
+    q = re.sub(r"\b(на|в)\s+(ютуб\w*|youtube)\b|\b(ютуб\w*|youtube)\b", " ", q)
+    q = re.sub(r"^\s*(про|о|об|с|у|от|канала|блогера|автора)\s+", " ", q.strip() + " ")
+    q = re.sub(r"\s+(у|от|канала)\s*$", " ", q)
+    q = " ".join(q.split())
+    if not q:
+        return None
+    play = verb in ("включи", "поставь", "запусти", "врубай", "давай") or (verb == "открой" and has_video)
+    return {"action": "yt_find", "query": q, "sort": sort, "play": play}
 
 
 def _yt_hint(t):
@@ -697,8 +746,76 @@ def video_ids(page_url):
     return ids
 
 
-def search_url(query):
-    return "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+YT_SP = {"popular": "CAM%253D", "newest": "CAI%253D"}       # сортировка поиска YouTube
+
+
+def search_url(query, sort=None):
+    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+    if sort in YT_SP:
+        url += "&sp=" + YT_SP[sort]
+    return url
+
+
+def _yt_channel(query):
+    """Канал по имени («а4» -> https://www.youtube.com/@A4) или ""."""
+    try:
+        html = _fetch(search_url(query) + "&sp=EgIQAg%253D%253D")       # только каналы
+    except Exception:  # noqa: BLE001
+        return ""
+    m = re.search(r'"canonicalBaseUrl":"(/@[^"]+)"', html)
+    return "https://www.youtube.com" + urllib.parse.unquote(m.group(1)) if m else ""
+
+
+def _yt_open(url):
+    """Открыть адрес: в уже открытом YouTube — в той же вкладке, иначе в браузере."""
+    import webbrowser
+    win = _browser_window()
+    if win is not None and "youtube" in (win.title or "").lower():
+        _navigate(win, url)
+        return win
+    webbrowser.open(url)
+    return None
+
+
+SORT_CHIPS = {"popular": ["Популярное", "Популярные", "Popular"],
+              "oldest": ["Старые", "Сначала старые", "Oldest"],
+              "newest": ["Новые", "Latest", "Последние"]}
+SORT_WORDS = {"popular": "самые популярные", "oldest": "самые старые", "newest": "самые новые"}
+
+
+def yt_find(query, sort=None, play=False):
+    """Найти или включить ролик. sort: popular / newest / oldest."""
+    if play:
+        ids = video_ids(search_url(query, "popular" if sort == "oldest" else sort))
+        if sort == "oldest":
+            ch = _yt_channel(query)
+            if ch:                                     # самое старое у автора: открываем канал
+                return yt_find(query, "oldest", play=False) + " Скажите «включи первое видео»."
+        if not ids:
+            _yt_open(search_url(query, sort))
+            return f"Открыл поиск на YouTube: {query}."
+        _yt_open(f"https://www.youtube.com/watch?v={ids[0]}")
+        return f"Включаю{' самое популярное' if sort == 'popular' else (' самое новое' if sort == 'newest' else '')}: {query}."
+    # у конкретного автора (короткое имя) самые популярные/старые/новые — на его канале
+    if sort and len(query.split()) <= 3:
+        ch = _yt_channel(query)
+        if ch:
+            win = _yt_open(ch + "/videos")
+            time.sleep(4.0)
+            win = win or _browser_window()
+            clicked = None
+            if win is not None:
+                try:
+                    clicked = click_in(win, SORT_CHIPS[sort], min_score=0.85)
+                except Exception:  # noqa: BLE001
+                    clicked = None
+            name = ch.rsplit("/@", 1)[-1]
+            if clicked or sort == "newest":
+                return f"Открыл канал {name}: {SORT_WORDS[sort]} видео."
+            return (f"Открыл видео канала {name}. Нажмите «{SORT_CHIPS[sort][0]}» вверху списка — "
+                    f"или скажите «нажми {SORT_CHIPS[sort][0].lower()}».")
+    _yt_open(search_url(query, sort))
+    return f"Ищу на YouTube{' ' + SORT_WORDS[sort] if sort else ''}: {query}."
 
 
 def _navigate(win, url):
@@ -963,10 +1080,12 @@ def run(intent):
         return yt_nth(intent["n"])
     if a == "yt_play":
         return yt_play(intent["query"], intent.get("search_only"))
+    if a == "yt_find":
+        return yt_find(intent["query"], intent.get("sort"), intent.get("play"))
     if a == "yt_key":
         return yt_key(intent["key"])
     return ""
 
 
-ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_key", "nth_item", "tabs",
+ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_find", "yt_key", "nth_item", "tabs",
            "app_search", "enter_item", "click_play")
