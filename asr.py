@@ -112,12 +112,16 @@ def cloud_transcribe(pcm16: bytes, rate: int = 16000):
     req = urllib.request.Request(cloud_url(), data=data, method="POST", headers={
         "Content-Type": "application/json", "User-Agent": "SenioreM",
         "Authorization": f"Bearer {ai.CLOUD_TOKEN}"})
+    import time
+    t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=6) as r:
             text = (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
         _CLOUD_FAILS[0] = 0
+        config.voice_log(f"облако распознало за {time.time() - t0:.1f} с: «{text}»")
         return text
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        config.voice_log(f"облачное распознавание не ответило ({time.time() - t0:.1f} с): {e}")
         _CLOUD_FAILS[0] += 1
         if _CLOUD_FAILS[0] >= 3 and not ready():
             DOWNLOADS.start()            # облако не отвечает — готовим распознавание на компьютере

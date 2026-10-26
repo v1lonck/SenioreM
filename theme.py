@@ -756,6 +756,8 @@ class Toggle(QAbstractButton):
         super().__init__()
         self.setCheckable(True)
         self.setChecked(checked)
+        self.setProperty("nohover", True)
+        HoverFX.attach(self)                 # только звук нажатия
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(46, 26)
         self._pos = 1.0 if checked else 0.0
@@ -794,6 +796,13 @@ HOVER_STYLES = [
     ("lift", "Парение", "Кнопка «приподнимается» с тенью"),
     ("classic", "Классика", "Только подсвеченная рамка"),
 ]
+
+
+def click_feedback(w, hover=True):
+    """Звук нажатия (и анимация наведения) для кнопки, созданной не через button()."""
+    if not hover:
+        w.setProperty("nohover", True)
+    HoverFX.attach(w)
 
 
 def hover_style():
@@ -844,7 +853,15 @@ class HoverFX:
                 def eventFilter(self, obj, e):
                     from PySide6.QtCore import QEvent
                     t = e.type()
-                    if t == QEvent.Enter:
+                    if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+                        try:
+                            import clicksounds
+                            clicksounds.play()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif obj.property("nohover"):
+                        return False
+                    elif t == QEvent.Enter:
                         HoverFX._go(obj, True)
                     elif t == QEvent.Leave:
                         HoverFX._go(obj, False)
@@ -947,6 +964,7 @@ class ThumbCard(QWidget):
 
     def __init__(self, title, sub="", w=232, h=150):
         super().__init__()
+        click_feedback(self, hover=False)
         self.title, self.sub = title, sub
         self.pix = None
         self.selected = False

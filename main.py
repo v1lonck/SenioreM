@@ -969,6 +969,11 @@ class HomeScreen(Backdrop):
         self.bridge.preview.connect(self._on_preview)
         self.bridge.reroute.connect(self._rerouted)
         self.speaker.speaking.connect(self._on_speaking)
+        self.speaker.said.connect(self._on_said)
+        self._said_at = 0.0
+        self._deaf_timer = QTimer(self)
+        self._deaf_timer.timeout.connect(self._unstick_speaking)
+        self._deaf_timer.start(5000)
         self.arm_timer = QTimer(self)
         self.arm_timer.setSingleShot(True)
         self.arm_timer.timeout.connect(self._disarm)
@@ -1485,6 +1490,7 @@ class HomeScreen(Backdrop):
         self._rest_state()
 
     def _on_failed(self, msg):
+        config.voice_log(f"микрофон/распознавание: {msg}")
         self.mic = "error"
         if self.listener is not None:
             self._old_listeners.append(self.listener)
@@ -1502,7 +1508,19 @@ class HomeScreen(Backdrop):
         timers.manager().stop_alarm()
         self._show_heard("Стоп", False)
 
+    def _on_said(self, _text):
+        self._said_at = time.time()
+
+    def _unstick_speaking(self):
+        """Страховка: если помощник «завис» в состоянии «говорю» (звука давно нет),
+        микрофон снова включается — иначе он перестал бы слышать обращение."""
+        if self.speaking and time.time() - max(self._said_at, getattr(self, "_speak_since", 0)) > 45:
+            config.voice_log("состояние «говорю» зависло — снова слушаю")
+            self._on_speaking(False)
+
     def _on_speaking(self, flag):
+        if flag and not self.speaking:
+            self._speak_since = time.time()
         self.speaking = flag
         if not flag:
             self._spoken_end = time.time()
@@ -1607,12 +1625,15 @@ class HomeScreen(Backdrop):
             self.execute("выключи будильник")          # будильник выключается и без «Сеньор»
             return
         if self.speaking or self._is_echo(text):
+            config.voice_log(f"услышал «{text}» — пропущено ({'говорю сам' if self.speaking else 'эхо'})")
             return
         words = commands.tokens(text)
         if confs is not None and len(confs) != len(words):
             confs = None
         wake = self.settings.wake_words if self.settings else None
         i = commands.find_wake(words, wake, confs)
+        config.voice_log(f"услышал «{text}» обращение={'да' if i >= 0 else 'нет'} ждёт={self.armed} "
+                         f"уверенность={[round(c, 2) for c in confs] if confs else '-'}")
         if i >= 0:
             rest = words[i + 1:]
             if rest:
@@ -1720,6 +1741,7 @@ class HomeScreen(Backdrop):
                 if j >= 0:
                     w = w[j + 1:]
                 text = " ".join(w)
+            config.voice_log(f"точно: «{text.strip()}» (быстро: «{vosk_text}»)")
             self.bridge.recognized.emit(text.strip() or vosk_text)
 
         threading.Thread(target=work, daemon=True).start()
@@ -2853,6 +2875,7 @@ class ProfileScreen(Backdrop):
             b.setStyleSheet(f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
                             f"stop:0 {T._mix(color, '#FFFFFF', 0.35)}, stop:1 {color}); }}")
             b.clicked.connect(lambda _=False, c=color: self._set_look(accent=c))
+            T.click_feedback(b, hover=False)
             group.addButton(b)
             row.addWidget(b)
             self.swatches[color.lower()] = b
@@ -2911,6 +2934,40 @@ class ProfileScreen(Backdrop):
         lay.addLayout(hg)
         lay.addSpacing(30)
 
+        # ---- звук нажатия
+        import clicksounds
+        self._caption(lay, "Звук при нажатии на кнопки — нажмите, чтобы послушать")
+        sg = grid()
+        self.sound_buttons = {}
+        sgrp = QButtonGroup(self)
+        for i, (key, title) in enumerate(clicksounds.SOUNDS):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(176)
+            b.clicked.connect(lambda _=False, k=key: self._choose_sound(sound=k))
+            sgrp.addButton(b)
+            sg.addWidget(b, i // 5, i % 5)
+            self.sound_buttons[key] = b
+        lay.addLayout(sg)
+        lay.addSpacing(10)
+        vrow = QHBoxLayout()
+        vrow.setSpacing(10)
+        vrow.addWidget(label("Громкость", 13, role="muted"))
+        vrow.addSpacing(6)
+        vgrp = QButtonGroup(self)
+        self.sound_vol_buttons = {}
+        for vol, title in ((0.15, "Тихо"), (0.35, "Средне"), (0.7, "Громко")):
+            b = button(title, "ghost", 13, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(120)
+            b.clicked.connect(lambda _=False, v=vol: self._choose_sound(volume=v))
+            vgrp.addButton(b)
+            vrow.addWidget(b)
+            self.sound_vol_buttons[vol] = b
+        vrow.addStretch(1)
+        lay.addLayout(vrow)
+        lay.addSpacing(30)
+
         # ---- главный экран: часы и виджеты
         self._caption(lay, "Главный экран")
         crow = QHBoxLayout()
@@ -2948,6 +3005,15 @@ class ProfileScreen(Backdrop):
         self.t_eco.toggled.connect(lambda v: self._set_look(eco=bool(v)) if not self._loading else None)
         lay.addStretch(1)
 
+    def _choose_sound(self, sound=None, volume=None):
+        import clicksounds
+        if sound is not None:
+            self._set_look(click_sound=sound)
+        if volume is not None:
+            self._set_look(click_volume=volume)
+        clicksounds._LAST[0] = 0.0
+        clicksounds.play()                 # сразу слышно, как звучит выбранное
+
     def _choose_font(self, family):
         T.set_font(QApplication.instance(), family)
         # образцы шрифтов в карточках оставляем своими
@@ -2967,6 +3033,10 @@ class ProfileScreen(Backdrop):
         cur_font = a.get("font") or ""
         for k, b in getattr(self, "hover_buttons", {}).items():
             b.setChecked(k == T.hover_style())
+        for k, b in getattr(self, "sound_buttons", {}).items():
+            b.setChecked(k == (a.get("click_sound") or "none"))
+        for v, b in getattr(self, "sound_vol_buttons", {}).items():
+            b.setChecked(abs(v - float(a.get("click_volume", 0.35))) < 0.01)
         for fam, c in getattr(self, "font_cards", {}).items():
             c.setProperty("selected", "true" if fam == cur_font else "false")
             c.style().unpolish(c)
