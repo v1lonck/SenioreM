@@ -12,7 +12,13 @@ OUT = HERE.parent / "assets" / "companions"
 import draw_girl  # noqa: E402
 import draw_pets  # noqa: E402
 
-VERSION = 1
+VERSION = 2
+
+
+def Image_h(path):
+    from PIL import Image
+    with Image.open(path) as im:
+        return im.height
 
 
 def save(pid, name, frames, seq):
@@ -30,8 +36,11 @@ def save(pid, name, frames, seq):
             boxes.append((x1, y1, x2, y2))
     ix1, iy1 = min(b[0] for b in boxes), min(b[1] for b in boxes)
     ix2, iy2 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+    # сидит на краю: ноги свисают ниже «пола» — запоминаем, насколько (окно опускается на панель задач)
+    hang = max([m["y"] + Image_h(d / m["f"]) - iy2 for m in metas if "sit" in m["tags"]] + [0])
     meta = {"v": 2, "name": name, "builtin": VERSION, "frames": metas, "idle_h": iy2 - iy1,
-            "idle_w": ix2 - ix1, "cx": (ix1 + ix2) / 2, "bottom": iy2, "seq": seq}
+            "idle_w": ix2 - ix1, "cx": (ix1 + ix2) / 2, "bottom": iy2, "seq": seq,
+            "hang": max(0, hang - 8)}
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     print(pid, len(frames), "кадров")
 

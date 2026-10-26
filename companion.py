@@ -384,6 +384,7 @@ class Pack:
             self.idle_w = self.meta.get("idle_w", 100)
             self.cx = self.meta.get("cx", 50)
             self.bottom = self.meta.get("bottom", 100)
+            self.hang = float(self.meta.get("hang", 0) or 0) if self.has("sit") else 0.0
         else:                                       # старый формат (только основная поза)
             for k in range(int(self.meta.get("frames", 1))):
                 pix = QPixmap(str(d / f"idle_{k:02d}.png"))
@@ -393,6 +394,7 @@ class Pack:
                     self.tags.append({"idle"})
             self.idle_w, self.idle_h = self.meta.get("w", 100), self.meta.get("h", 100)
             self.cx, self.bottom = self.idle_w / 2, self.idle_h
+            self.hang = 0.0
         self.aspect = self.idle_h / max(1, self.idle_w)
         self._scaled = {}
 
@@ -461,6 +463,12 @@ def get_pack(kind):
 def aspect(kind):
     p = get_pack(kind)
     return p.aspect if p else 1.0
+
+
+def hang_ratio(kind):
+    """Насколько ниже «пола» свисают ноги, когда персонаж сидит на краю (доля роста)."""
+    p = get_pack(kind)
+    return (p.hang / max(1, p.idle_h)) if p else 0.0
 
 
 # ------------------------------------------------------------------ анимация
@@ -581,6 +589,7 @@ class CompanionWindow(QWidget):
         self.kind = "none"
         self.size_px = 150
         self.fig_w = self.fig_h = 150
+        self.extra = 0
         self.on_click = on_click
         self.text = ""
         self._text_until = 0.0
@@ -599,7 +608,9 @@ class CompanionWindow(QWidget):
         self.size_px = int(size)
         self.fig_h = int(self.size_px * 1.6)
         self.fig_w = int(self.fig_h / max(0.3, aspect(self.kind))) + 8
-        self.setFixedSize(self.fig_w + int(self.size_px * 1.7), self.fig_h + 14)
+        # сидя на краю панели задач ноги свисают на неё — окно чуть ниже края
+        self.extra = int((self.fig_h - 6) * hang_ratio(self.kind)) + 6 if hang_ratio(self.kind) else 0
+        self.setFixedSize(self.fig_w + int(self.size_px * 1.7), self.fig_h + 14 + self.extra)
         self.place()
 
     def place(self):
@@ -607,7 +618,7 @@ class CompanionWindow(QWidget):
             self.move(self._custom_pos)
             return
         geo = QGuiApplication.primaryScreen().availableGeometry()
-        self.move(geo.right() - self.width() - 12, geo.bottom() - self.height() + 4)
+        self.move(geo.right() - self.width() - 12, geo.bottom() - self.height() + 4 + self.extra)
 
     def say(self, text, seconds=6.0):
         self.text = text[:90] + ("…" if len(text) > 90 else "")
@@ -628,7 +639,7 @@ class CompanionWindow(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        fig = QRectF(self.width() - self.fig_w - 6, self.height() - self.fig_h - 4,
+        fig = QRectF(self.width() - self.fig_w - 6, self.height() - self.fig_h - 4 - self.extra,
                      self.fig_w, self.fig_h)
         self.painter.paint(p, fig, self.kind)
         if self.text:

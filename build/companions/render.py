@@ -20,8 +20,10 @@ def frames_for(fn):
     out += [(poses.stand(P(0, 0)), ["idle"]), (poses.stand(P(1, 0)), ["idle"]),
             (poses.stand(P(2, 0)), ["idle"]), (poses.stand(P(0, 1)), ["idle", "talk"]),
             (poses.stand(P(0, 2)), ["idle", "talk"]), (poses.stand(P(1, 2)), ["idle", "talk"])]
-    out += [(poses.sit(P(0, 0)), ["sit"]), (poses.sit(P(2, 0)), ["sit"]),
-            (poses.sit(P(0, 1)), ["sit", "talk"]), (poses.sit(P(0, 2)), ["sit", "talk"])]
+    for k in range(8):                       # сидит на краю, ноги качаются по очереди
+        out.append((poses.sit_edge(P(2 if k == 5 else 0, 0), swing=k / 4.0), ["sit"]))
+    for k, m in enumerate((1, 2, 1, 2)):
+        out.append((poses.sit_edge(P(0, m), swing=k / 2.0), ["sit", "talk"]))
     for k in range(8):
         e = 2 if k == 5 else 0
         out.append((poses.lie(P(e, 0), swing=k / 4.0), ["lie"]))
@@ -36,7 +38,7 @@ def render(names=None, preview=False):
     result = {}
     with sync_playwright() as pw:
         br = pw.chromium.launch()
-        pg = br.new_page(viewport={"width": poses.W, "height": poses.H}, device_scale_factor=1.0)
+        pg = br.new_page(viewport={"width": poses.W, "height": poses.H + poses.HANG}, device_scale_factor=1.0)
         for name in names:
             imgs = []
             for svg, tags in frames_for(characters.CHARACTERS[name]):
@@ -48,7 +50,7 @@ def render(names=None, preview=False):
                 imgs.append((im, tags))
             result[name] = imgs
             if not preview:
-                mk.save(f"builtin-{name}", NAMES[name], imgs, {"lie": 0.22})
+                mk.save(f"builtin-{name}", NAMES[name], imgs, {"lie": 0.22, "sit": 0.16})
         br.close()
     return result
 
@@ -62,9 +64,9 @@ if __name__ == "__main__":
             else "preview.png"
         rows = []
         for name, imgs in res.items():
-            pick = [imgs[0], imgs[4], imgs[6], imgs[10], imgs[12]]
+            pick = [imgs[0], imgs[6], imgs[8], imgs[10], imgs[18], imgs[20]]
             w = sum(i.width for i, _ in pick)
-            row = Image.new("RGBA", (w, pick[0][0].height), (40, 44, 60, 255))
+            row = Image.new("RGBA", (w, max(i.height for i, _ in pick)), (40, 44, 60, 255))
             x = 0
             for im, _ in pick:
                 row.alpha_composite(im, (x, 0))
