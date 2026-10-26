@@ -14,11 +14,20 @@ before = size(dist)
 qt = next(dist.rglob("PySide6"), None)
 removed = []
 if qt and qt.is_dir():
-    for rel in ("translations", "qml", "resources"):
+    for rel in ("qml", "resources"):
         t = qt / rel
         if t.exists():
             shutil.rmtree(t)
             removed.append(rel)
+    tr = qt / "translations"            # переводы: оставляем только русский (меню «Копировать» и т. п.)
+    if tr.exists():
+        for f in tr.iterdir():
+            if not (f.name.startswith("qtbase_ru") and f.suffix == ".qm"):
+                if f.is_dir():
+                    shutil.rmtree(f)
+                else:
+                    f.unlink()
+                removed.append(f"translations/{f.name}")
     patterns = ["opengl32sw.dll", "Qt6Pdf*.dll", "Qt6Qml*.dll", "Qt6Quick*.dll",
                 "Qt6VirtualKeyboard*.dll", "Qt6Network*.dll", "Qt6Svg*.dll",
                 "Qt6OpenGL*.dll", "Qt6Multimedia*.dll", "Qt6WebEngine*"]

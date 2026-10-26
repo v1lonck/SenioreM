@@ -97,11 +97,86 @@ class Thumb(QLabel):
             self.setProperty("role", "faint")
 
     def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        self._open()
+
+    def _open(self):
         try:
             if os.path.isfile(self.path):
                 os.startfile(self.path)          # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
+
+    def contextMenuEvent(self, e):
+        if not os.path.isfile(self.path):
+            return
+        m = _menu(self)
+        m.addAction("Открыть", self._open)
+        m.addAction("Копировать картинку", self._copy)
+        m.addAction("Сохранить как…", self._save_as)
+        m.addSeparator()
+        m.addAction("Показать в папке", self._reveal)
+        m.exec(e.globalPos())
+
+    def _copy(self):
+        from PySide6.QtGui import QImage
+        img = QImage(self.path)
+        if img.isNull():
+            q = _pil_qimage(self.path)
+            img = q if q is not None else img
+        QGuiApplication.clipboard().setImage(img)
+
+    def _save_as(self):
+        import shutil
+        ext = os.path.splitext(self.path)[1] or ".jpg"
+        dst, _ = QFileDialog.getSaveFileName(self, "Сохранить картинку",
+                                             os.path.join(os.path.expanduser("~"), "Pictures",
+                                                          "SenioreM" + ext),
+                                             f"Картинка (*{ext})")
+        if dst:
+            try:
+                shutil.copyfile(self.path, dst)
+            except OSError:
+                pass
+
+    def _reveal(self):
+        import subprocess
+        try:
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(self.path)])
+        except OSError:
+            pass
+
+
+def _menu(parent):
+    """Контекстное меню в стиле программы (по-русски, со скруглениями)."""
+    from PySide6.QtWidgets import QMenu
+    m = QMenu(parent)
+    m.setWindowFlags(m.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+    m.setAttribute(Qt.WA_TranslucentBackground)
+    m.setFont(font(14))
+    return m
+
+
+class BubbleText(QLabel):
+    """Текст сообщения: выделяется мышью, правый клик — своё меню «Копировать»."""
+
+    def contextMenuEvent(self, e):
+        m = _menu(self)
+        sel = self.selectedText()
+        if sel:
+            m.addAction("Копировать выделенное", lambda: QGuiApplication.clipboard().setText(sel))
+        plain = self.text()
+        if self.textFormat() == Qt.MarkdownText:
+            from PySide6.QtGui import QTextDocument
+            doc = QTextDocument()
+            doc.setMarkdown(plain)
+            plain = doc.toPlainText()
+        m.addAction("Копировать сообщение", lambda: QGuiApplication.clipboard().setText(plain))
+        codes = re.findall(r"```[^\n]*\n(.*?)```", self.text(), re.S)
+        if codes:
+            m.addAction("Копировать код", lambda: QGuiApplication.clipboard().setText("\n\n".join(codes).strip()))
+        m.exec(e.globalPos())
 
 
 class Typing(QWidget):
@@ -184,7 +259,7 @@ class Bubble(QWidget):
         bl.setSpacing(6)
         for pth in images or []:
             bl.addWidget(Thumb(pth))
-        self.text = QLabel()
+        self.text = BubbleText()
         if not mine and any(m in text for m in ("**", "```", "\n- ", "\n1. ", "`", "\n#")):
             self.text.setTextFormat(Qt.MarkdownText)   # ответ ИИ с разметкой: списки, код, жирный
         else:
@@ -193,7 +268,7 @@ class Bubble(QWidget):
         self.text.setVisible(bool(text))
         self.text.setWordWrap(True)
         self.text.setOpenExternalLinks(True)
-        self.text.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.text.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.text.setFont(font(15))
         self.text.setMaximumWidth(640)
         if mine:
@@ -464,6 +539,34 @@ class ChatScreen(Backdrop):
         self._typing = row
         self.lay.insertWidget(self.lay.count() - 1, row)
         QTimer.singleShot(30, self._scroll_down)
+
+    def partial(self, text):
+        """Ответ пишется — показываем уже готовую часть вместо «печатает…»."""
+        if self._typing is None or not text:
+            return
+        lbl = getattr(self._typing, "_partial_lbl", None)
+        if lbl is None:
+            box = self._typing.findChild(QFrame)
+            if box is None:
+                return
+            lay = box.layout()
+            while lay.count():
+                it = lay.takeAt(0)
+                if it.widget():
+                    it.widget().hide()
+                    it.widget().deleteLater()
+            lbl = QLabel()
+            lbl.setWordWrap(True)
+            lbl.setFont(font(15))
+            lbl.setMaximumWidth(640)
+            lbl.setTextFormat(Qt.PlainText)
+            lay.setContentsMargins(16, 11, 16, 10)
+            lay.addWidget(lbl)
+            self._typing._partial_lbl = lbl
+        lbl.setText(text + " ▍")
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() - bar.value() < 120:
+            QTimer.singleShot(20, self._scroll_down)
 
     def receive(self, reply, images=None):
         if self._typing is not None:

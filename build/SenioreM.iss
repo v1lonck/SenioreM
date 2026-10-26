@@ -226,7 +226,7 @@ begin
   if CanReplaceInstalled then
   begin
     { в нашей папке не запущен; но мог быть открыт из другой папки (старая установка) }
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM SenioreM.exe', '', SW_HIDE,
          ewWaitUntilTerminated, Code);
     Exit;
   end;
@@ -238,7 +238,7 @@ begin
     if CanReplaceInstalled then
       Exit;
   end;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM SenioreM.exe', '', SW_HIDE,
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM SenioreM.exe', '', SW_HIDE,
        ewWaitUntilTerminated, Code);
   for I := 1 to 20 do
   begin

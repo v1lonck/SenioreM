@@ -493,12 +493,13 @@ class AI:
                 or bool(images)
             if prefer == "fast":
                 long_ask = False
+            # запас по длине: ответ не обрывается на полуслове (модель сама решает, сколько писать)
             if prefer == "code":
-                max_tok = 1400
+                max_tok = 3500
             elif chat:
-                max_tok = 700 if long_ask else 300
+                max_tok = 2000 if long_ask else 1000
             else:
-                max_tok = 420 if long_ask else 220
+                max_tok = 700 if long_ask else 400
             payload = {"messages": msgs, "temperature": 0.2 if prefer == "code" else 0.4, "top_p": 0.9,
                        "max_tokens": max_tok, "stream": False, "cache_prompt": True,
                        "model_hint": "pro" if long_ask else "flash"}
@@ -601,7 +602,7 @@ class AI:
             return None
         payload = {"messages": [{"role": "system", "content": ROUTER_PROMPT},
                                 {"role": "user", "content": text}],
-                   "temperature": 0.0, "max_tokens": 24, "stream": False}
+                   "temperature": 0.0, "max_tokens": 60, "stream": False, "model_hint": "flash"}
         try:
             _r, data = self._run(mode, settings, payload, None, False, True)
             out = clean_reply(data["choices"][0]["message"]["content"]) if data else ""

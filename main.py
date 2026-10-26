@@ -63,6 +63,7 @@ class Bridge(QObject):
     preview = Signal(int, str)          # точные субтитры, пока человек ещё говорит
     reroute = Signal(str, object)       # ИИ понял, какая это команда — выполняем её
     chat_reply = Signal(str, object)    # ответ в чат (текст, картинки)
+    chat_partial = Signal(str)          # ответ в чат по мере написания
 
 
 # ================================================================== вход
@@ -809,6 +810,15 @@ class VolumeMeter(QWidget):
         p.drawRoundedRect(QRectF(0, 0, max(6, self.width() * self.value), 6), 3, 3)
 
 
+# похоже на просьбу что-то сделать — тогда ИИ сначала пробует перевести фразу в команду
+COMMANDISH = re.compile(
+    r"\b(сделай|сделать|включи|включить|выключи|выключить|вруби|выруби|открой|открыть|закрой|закрыть|"
+    r"запусти|запустить|поставь|постав|убавь|прибавь|убери|громче|тише|погромче|потише|найди|найти|"
+    r"перейди|зайди|сверни|разверни|переключи|нажми|напомни|разбуди|таймер|будильник|громкост|"
+    r"яркост|звук|пауз|трек|музык|видео|ролик|вкладк|окно|скриншот|заблокируй|выключи компьютер)",
+    re.I)
+
+
 class Subtitles(QWidget):
     """Субтитры: «стеклянная» плашка по центру; новые слова плавно проявляются, пока вы говорите
     (бледнее — черновик, ярче — точно распознанный текст). Пустая — плавно исчезает."""
@@ -1275,7 +1285,6 @@ class HomeScreen(Backdrop):
             self._upd_ready = None
             self._check_update()
             return
-        import subprocess
         self.upd_btn.setText("Обновляю…  SenioreM откроется через пару секунд")
         self.upd_btn.setEnabled(False)
         QApplication.processEvents()
@@ -1289,9 +1298,8 @@ class HomeScreen(Backdrop):
             ai.ENGINE.stop()
         except Exception:  # noqa: BLE001
             pass
-        subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                          "/CLOSEAPPLICATIONS", "/nosplash=1"])
-        os._exit(0)          # сразу освобождаем файлы программы — установщик заменит их и запустит SenioreM
+        import updater
+        updater.run(path)    # установщик заменит файлы и SenioreM откроется снова
 
     def _after_update_note(self):
         """Первый запуск после обновления — коротко сообщаем об этом."""
@@ -1303,6 +1311,10 @@ class HomeScreen(Backdrop):
             return
         if new and new == self.cfg.get("version"):
             self.reply.setText(f"Готово — SenioreM обновлён до версии {new}.")
+        elif new:
+            self.reply.setText(f"Обновление до версии {new} не установилось (подробности — в файле "
+                               f"update.log в папке %APPDATA%\\SenioreM). Попробую ещё раз позже, "
+                               f"или скачайте установщик со страницы SenioreM на GitHub.")
 
     # ---------- жизненный цикл ----------
     def start(self, email, settings):
@@ -1832,7 +1844,8 @@ class HomeScreen(Backdrop):
                 # свободная формулировка команды («сделай потише», «вруби что-нибудь на ютубе»):
                 # быстрая модель переводит её в понятную команду, и SenioreM её выполняет
                 if reply is None and intent["action"] == "unknown" and not intent.get("followup") \
-                        and not intent.get("rerouted") and not (sink is not None and s["chat_ai"] == "code"):
+                        and not intent.get("rerouted") and not (sink is not None and s["chat_ai"] == "code") \
+                        and COMMANDISH.search(text.lower()):
                     cmd = ai.ENGINE.route_command(text, s)
                     if cmd and commands.normalize(cmd) != commands.normalize(text):
                         self.bridge.reroute.emit(cmd, sink)
@@ -1846,12 +1859,16 @@ class HomeScreen(Backdrop):
 
                         def on_sentence(x):
                             sent.append(x)
-                            self.bridge.ai_sentence.emit(x)
+                            if sink is not None:          # в чате ответ появляется по мере написания
+                                self.bridge.chat_partial.emit(" ".join(sent))
+                            if speak_now:
+                                self.bridge.ai_sentence.emit(x)
                         reply = ai.ENGINE.ask(text, s, ctx,
-                                              on_sentence=on_sentence if speak_now else None,
+                                              on_sentence=on_sentence if (speak_now or sink is not None)
+                                              else None,
                                               prefer=(s["chat_ai"] or "auto") if sink is not None else "auto",
                                               chat=sink is not None)
-                        ui = "ai_streamed" if sent else "ai"
+                        ui = "ai_streamed" if (sent and speak_now) else "ai"
                     except ai.AIError as e:
                         reply = str(e)
             else:
@@ -2877,6 +2894,23 @@ class ProfileScreen(Backdrop):
         lay.addLayout(fg)
         lay.addSpacing(30)
 
+        # ---- кнопки при наведении
+        self._caption(lay, "Кнопки при наведении — наведите на вариант, чтобы увидеть")
+        hg = grid()
+        self.hover_buttons = {}
+        hgrp = QButtonGroup(self)
+        for i, (key, title, desc) in enumerate(T.HOVER_STYLES):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(232)
+            b.setToolTip(desc)
+            b.clicked.connect(lambda _=False, k=key: self._set_look(hover=k))
+            hgrp.addButton(b)
+            hg.addWidget(b, i // 4, i % 4)
+            self.hover_buttons[key] = b
+        lay.addLayout(hg)
+        lay.addSpacing(30)
+
         # ---- главный экран: часы и виджеты
         self._caption(lay, "Главный экран")
         crow = QHBoxLayout()
@@ -2931,6 +2965,8 @@ class ProfileScreen(Backdrop):
         import backgrounds
         a = T.APPEARANCE
         cur_font = a.get("font") or ""
+        for k, b in getattr(self, "hover_buttons", {}).items():
+            b.setChecked(k == T.hover_style())
         for fam, c in getattr(self, "font_cards", {}).items():
             c.setProperty("selected", "true" if fam == cur_font else "false")
             c.style().unpolish(c)
@@ -3801,6 +3837,7 @@ class MainWindow(QWidget):
         self.chat.send_images.connect(self._chat_images)
         self.chat.draw_requested.connect(self._chat_draw)
         self.home.bridge.chat_reply.connect(lambda t, im: self.chat.receive(t, im))
+        self.home.bridge.chat_partial.connect(self.chat.partial)
         for w in (self.auth, self.home, self.profile, self.chat):
             self.stack.addWidget(w)
 
@@ -3975,7 +4012,13 @@ class MainWindow(QWidget):
 
         def work():
             try:
-                reply = ai.ENGINE.ask(text, s, images=images, prefer=s["chat_ai"] or "auto", chat=True)
+                parts = []
+
+                def on_sentence(x):
+                    parts.append(x)
+                    self.home.bridge.chat_partial.emit(" ".join(parts))
+                reply = ai.ENGINE.ask(text, s, images=images, prefer=s["chat_ai"] or "auto", chat=True,
+                                      on_sentence=on_sentence)
             except ai.AIError as e:
                 reply = str(e)
             except Exception as e:  # noqa: BLE001

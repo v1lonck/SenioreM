@@ -576,17 +576,14 @@ class Splash(QWidget):
 
     def _run_installer(self, path):
         self._mark("ставлю обновление — программа закроется и откроется снова")
-        import os
-        import subprocess
         self.status.setText("Устанавливаю обновление — через несколько секунд SenioreM откроется снова")
         try:
             import ai
             ai.ENGINE.stop()
         except Exception:  # noqa: BLE001
             pass
-        subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                          "/CLOSEAPPLICATIONS", "/nosplash=1"])
-        os._exit(0)   # сразу освобождаем файлы программы для установщика
+        import updater
+        updater.run(path)   # установщик заменит файлы и SenioreM откроется снова
 
     def _update_failed(self, msg):
         self._updating = False
