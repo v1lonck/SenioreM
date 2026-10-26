@@ -1655,8 +1655,11 @@ class HomeScreen(Backdrop):
         use_ai = ai_on and intent["action"] in ("ask", "unknown", "forget")
         self._set_state("busy", "ДУМАЮ…" if use_ai and intent["action"] != "forget" else None)
 
-        local_ai = use_ai and (s["ai_mode"] or "smart") != "api"
-        if local_ai and not ai.local_ready(s["ai_mode"] or "smart"):
+        mode_now = s["ai_mode"] or "smart"
+        if mode_now == "cloud" and not ai.cloud_url():
+            mode_now = ai.recommended_kind()
+        local_ai = use_ai and mode_now not in ("api", "cloud")
+        if local_ai and not ai.local_ready(mode_now):
             if intent["action"] == "unknown":
                 use_ai = False
             elif intent["action"] == "ask":
@@ -2314,6 +2317,8 @@ class ProfileScreen(Backdrop):
         opts = [("smart", "Умный", "На компьютере · бесплатно · ~2 ГБ"),
                 ("fast", "Быстрый", "Для слабых ПК · бесплатно · ~1 ГБ"),
                 ("api", "Свой сервер", "OpenAI-совместимый API по ключу")]
+        if ai.cloud_url():
+            opts.insert(0, ("cloud", "Облачный", "Самый умный и быстрый · без скачивания · нужен интернет"))
         for i, (key, title, desc) in enumerate(opts):
             c = Clickable()
             c.setProperty("role", "option")
@@ -2415,7 +2420,9 @@ class ProfileScreen(Backdrop):
             c.style().unpolish(c)
             c.style().polish(c)
         self.ai_api.setVisible(mode == "api")
-        self.ai_local.setVisible(mode != "api")
+        self.ai_local.setVisible(mode not in ("api", "cloud"))
+        if mode == "cloud":
+            return
         if mode != "api" and ai.DOWNLOADS.active and not getattr(self, "_ai_downloading", False):
             self._ai_downloading = True
             self.ai_download.setEnabled(False)
@@ -3564,11 +3571,12 @@ class MainWindow(QWidget):
             s.set("ai_auto_setup", True)
             s.set("ai_enabled", True)
             if s["ai_mode"] != "api":
-                s.set("ai_mode", ai.recommended_kind())
+                # облачный ИИ (если настроен) — сразу умный и ничего не нужно скачивать
+                s.set("ai_mode", "cloud" if ai.cloud_url() else ai.recommended_kind())
         mode = s["ai_mode"] or "smart"
         if os.environ.get("SENIOREM_NO_DOWNLOADS"):
             pass
-        elif s["ai_enabled"] and mode != "api":
+        elif s["ai_enabled"] and mode not in ("api", "cloud"):
             # тяжёлое грузим не всё сразу, а по очереди — компьютер не «тормозит» при запуске:
             # точное распознавание — через 8 секунд, ИИ — через 25
             if ai.local_ready(mode):
@@ -4072,6 +4080,10 @@ def run_selftest(out_path):
             import control as _ctl2
             ids = _ctl2.video_ids(_ctl2.search_url("lofi hip hop"))
             log(f"youtube ids: {len(ids)} {ids[:3]}")
+            log(f"youtube channel а4: {_ctl2._yt_channel('а4')}")
+            pop = _ctl2.video_ids(_ctl2.search_url("а4", "popular"))
+            log(f"youtube popular а4: {pop[:3]}")
+            log(f"parse: {_ctl2.parse('включи самый популярный ролик а4')}")
         except Exception as e:  # noqa: BLE001
             log(f"WARN youtube: {e!r}")
         # уже открытая программа: найти окно, свернуть, развернуть, закрыть (на блокноте)
