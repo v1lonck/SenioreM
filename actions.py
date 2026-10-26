@@ -224,11 +224,56 @@ def open_by_name(name, cfg):
         prog = sites.find_program(name) or sites.find_local(name)
         if prog:
             return _start(prog, f"открой {name} (после обновления списка)")
+    if "сайт" not in name:
+        steam = _steam_game(pretty)          # игра из Steam без ярлыка — запускаем через Steam
+        if steam:
+            return steam
+    try:
+        import config
+        config.voice_log(f"не нашёл программу «{pretty}»; ключи: "
+                         f"{sorted(set().union(*[sites._keys(p) for p in sites._phrases(pretty)]))}")
+    except Exception:  # noqa: BLE001
+        pass
     if "сайт" in name or len(pretty.split()) >= 3:
         webbrowser.open("https://duckduckgo.com/?q=" + urllib.parse.quote(pretty))
         return f"Ищу {pretty} в интернете."
     return (f"Не нашёл «{pretty}» на компьютере. Если программа только что установлена — скажите "
             f"«обнови список программ», а чтобы найти в интернете — «найди {pretty}».")
+
+
+# Популярные игры Steam: даже без ярлыка на рабочем столе запускаются по номеру в Steam
+STEAM_IDS = {"counter strike": (730, "Counter-Strike 2"), "dota": (570, "Dota 2"),
+             "rust": (252490, "Rust"), "pubg": (578080, "PUBG"), "grand theft auto": (271590, "GTA V"),
+             "apex": (1172470, "Apex Legends"), "team fortress": (440, "Team Fortress 2"),
+             "war thunder": (236390, "War Thunder"), "warface": (291480, "Warface"),
+             "terraria": (105600, "Terraria"), "garry": (4000, "Garry's Mod"),
+             "among us": (945360, "Among Us"), "deadlock": (1422450, "Deadlock"),
+             "marvel rivals": (2767030, "Marvel Rivals"), "the finals": (2073850, "The Finals"),
+             "rocket league": (252950, "Rocket League"), "phasmophobia": (739630, "Phasmophobia"),
+             "lethal company": (1966720, "Lethal Company"), "valheim": (892970, "Valheim"),
+             "elden ring": (1245620, "Elden Ring"), "cyberpunk": (1091500, "Cyberpunk 2077"),
+             "euro truck": (227300, "Euro Truck Simulator 2"), "stardew": (413150, "Stardew Valley"),
+             "dead by daylight": (381210, "Dead by Daylight"), "path of exile": (238960, "Path of Exile"),
+             "destiny": (1085660, "Destiny 2"), "naraka": (1203220, "Naraka: Bladepoint"),
+             "halo": (976730, "Halo"), "squad": (393380, "Squad"), "dayz": (221100, "DayZ"),
+             "arma": (107410, "Arma 3"), "left 4 dead": (550, "Left 4 Dead 2"),
+             "portal": (620, "Portal 2"), "half life": (546560, "Half-Life: Alyx")}
+
+
+def _steam_game(name):
+    import sites
+    keys = set()
+    for ph in sites._phrases(name):
+        keys |= sites._keys(ph)
+    for k in keys:
+        for canon, (gid, title) in STEAM_IDS.items():
+            if k == canon or k.startswith(canon) or canon.startswith(k) and len(k) >= 5:
+                try:
+                    sites.launch(("url", f"steam://rungameid/{gid}"), title, f"Steam: {name}")
+                except Exception:  # noqa: BLE001
+                    return None
+                return f"Запускаю {title} через Steam."
+    return None
 
 
 def _looks_like_game(name):
