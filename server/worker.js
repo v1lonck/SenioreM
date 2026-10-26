@@ -14,6 +14,8 @@
 //     LLM_MODEL (Text, необязательно) — модель; если не указать, сервер сам выберет
 //               быструю (flash) для обычных вопросов и умную (pro) для «расскажи подробно»
 //     APP_TOKEN (Text, необязательно) — пароль программы, по умолчанию "seniorem-app"
+//     USER_DAY_TOKENS   (Text, необязательно) — лимит токенов на одного пользователя в день (150000)
+//     USER_MONTH_TOKENS (Text, необязательно) — лимит в месяц (3000000). Программа узнаёт их сама.
 
 const FREE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const FREE_MODEL_LIGHT = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -66,7 +68,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, paid: !!env.LLM_KEY, ai: !!env.AI });
+      return json({
+        ok: true, paid: !!env.LLM_KEY, ai: !!env.AI,
+        limits: { day: Number(env.USER_DAY_TOKENS || 150000), month: Number(env.USER_MONTH_TOKENS || 3000000) },
+      });
     }
     if (request.method !== "POST") return new Response("not found", { status: 404 });
     const token = env.APP_TOKEN || "seniorem-app";
@@ -107,16 +112,18 @@ export default {
     const out = {
       messages: (body.messages || []).slice(-20),
       temperature: Math.min(Number(body.temperature ?? 0.5), 1.2),
-      max_tokens: Math.min(Number(body.max_tokens ?? 300), 700),
+      max_tokens: Math.min(Number(body.max_tokens ?? 300), 1500),
       stream: !!body.stream,
     };
+    // программа подсказывает, какая модель нужна: быстрая (flash) или умная (pro)
+    const smart = body.model_hint ? body.model_hint === "pro" : out.max_tokens > 300;
     // 1) умная платная модель (если настроена)
     if (env.LLM_KEY && env.LLM_URL) {
       try {
         const r = await fetch(env.LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.LLM_KEY}` },
-          body: JSON.stringify({ ...out, model: await pickModel(env, out.max_tokens > 300) }),
+          body: JSON.stringify({ ...out, model: await pickModel(env, smart) }),
         });
         if (r.ok) {
           return new Response(r.body, {

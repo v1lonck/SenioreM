@@ -290,6 +290,10 @@ def _stream(url, payload, key="", timeout=120):
                 yield delta
 
 
+def strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+
+
 def clean_reply(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     text = re.sub(r"```.*?```", "", text, flags=re.S)
@@ -420,9 +424,17 @@ class AI:
     def forget(self):
         self.history = []
 
-    def _system(self, name, address):
+    def _system(self, name, address, chat=False, code=False):
         now = datetime.datetime.now()
         who = f" Обращайся к пользователю «{address}»." if address else ""
+        if chat:
+            return (f"Ты — {name}, ИИ-помощник программы SenioreM (чат на экране). Отвечай по-русски, "
+                    f"грамотно, точно и по существу, сначала главное. Можно использовать Markdown: "
+                    f"списки, **жирный**, блоки кода с указанием языка. "
+                    + ("Сейчас пользователь просит помощи с программированием: пиши рабочий, полный "
+                       "код и коротко объясняй его. " if code else
+                       "Обычно 2–6 предложений, подробнее — если просят. ")
+                    + f"Если не уверен — честно скажи.{who} Сегодня {now:%d.%m.%Y}.")
         return (f"Ты — {name}, голосовой ИИ-помощник программы SenioreM на компьютере "
                 f"пользователя. Отвечай по-русски, грамотно, дружелюбно, точно и по существу: "
                 f"сначала главное, без вступлений и повторов вопроса. Обычно 1–3 законченных "
@@ -451,7 +463,7 @@ class AI:
         tail = clean_reply(buf)
         if tail:
             on_sentence(tail)
-        return clean_reply(full)
+        return strip_think(full)
 
     def ask(self, text, settings, context="", on_sentence=None, images=None, prefer="auto",
             chat=False):
@@ -463,7 +475,7 @@ class AI:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
-            system = self._system(name, settings["address"])
+            system = self._system(name, settings["address"], chat, prefer == "code")
             msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
             extra = f"(Сейчас {datetime.datetime.now():%H:%M}.)"
@@ -475,12 +487,21 @@ class AI:
             mode = settings["ai_mode"] or "smart"
             if mode == "cloud" and not cloud_url():
                 mode = recommended_kind()          # облако не настроено — работаем на компьютере
-            long_ask = prefer == "smart" or (prefer == "auto" and re.search(
-                r"подробн|расскажи|объясни|история|почему|как работает|сравни|напиши|придумай",
-                (text or "").lower()) is not None)
-            max_tok = (700 if long_ask else 400) if chat else (420 if long_ask else 220)
-            payload = {"messages": msgs, "temperature": 0.4, "top_p": 0.9,
-                       "max_tokens": max_tok, "stream": False, "cache_prompt": True}
+            long_ask = prefer in ("smart", "code") or (prefer == "auto" and re.search(
+                r"подробн|расскажи|объясни|история|почему|как работает|сравни|напиши|придумай|код|"
+                r"программ|скрипт|функци|python|питон|реши|задач", (text or "").lower()) is not None) \
+                or bool(images)
+            if prefer == "fast":
+                long_ask = False
+            if prefer == "code":
+                max_tok = 1400
+            elif chat:
+                max_tok = 700 if long_ask else 300
+            else:
+                max_tok = 420 if long_ask else 220
+            payload = {"messages": msgs, "temperature": 0.2 if prefer == "code" else 0.4, "top_p": 0.9,
+                       "max_tokens": max_tok, "stream": False, "cache_prompt": True,
+                       "model_hint": "pro" if long_ask else "flash"}
             remote = mode in ("api", "cloud") and prefer != "local"
             if remote and over_limit(settings):
                 if local_ready(recommended_kind()):
@@ -503,14 +524,15 @@ class AI:
                 try:
                     reply, data = self._run(mode, settings, payload, on_sentence, long_ask, remote)
                 except urllib.error.HTTPError as e:
-                    if vision and e.code in (400, 404, 415, 422):
+                    if vision and e.code in (400, 404, 413, 415, 422, 500, 502, 503):
                         # модель не принимает картинки — отправляем распознанный на них текст
                         msgs[-1]["content"] = user_text + _ocr_note(images)
                         reply, data = self._run(mode, settings, payload, on_sentence, long_ask, remote)
                     else:
                         raise
                 if data is not None:
-                    reply = clean_reply(data["choices"][0]["message"]["content"])
+                    reply = strip_think(data["choices"][0]["message"]["content"])
+                reply = reply if chat else clean_reply(reply)
             except AIError:
                 raise
             except urllib.error.HTTPError as e:
@@ -551,6 +573,7 @@ class AI:
                 base += "/chat/completions"
             payload.pop("cache_prompt", None)
             key = (settings["ai_api_key"] or "").strip()
+            payload.pop("model_hint", None)
             payload["model"] = (settings["ai_api_model"] or "").strip() or auto_model(base, key, smart)
             if on_sentence is not None:
                 try:              # потоком: первая фраза звучит, пока ИИ дописывает остальное
@@ -562,6 +585,7 @@ class AI:
             return "", _post(base, payload, key, 60)
         payload["cache_prompt"] = True
         payload.pop("model", None)
+        payload.pop("model_hint", None)
         self.start_local(mode)
         url = f"http://127.0.0.1:{self.port}/v1/chat/completions"
         if on_sentence is not None:
@@ -635,8 +659,31 @@ def _ocr_note(images):
 
 
 # ---------------- расход токенов и лимиты ----------------
-DAY_LIMIT = 1_500_000         # по умолчанию: ~1,5 млн токенов в день
-MONTH_LIMIT = 20_000_000      # и 20 млн в месяц — 250 млн хватит примерно на год
+# Лимиты облачного ИИ одинаковы для всех и задаются владельцем SenioreM: в Cloudflare (переменные
+# USER_DAY_TOKENS и USER_MONTH_TOKENS у сервера) — программа узнаёт их сама. Пользователь их не меняет.
+DAY_LIMIT = 150_000           # по умолчанию: ~100 вопросов в день
+MONTH_LIMIT = 3_000_000       # и ~2000 в месяц на одного пользователя
+_SERVER = {"t": 0.0, "info": {}}
+
+
+def server_info(refresh=False):
+    """Сведения облачного сервера (/health): лимиты и что он умеет. Кэш на час."""
+    u = cloud_url()
+    if not u:
+        return {}
+    if not refresh and time.time() - _SERVER["t"] < 3600:
+        return _SERVER["info"]
+    _SERVER["t"] = time.time()
+    try:
+        base = u.split("/v1/")[0] if "/v1/" in u else u.rsplit("/chat/completions", 1)[0]
+        req = urllib.request.Request(base + "/health", headers={"User-Agent": "SenioreM"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            info = json.loads(r.read().decode("utf-8"))
+        if isinstance(info, dict):
+            _SERVER["info"] = info
+    except Exception:  # noqa: BLE001
+        pass
+    return _SERVER["info"]
 
 
 def _usage_file():
@@ -666,25 +713,40 @@ def usage_add(n):
         pass
 
 
-def limits(settings):
-    day = int(settings["ai_day_limit"] or DAY_LIMIT) if settings is not None else DAY_LIMIT
-    month = int(settings["ai_month_limit"] or MONTH_LIMIT) if settings is not None else MONTH_LIMIT
+def limits(_settings=None):
+    """-> (в день, в месяц) — как задал владелец (сервер), иначе из сборки, иначе по умолчанию."""
+    cfg = config.load_config()
+    day = int(cfg.get("ai_day_limit") or DAY_LIMIT)
+    month = int(cfg.get("ai_month_limit") or MONTH_LIMIT)
+    lim = (_SERVER["info"] or {}).get("limits") or {}
+    try:
+        day = int(lim.get("day") or day)
+        month = int(lim.get("month") or month)
+    except (TypeError, ValueError):
+        pass
     return day, month
 
 
+def limited(settings):
+    """Лимиты действуют только на общий облачный ИИ (свой ключ — без лимитов)."""
+    return settings is not None and (settings["ai_mode"] or "") == "cloud"
+
+
 def over_limit(settings):
+    if not limited(settings):
+        return False
     d = usage_get()
-    day, month = limits(settings)
+    day, month = limits()
     return d["day_tokens"] >= day or d["month_tokens"] >= month
 
 
-def limit_text(settings):
+def limit_text(settings=None):
     d = usage_get()
-    day, month = limits(settings)
+    _day, month = limits()
     if d["month_tokens"] >= month:
-        return ("Лимит токенов на этот месяц исчерпан. Его можно поднять в профиле → «ИИ-собеседник» "
-                "или скачать ИИ на компьютер.")
-    return "Лимит токенов на сегодня исчерпан — завтра снова. Поднять лимит: профиль → «ИИ-собеседник»."
+        return ("Лимит облачного ИИ на этот месяц закончился — в следующем месяце снова. "
+                "Пока можно скачать ИИ на компьютер: профиль → «ИИ-собеседник».")
+    return "Лимит облачного ИИ на сегодня закончился — завтра снова."
 
 
 def _estimate(msgs, reply, images):

@@ -149,14 +149,87 @@ def set_appearance(app=None, **changes):
             pass
 
 
+# Шрифты на выбор: встроенные в программу (assets/fonts) и стандартные шрифты Windows с русскими буквами
+FONT_CHOICES = [
+    ("", "Стандартный", "Segoe UI — как в Windows"),
+    ("Manrope", "Manrope", "Современный и чёткий"),
+    ("Montserrat", "Montserrat", "Широкий, «дизайнерский»"),
+    ("Inter", "Inter", "Строгий, для интерфейсов"),
+    ("Nunito", "Nunito", "Мягкий, округлый"),
+    ("Rubik", "Rubik", "Плотный, слегка скруглённый"),
+    ("Golos Text", "Golos", "Спокойный, очень читаемый"),
+    ("Jost", "Jost", "Геометрический, лёгкий"),
+    ("Exo 2", "Exo 2", "Технологичный, «игровой»"),
+    ("Comfortaa", "Comfortaa", "Круглый и дружелюбный"),
+    ("Unbounded", "Unbounded", "Крупный, жирный, яркий"),
+    ("Oswald", "Oswald", "Узкий и высокий"),
+    ("Play", "Play", "Как в играх и на табло"),
+    ("Caveat", "Caveat", "Рукописный"),
+    ("Bahnschrift", "Bahnschrift", "Технический (есть в Windows)"),
+    ("Trebuchet MS", "Trebuchet", "Классический гуманистический"),
+    ("Georgia", "Georgia", "С засечками, книжный"),
+    ("Consolas", "Consolas", "Моноширинный, как в коде"),
+    ("Comic Sans MS", "Comic Sans", "Шуточный"),
+]
+_FONTS_LOADED = [False]
+
+
+def load_bundled_fonts():
+    """Подключаем шрифты, которые идут вместе с программой (assets/fonts)."""
+    if _FONTS_LOADED[0]:
+        return
+    _FONTS_LOADED[0] = True
+    import os
+    import config
+    d = os.path.join(str(config.resource_path("assets")), "fonts")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        if n.lower().endswith((".ttf", ".otf")):
+            QFontDatabase.addApplicationFont(os.path.join(d, n))
+
+
+def available_fonts():
+    fams = set(QFontDatabase.families())
+    return [(f, t, d) for f, t, d in FONT_CHOICES if not f or f in fams]
+
+
 def pick_fonts():
     global FAMILY, DISPLAY
+    load_bundled_fonts()
     fams = set(QFontDatabase.families())
     for f in ("Segoe UI Variable Text", "Segoe UI", "Inter", "Helvetica Neue", "Arial"):
         if f in fams:
             FAMILY = f
             break
     DISPLAY = "Segoe UI Variable Display" if "Segoe UI Variable Display" in fams else FAMILY
+    chosen = APPEARANCE.get("font") or ""
+    if chosen and chosen in fams:
+        FAMILY = DISPLAY = chosen
+
+
+def set_font(app, family):
+    """Меняет шрифт всех надписей сразу, без перезапуска."""
+    old = {FAMILY, DISPLAY}
+    APPEARANCE["font"] = family or ""
+    save_appearance()
+    pick_fonts()
+    if app is None:
+        return
+    app.setFont(font(15))
+    for w in app.allWidgets():
+        f = w.font()
+        if f.family() in old or not family:
+            f.setFamily(FAMILY)
+            w.setFont(f)
+        w.update()
+    for cb in list(_listeners):
+        try:
+            cb()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def font(size, weight=QFont.Normal, display=False, spacing=0.0):

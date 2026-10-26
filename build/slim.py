@@ -36,7 +36,8 @@ if qt and qt.is_dir():
         fmt = plugins / "imageformats"
         if fmt.exists():
             for f in fmt.iterdir():
-                if "qico" not in f.name:
+                # оставляем ICO, JPEG, GIF, WebP — фото в чате, сгенерированные картинки, свои фоны
+                if not any(k in f.name for k in ("qico", "qjpeg", "qgif", "qwebp")):
                     f.unlink()
                     removed.append(f"imageformats/{f.name}")
 
