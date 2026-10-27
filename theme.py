@@ -1094,7 +1094,7 @@ class ConfirmDialog(QDialog):
     """Тёмное окно подтверждения поверх затемнённой программы."""
 
     def __init__(self, parent, title, text, yes="Да, закрыть", no="Вернуться", yes_role="dangerfill",
-                 no_role="secondary"):
+                 no_role="secondary", third=None, third_role="dangerfill"):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog |
                             (Qt.WindowStaysOnTopHint if parent is None else Qt.Widget))
@@ -1127,6 +1127,10 @@ class ConfirmDialog(QDialog):
         ok.clicked.connect(self.accept)
         row.addWidget(back, 1)
         row.addWidget(ok, 1)
+        if third:
+            b3 = button(third, third_role, 15)
+            b3.clicked.connect(self.accept)
+            row.addWidget(b3, 1)
         lay.addLayout(row)
         outer.addWidget(box, 0, Qt.AlignHCenter)
         outer.addStretch(1)
