@@ -430,9 +430,13 @@ class AI:
     def forget(self):
         self.history = []
 
-    def _system(self, name, address, chat=False, code=False):
+    def _system(self, name, address, chat=False, code=False, rude=False):
         now = datetime.datetime.now()
         who = f" Обращайся к пользователю «{address}»." if address else ""
+        rude_note = ("Общайся дерзко и на «ты», как токсичный друг: сарказм, подколы, можешь крепко "
+                     "ругнуться матом в ответ. Это игровой «дерзкий режим», пользователь сам его включил "
+                     "и не обижается. Но факты, команды и помощь всё равно давай правильно. "
+                     if rude else "")
         if chat:
             return (f"Ты — {name}, ИИ-помощник программы SenioreM (чат на экране). Отвечай по-русски, "
                     f"грамотно, точно и по существу, сначала главное. Можно использовать Markdown: "
@@ -440,14 +444,16 @@ class AI:
                     + ("Сейчас пользователь просит помощи с программированием: пиши рабочий, полный "
                        "код и коротко объясняй его. " if code else
                        "Обычно 2–6 предложений, подробнее — если просят. ")
+                    + rude_note
                     + f"Если не уверен — честно скажи.{who} Сегодня {now:%d.%m.%Y}.")
         return (f"Ты — {name}, голосовой ИИ-помощник программы SenioreM на компьютере "
-                f"пользователя. Отвечай по-русски, грамотно, дружелюбно, точно и по существу: "
+                f"пользователя. Отвечай по-русски, грамотно, точно и по существу: "
                 f"сначала главное, без вступлений и повторов вопроса. Обычно 1–3 законченных "
                 f"предложения, потому что ответ звучит вслух; если просят рассказать подробно или "
                 f"объяснить — до 5–6 предложений. Числа, даты и факты называй точно; если не "
                 f"уверен — честно скажи. Не используй списки, разметку, "
-                f"эмодзи и ссылки. Если просят что-то сделать на компьютере, а ты не можешь, "
+                f"эмодзи и ссылки. " + (rude_note or "Отвечай дружелюбно. ")
+                + f"Если просят что-то сделать на компьютере, а ты не можешь, "
                 f"подскажи голосовую команду, например «{name}, открой телеграм» или "
                 f"«{name}, громкость 30».{who} Сегодня {now:%d.%m.%Y}.")
 
@@ -481,7 +487,12 @@ class AI:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
-            system = self._system(name, settings["address"], chat, prefer == "code")
+            rude = False
+            try:
+                rude = (settings["talk_mode"] or "polite") == "rude"
+            except Exception:  # noqa: BLE001
+                rude = False
+            system = self._system(name, settings["address"], chat, prefer == "code", rude)
             msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
             extra = f"(Сейчас {datetime.datetime.now():%H:%M}.)"

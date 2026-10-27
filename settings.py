@@ -17,6 +17,7 @@ DEFAULTS = {
     "launches": 0,                  # сколько раз открывали (для одной просьбы оценить)
     "rate_asked": False,
     "joke_shutdown": False,         # после шутки-обиды мягко выключать ПК (по умолчанию нет)
+    "talk_mode": "polite",          # polite (вежливый) | rude (дерзкий — может подкалывать и ругаться)
     "voice_speed": "normal",
     "voice_engine": "piper",        # piper (Руслан, бесплатно) | yandex (по ключу)
     "yandex_key": "",

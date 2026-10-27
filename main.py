@@ -850,6 +850,53 @@ SUB_STYLES = [
 ]
 
 
+class FakeShutdown(QWidget):
+    """Фейковый экран «Завершение работы»: ~8 с кольцо-спиннер и надпись, потом ~10 с чёрный экран.
+    Ничего не выключает — это просто чёрное окно на весь экран."""
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setCursor(Qt.BlankCursor)
+        self._t0 = time.monotonic()
+        self._ang = 0.0
+        tm = QTimer(self)
+        tm.timeout.connect(self._tick)
+        tm.start(30)
+
+    def _tick(self):
+        self._ang = (self._ang + 6) % 360
+        self.update()
+
+    def keyPressEvent(self, e):
+        e.accept()
+
+    def paintEvent(self, _):
+        import math
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#000000"))
+        el = time.monotonic() - self._t0
+        if el > 8:                                  # после 8 секунд — просто чёрный экран
+            return
+        W, H = self.width(), self.height()
+        cx, cy = W / 2, H / 2 - int(H * 0.04)
+        r = max(16, int(H * 0.03))
+        p.setRenderHint(QPainter.Antialiasing)
+        for i in range(12):
+            a = math.radians(self._ang + i * 30)
+            op = 0.15 + 0.85 * ((i / 12.0))
+            c = QColor(255, 255, 255, int(op * 230))
+            p.setBrush(c)
+            p.setPen(Qt.NoPen)
+            dot = max(2.5, r * 0.12)
+            p.drawEllipse(QPointF(cx + math.cos(a) * r, cy + math.sin(a) * r), dot, dot)
+        p.setPen(QColor("#E8ECF4"))
+        f = QFont("Segoe UI")
+        f.setPixelSize(max(18, int(H * 0.028)))
+        p.setFont(f)
+        p.drawText(QRectF(0, cy + int(H * 0.06), W, int(H * 0.1)), Qt.AlignHCenter | Qt.AlignTop,
+                   "Завершение работы")
+
+
 class JokePopup(QWidget):
     """Одна шуточная плашка «удаления Windows». Каждую можно закрыть (× или «Да»)."""
 
@@ -862,12 +909,12 @@ class JokePopup(QWidget):
         "Сеньор всё помнит.", "Шутка. Или нет.", "Удаляю само это окно… нет, ещё нет.",
     ]
 
-    def __init__(self):
+    def __init__(self, text=None):
         import random
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setFixedSize(320, 150)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self._text = random.choice(self.TEXTS)
+        self._text = text or random.choice(self.TEXTS)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 14)
         lay.setSpacing(0)
@@ -1845,11 +1892,51 @@ class HomeScreen(Backdrop):
         "Вот так всегда: помогаешь, помогаешь… Удаляю систему, до свидания.",
     ]
 
-    def _joke_delete(self, text, typed, sink):
-        """Шуточный ответ на оскорбление: «удаляю Windows» и окно с двумя кнопками «Да».
-        На самом деле ничего не удаляется — SenioreM просто закрывается."""
+    WARNINGS = [
+        "Так, попрошу повежливее. Ещё раз — и пожалеешь.",
+        "Я это слышал. Последнее предупреждение.",
+        "Фу. Повтори — и я обижусь по-настоящему.",
+        "Считаю это за оговорку. Но только один раз.",
+        "Полегче. У меня есть кнопка, которой ты не обрадуешься.",
+    ]
+
+    @staticmethod
+    def _echo_insult(text):
+        """«ты лох» -> «Сам ты лох», «иди нахуй» -> «Сам иди нахуй»."""
+        t = (text or "").strip().rstrip("?!.…")
+        low = t.lower().replace("ё", "е")
+        if re.match(r"^(иди|пошел|пошёл|катись|вали|отвали|заткнись)\b", low):
+            return "Сам " + t + "."
+        t2 = re.sub(r"^(сам\s+)?(ты|тебе|тебя|вы)\s+", "", t, flags=re.I)
+        return "Сам ты " + t2 + "."
+
+    def _handle_insult(self, text, typed, sink):
+        """Реакция на оскорбление. В дерзком режиме — сначала предупреждение, при повторе — шутка.
+        В вежливом — сразу шутка."""
         import random
-        reply = random.choice(self.JOKES)
+        rude = self.settings is not None and (self.settings["talk_mode"] or "polite") == "rude"
+        if rude and not getattr(self, "_insult_warned", False):
+            self._insult_warned = True
+            reply = random.choice(self.WARNINGS)
+            shown = commands.normalize(text)
+            if sink is not None:
+                sink(reply)
+            else:
+                self._show_heard(shown[:1].upper() + shown[1:], False)
+                self.reply.setText(reply)
+            if self.speaker.enabled:
+                self._last_spoken = reply
+                self.speaker.say(reply, force=True)
+            return
+        self._insult_warned = False
+        self._joke_delete(text, typed, sink)
+
+    def _joke_delete(self, text, typed, sink):
+        """Шуточный ответ на оскорбление: «Сам ты …» + «удаляю Windows», окно «Да/Да»,
+        синий экран, плашки и фейковое «выключение». Ничего на компьютере не портится."""
+        import random
+        self._last_insult = text
+        reply = self._echo_insult(text) + " " + random.choice(self.JOKES)
         shown = commands.normalize(text)
         if sink is not None:
             sink(reply)
@@ -1859,7 +1946,7 @@ class HomeScreen(Backdrop):
         if self.speaker.enabled:
             self._last_spoken = reply
             self.speaker.say(reply, force=True)
-        QTimer.singleShot(2200, self._joke_dialog)
+        QTimer.singleShot(2600, self._joke_dialog)
 
     JOKE_TITLES = ["Удалить систему Windows?", "Подтвердите удаление Windows", "Стереть всё без следа?",
                    "Удалить Windows и все сохранения?"]
@@ -2192,7 +2279,7 @@ class HomeScreen(Backdrop):
         if not typed:
             text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
         if is_insult(commands.normalize(text)):
-            self._joke_delete(text, typed, sink)       # на грубость — шутка «удаляю Windows»
+            self._handle_insult(text, typed, sink)
             return
         # одна и та же голосовая фраза не выполняется дважды подряд (эхо, двойное распознавание)
         if not typed and sink is None:
@@ -3213,6 +3300,11 @@ class ProfileScreen(Backdrop):
     def _choose_ai(self, key):
         self._set("ai_mode", key)
         self._refresh_ai()
+
+    def _refresh_talk(self):
+        cur = (self.settings["talk_mode"] if self.settings is not None else "") or "polite"
+        for k, b in getattr(self, "talk_buttons", {}).items():
+            b.setChecked(k == cur)
 
     def _refresh_usage(self):
         if self.settings is None or not hasattr(self, "lim_rows"):
@@ -4465,6 +4557,27 @@ class ProfileScreen(Backdrop):
                             "Обновления проверяются при каждом запуске.", 15, role="muted",
                             wrap=True))
         lay.addSpacing(24)
+        self._caption(lay, "Как общается помощник")
+        trow = QHBoxLayout()
+        trow.setSpacing(10)
+        self.talk_buttons = {}
+        tgrp = QButtonGroup(self)
+        for key, title, desc in (("polite", "Вежливый", "Дружелюбно и спокойно"),
+                                 ("rude", "Дерзкий", "Подкалывает и может ругаться в ответ (18+)")):
+            b = button(title, "ghost", 14, QFont.Normal)
+            b.setCheckable(True)
+            b.setFixedWidth(220)
+            b.setToolTip(desc)
+            b.clicked.connect(lambda _=False, k=key: (self._set("talk_mode", k), self._refresh_talk()))
+            tgrp.addButton(b)
+            trow.addWidget(b)
+            self.talk_buttons[key] = b
+        trow.addStretch(1)
+        lay.addLayout(trow)
+        lay.addWidget(label("В дерзком режиме на оскорбление помощник сначала делает предупреждение, "
+                            "а если обидеть его снова — включается шутка. В вежливом шутка включается "
+                            "сразу.", 12, role="faint", wrap=True))
+        lay.addSpacing(24)
         self._caption(lay, "Шутка на оскорбления")
         self.t_joke_shut = self._toggle_row(
             lay, "Выключать компьютер после шутки",
@@ -4522,6 +4635,7 @@ class ProfileScreen(Backdrop):
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
         if hasattr(self, "t_joke_shut"):
             self.t_joke_shut.setChecked(bool(settings["joke_shutdown"]))
+            self._refresh_talk()
         self.t_autostart.setChecked(bool(settings["autostart"]))
         try:
             import elevate
@@ -5114,7 +5228,28 @@ class MainWindow(QWidget):
                 p.close()
             except Exception:  # noqa: BLE001
                 pass
-        # по желанию (профиль → «О программе») — мягко выключить компьютер, с отменой
+        # фейковое «выключение»: «Завершение работы…» ~8 с, затем чёрный экран ~10 с
+        self._fake_off = FakeShutdown()
+        self._fake_off.showFullScreen()
+        QTimer.singleShot(18500, self._joke_after_off)
+
+    def _joke_after_off(self):
+        if getattr(self, "_fake_off", None) is not None:
+            self._fake_off.close()
+            self._fake_off = None
+        # финальная плашка «Сам ты …» (эхо оскорбления)
+        echo = self._echo_insult(getattr(self, "_last_insult", "ты лох"))
+        pop = JokePopup(echo.rstrip(".") + "!")
+        g = QGuiApplication.primaryScreen().availableGeometry()
+        pop.move(g.center().x() - pop.width() // 2, g.center().y() - pop.height() // 2)
+        pop.destroyed.connect(self._joke_really_end)
+        pop.show()
+        pop.raise_()
+        self._final_pop = pop
+        QTimer.singleShot(8000, self._joke_really_end)
+
+    def _joke_really_end(self):
+        # по желанию (профиль → «О программе», по умолчанию выкл.) — мягко выключить компьютер
         if self.settings is not None and self.settings["joke_shutdown"] and sys.platform == "win32":
             try:
                 import subprocess
@@ -5501,6 +5636,15 @@ def run_uitest(out_dir):
         win.grab().save(os.path.join(out_dir, "11-swarm.png"))
         for pp in pops:
             pp.close()
+        fsh = FakeShutdown()
+        fsh.resize(1280, 720)
+        pump(300)
+        fsh.grab().save(os.path.join(out_dir, "11-shutdown.png"))
+        fsh.close()
+        win.open_profile("about")
+        pump(300)
+        win.grab().save(os.path.join(out_dir, "05-profile-about.png"))
+        win._back_home()
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
