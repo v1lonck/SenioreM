@@ -93,8 +93,9 @@ def cloud_usable():
     return bool(cloud_url()) and _CLOUD_FAILS[0] < 3
 
 
-def cloud_transcribe(pcm16: bytes, rate: int = 16000):
-    """-> текст или None, если облако недоступно."""
+def cloud_transcribe(pcm16: bytes, rate: int = 16000, preview=False):
+    """-> текст или None, если облако недоступно. preview — быстрые субтитры, пока человек говорит
+    (короткое ожидание, ошибки не отключают облако для основного распознавания)."""
     import base64
     import io
     import json
@@ -115,12 +116,16 @@ def cloud_transcribe(pcm16: bytes, rate: int = 16000):
     import time
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=4) as r:
+        with urllib.request.urlopen(req, timeout=2.5 if preview else 4) as r:
             text = (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
+        if preview:
+            return text
         _CLOUD_FAILS[0] = 0
         config.voice_log(f"облако распознало за {time.time() - t0:.1f} с: «{text}»")
         return text
     except Exception as e:  # noqa: BLE001
+        if preview:
+            return None
         config.voice_log(f"облачное распознавание не ответило ({time.time() - t0:.1f} с): {e}")
         _CLOUD_FAILS[0] += 1
         if _CLOUD_FAILS[0] >= 3 and not ready():
@@ -161,6 +166,12 @@ class Recognizer:
                     return ""
                 return text
         if self.model is None:
+            if preview and cloud_usable() and len(pcm16) > 16000 * 2 * 0.6:
+                text = cloud_transcribe(pcm16, rate, preview=True) or ""   # точные субтитры из облака
+                low = text.lower()
+                if any(h in low for h in HALLUCINATIONS) or "программы:" in low:
+                    return ""
+                return text
             return ""
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         if rate != 16000:

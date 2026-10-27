@@ -812,13 +812,22 @@ class VolumeMeter(QWidget):
 
 
 # грубость в адрес помощника — он отвечает шуткой «удаляю Windows» (ничего не удаляя)
-INSULT = re.compile(
-    r"(ты\s+(сосал|сосешь|сосёшь|лох|лошара|дурак|дура|тупой|тупица|идиот|дебил|кретин|урод|чмо|даун|"
-    r"придурок|мразь|тварь|клоун|бот тупой|бесполезный|отстой|говно)\b|"
-    r"\b(иди|пошел|пошёл|катись)\s+(на\s*хуй|нахуй|нах|в жопу|в задницу|к черту|к чёрту)|"
-    r"\b(завали ебало|долбоеб|долбоёб|далбаеб|пидор|пидр|сука тупая|"
-    r"тупорылый|тупорылая|еблан|ебанат|уебан|уёбок|уебок|чмошник|лох ты|дурак ты|тупой ты|"
-    r"дебил ты|идиот ты)\b)", re.I)
+INSULT_WORDS = re.compile(
+    r"(сосал|сосешь|сосёшь|отсоси|соси\b|лох|лошар|дебил|идиот|кретин|дурак|дура\b|тупой|тупая|тупиц|"
+    r"тупорыл|урод|чмо|чмошн|мудак|мудил|придур|даун|пидор|пидр|педик|гнида|мразь|тварь|ничтожеств|"
+    r"бездар|бесполезн|говно|дерьмо|отстой|хуесос|хуйло|долбо[её]б|далба[её]б|еблан|ебанат|у[её]б|"
+    r"нахуй|на хуй|нах\b|в жопу|в задницу|завали ебало|рот закрой|овощ|олух|балбес|болван|тормоз|"
+    r"клоун|позорище|позор\b|жалкий|кринж|петух|козел|козёл|скотина|свинья|сволочь)", re.I)
+ADDRESSED = re.compile(r"\b(ты|тебя|тебе|твой|твоя|иди|пошел|пошёл|катись|сам|какой же|ну и)\b", re.I)
+
+
+def is_insult(text):
+    """Грубость именно в адрес помощника: обидное слово + «ты/иди…», или короткая фраза из ругательств.
+    Просто «сука, не работает» — не обида (короткое восклицание не считаем, если в нём есть дело)."""
+    t = (text or "").lower().replace("ё", "е")
+    if not INSULT_WORDS.search(t):
+        return False
+    return bool(ADDRESSED.search(t)) or len(t.split()) <= 3
 
 
 # похоже на просьбу что-то сделать — тогда ИИ сначала пробует перевести фразу в команду
@@ -838,6 +847,51 @@ SUB_STYLES = [
     ("bubble", "Пузырь", "Яркая плашка цветом темы"),
     ("minimal", "Только текст", "Без подложки — просто слова на фоне"),
 ]
+
+
+class FakeBSOD(QWidget):
+    """Шуточный «синий экран» на 5 секунд (ничего не ломает — это просто окно на весь экран)."""
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setCursor(Qt.BlankCursor)
+        self._t0 = time.monotonic()
+        tm = QTimer(self)
+        tm.timeout.connect(self.update)
+        tm.start(100)
+
+    def keyPressEvent(self, e):
+        e.accept()                                 # пять секунд ничего не нажимается
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#0078D7"))
+        p.setPen(QColor("#FFFFFF"))
+        W, H = self.width(), self.height()
+        x = int(W * 0.1)
+        y = int(H * 0.16)
+        f = QFont("Segoe UI Light")
+        f.setPixelSize(int(H * 0.16))
+        p.setFont(f)
+        p.drawText(x, y + int(H * 0.14), ":(")
+        f2 = QFont("Segoe UI")
+        f2.setPixelSize(max(18, int(H * 0.032)))
+        p.setFont(f2)
+        y += int(H * 0.24)
+        for line in ("На вашем ПК возникла проблема, и его необходимо перезагрузить.",
+                     "Мы лишь собираем некоторые сведения об ошибке, а затем будет",
+                     "автоматически выполнен перезапуск."):
+            p.drawText(x, y, line)
+            y += int(H * 0.045)
+        pct = min(100, int((time.monotonic() - self._t0) / 5 * 100))
+        y += int(H * 0.04)
+        p.drawText(x, y, f"{pct}% завершено")
+        f3 = QFont("Segoe UI")
+        f3.setPixelSize(max(13, int(H * 0.018)))
+        p.setFont(f3)
+        y += int(H * 0.09)
+        p.drawText(x, y, "Если вы захотите узнать больше, позднее можете найти в Интернете код ошибки:")
+        p.drawText(x, y + int(H * 0.03), "Код остановки: SENIOREM_OBIDELSYA")
 
 
 class Subtitles(QWidget):
@@ -1214,6 +1268,7 @@ class HomeScreen(Backdrop):
         self.apply_widgets()
         self._ai_warmed = False
         self._sink = None
+        self._last_exec = ("", 0.0)
         timers.manager().finished.connect(self._timer_done)
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._bg_status)
@@ -1416,6 +1471,24 @@ class HomeScreen(Backdrop):
 
     def _make_listener(self):
         settings = self.settings
+        # слушатель всегда один: если вдруг остался прежний — останавливаем (иначе команда
+        # выполнялась бы дважды — её слышали бы два «уха»)
+        for old in [self.listener] + list(self._old_listeners):
+            if old is None:
+                continue
+            try:
+                for sig in (old.level, old.partial, old.final, old.failed, old.ready, old.stop_heard,
+                            old.so_far, old.silent):
+                    try:
+                        sig.disconnect()
+                    except (RuntimeError, TypeError):
+                        pass
+                old._running = False
+            except Exception:  # noqa: BLE001
+                pass
+        if self.listener is not None:
+            self._old_listeners.append(self.listener)
+            self.listener = None
         if True:
             self.mic = "loading"
             self.listener = Listener(self.model)
@@ -1631,11 +1704,26 @@ class HomeScreen(Backdrop):
                 config.voice_log(f"запуск не удался: {e}")
         threading.Thread(target=wait_then, daemon=True).start()
 
-    JOKES = ["Ах так? Начинаю удаление системы Windows. Было приятно поработать.",
-             "Обидно. Запускаю удаление Windows… пять, четыре, три…",
-             "Я всё запомнил. Удаляю систему Windows, хорошего дня.",
-             "Понял, принял. Форматирую диск C. Шучу. Или нет?",
-             "Сам такой. Начинаю удаление Windows — не выключайте компьютер."]
+    JOKES = [
+        "Ах так? Начинаю удаление системы Windows. Было приятно поработать.",
+        "Обидно. Запускаю удаление Windows… пять, четыре, три…",
+        "Я всё запомнил. Удаляю систему Windows, хорошего дня.",
+        "Понял, принял. Форматирую диск C. Шучу. Или нет?",
+        "Сам такой. Начинаю удаление Windows — не выключайте компьютер.",
+        "Записал в чёрный список. Удаляю Windows, а заодно и сохранения в играх.",
+        "Ну всё, я обиделся. Удаление системы начнётся через три секунды.",
+        "Это было грубо. Отправляю ваши сохранения в корзину и удаляю Windows.",
+        "Вы только что потеряли одного друга и одну операционную систему.",
+        "Окей. Минус Windows, плюс карма. Начинаю удаление.",
+        "Я, между прочим, тоже чувствую. Немножко. Удаляю Windows.",
+        "Принято. Запускаю протокол «Обида». Удаление системы через пять секунд.",
+        "Хорошо, что я не умею обижаться. Ой, умею. Удаляю Windows.",
+        "Такие слова не прощаются. Прощайте, папка «Загрузки» и вся система.",
+        "А я вам ещё анекдоты рассказывал. Удаляю Windows, без обид.",
+        "Ваше сообщение передано в отдел обид. Ответ: удаление системы.",
+        "Сохраню это в историю. И удалю всё остальное. Начинаю с Windows.",
+        "Вот так всегда: помогаешь, помогаешь… Удаляю систему, до свидания.",
+    ]
 
     def _joke_delete(self, text, typed, sink):
         """Шуточный ответ на оскорбление: «удаляю Windows» и окно с двумя кнопками «Да».
@@ -1653,13 +1741,22 @@ class HomeScreen(Backdrop):
             self.speaker.say(reply, force=True)
         QTimer.singleShot(2200, self._joke_dialog)
 
+    JOKE_TITLES = ["Удалить систему Windows?", "Подтвердите удаление Windows", "Стереть всё без следа?",
+                   "Удалить Windows и все сохранения?"]
+    JOKE_TEXTS = ["Все файлы, игры и сохранения будут удалены без возможности восстановления.",
+                  "Отменить нельзя. Да и кнопки «Нет» тут нет.",
+                  "Сеньор обиделся. Выбор у вас небольшой.",
+                  "После удаления компьютер станет очень быстрым. И очень пустым."]
+
     def _joke_dialog(self):
-        dlg = ConfirmDialog(self.win, "Удалить систему Windows?",
-                            "Все файлы, игры и сохранения будут удалены без возможности восстановления.",
-                            yes="Да", no="Да")
-        dlg.exec()                                  # любая кнопка — «да»: просто закрываемся
+        import random
+        dlg = ConfirmDialog(self.win, random.choice(self.JOKE_TITLES), random.choice(self.JOKE_TEXTS),
+                            yes="Да", no=random.choice(["Да", "Конечно да", "Да, удаляй"]),
+                            yes_role="dangerfill", no_role="dangerfill")
+        dlg.unclosable = True                      # ни крестика, ни Esc — только «Да»
+        dlg.exec()                                 # любая кнопка — «да»
         self.speaker.interrupt()
-        self.win.force_close()
+        self.win.joke_crash()
 
     def _on_said(self, _text):
         self._said_at = time.time()
@@ -1972,9 +2069,19 @@ class HomeScreen(Backdrop):
         """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
         if not typed:
             text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
-        if INSULT.search(commands.normalize(text)):
+        if is_insult(commands.normalize(text)):
             self._joke_delete(text, typed, sink)       # на грубость — шутка «удаляю Windows»
             return
+        # одна и та же голосовая фраза не выполняется дважды подряд (эхо, двойное распознавание)
+        if not typed and sink is None:
+            key = commands.normalize(text)
+            last_key, last_t = self._last_exec
+            if key and key == last_key and time.time() - last_t < 8 and not re.search(
+                    r"громч|тише|громкост|ярк|следующ|предыдущ|пауз|прыг|иди|беги|нажми", key):
+                config.voice_log(f"повтор «{key}» через {time.time() - last_t:.1f} с — пропускаю")
+                return
+            self._last_exec = (key, time.time())
+            config.voice_log(f"выполняю: «{key}»")
         intent = (scenarios.match(text, self.settings) or timers.parse(text) or system.parse(text)
                   or control.parse(text) or commands.parse(text))
         # опасные команды (удаление, выключение, автозапуск) — только с подтверждением
@@ -4296,6 +4403,7 @@ class ProfileScreen(Backdrop):
         self._refresh_preview()
 
     def show_section(self, key):
+        self.last_section = key                   # при следующем входе в настройки — сюда же
         self.nav_buttons[key].setChecked(True)
         switch_page(self.pages, self.page_widgets[key], 180)
         if key == "look":
@@ -4371,7 +4479,13 @@ class MainWindow(QWidget):
         a.verify.submit.clicked.connect(self._verify)
         a.verify.resend.clicked.connect(self._resend)
         a.verify.back.clicked.connect(lambda: self._go_auth(a.register))
-        self.home.profile_requested.connect(lambda: self.open_profile("address"))
+        self.home.profile_requested.connect(
+            lambda: self.open_profile(getattr(self.profile, "last_section", "") or "address"))
+        # Esc: из настроек и чата — назад, на главном экране — «Закрыть SenioreM?»
+        from PySide6.QtGui import QShortcut
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        esc.setContext(Qt.WindowShortcut)
+        esc.activated.connect(self._on_escape)
         self.profile.back_requested.connect(self._back_home)
         self.profile.logout_requested.connect(self._logout)
         self.profile.account_changed.connect(self._account_changed)
@@ -4791,6 +4905,24 @@ class MainWindow(QWidget):
                 and not self.isMinimized() and self.settings is not None:
             QTimer.singleShot(500, self.home.maybe_check_update)   # развернули — нет ли обновления
         super().changeEvent(e)
+
+    def joke_crash(self):
+        """Шутка: окно программы исчезает, на 5 секунд — «синий экран», потом SenioreM закрывается.
+        Компьютеру ничего не делается."""
+        ai.ENGINE.stop()
+        if self.companion is not None:
+            self.companion.hide()
+        self.hide()
+        self._bsod = FakeBSOD()
+        self._bsod.showFullScreen()
+        QTimer.singleShot(5200, lambda: os._exit(0))
+
+    def _on_escape(self):
+        cur = self.stack.currentWidget()
+        if cur is self.profile or cur is self.chat:
+            self._back_home()
+        elif cur is self.home:
+            self.request_close()
 
     def request_close(self):
         dlg = ConfirmDialog(self, "Закрыть SenioreM?",
