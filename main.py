@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
 import webbrowser
 
 from PySide6.QtCore import QLineF, QLockFile, QObject, QPointF, QRectF, Qt, QTimer, Signal
@@ -850,7 +851,7 @@ SUB_STYLES = [
 
 
 class FakeBSOD(QWidget):
-    """Шуточный «синий экран» на 5 секунд (ничего не ломает — это просто окно на весь экран)."""
+    """Шуточный «синий экран» на 20 секунд (ничего не ломает — это просто окно на весь экран)."""
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -861,7 +862,7 @@ class FakeBSOD(QWidget):
         tm.start(100)
 
     def keyPressEvent(self, e):
-        e.accept()                                 # пять секунд ничего не нажимается
+        e.accept()                                 # 20 секунд ничего не нажимается
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -883,7 +884,7 @@ class FakeBSOD(QWidget):
                      "автоматически выполнен перезапуск."):
             p.drawText(x, y, line)
             y += int(H * 0.045)
-        pct = min(100, int((time.monotonic() - self._t0) / 5 * 100))
+        pct = min(100, int((time.monotonic() - self._t0) / 20 * 100))
         y += int(H * 0.04)
         p.drawText(x, y, f"{pct}% завершено")
         f3 = QFont("Segoe UI")
@@ -4345,10 +4346,24 @@ class ProfileScreen(Backdrop):
         lay.addSpacing(24)
         repo = self.cfg.get("update_repo") or ""
         if repo:
-            b = button("Страница программы на GitHub", "ghost", 14, QFont.Normal)
-            b.setFixedWidth(300)
-            b.clicked.connect(lambda: webbrowser.open(f"https://github.com/{repo}"))
-            lay.addWidget(b, 0, Qt.AlignLeft)
+            self._caption(lay, "Оценить SenioreM")
+            lay.addWidget(label("Если программа нравится — поставьте звезду проекту на GitHub (кнопка "
+                                "«★ Star» вверху страницы, нужен аккаунт GitHub). А если что-то не так — "
+                                "напишите отзыв: мы его прочитаем.", 13, role="muted", wrap=True))
+            lay.addSpacing(12)
+            r = QHBoxLayout()
+            r.setSpacing(12)
+            star = button("★  Оценить на GitHub", "primary", 14)
+            star.setFixedWidth(260)
+            star.clicked.connect(lambda: webbrowser.open(f"https://github.com/{repo}"))
+            r.addWidget(star)
+            fb = button("Написать отзыв", "ghost", 14, QFont.Normal)
+            fb.setFixedWidth(220)
+            fb.clicked.connect(lambda: webbrowser.open(
+                f"https://github.com/{repo}/issues/new?title=" + urllib.parse.quote("Отзыв о SenioreM")))
+            r.addWidget(fb)
+            r.addStretch(1)
+            lay.addLayout(r)
         lay.addStretch(1)
 
     # ---------- показ ----------
@@ -4521,6 +4536,11 @@ class MainWindow(QWidget):
         control.AI_PICK = lambda req, opts: ai.pick_option(req, opts, self.settings)
         if ai.cloud_url():                    # лимиты облака (их задаёт владелец на сервере)
             threading.Thread(target=lambda: ai.server_info(True), daemon=True).start()
+        # честная просьба оценить — один раз, после нескольких запусков
+        s.set("launches", int(s["launches"] or 0) + 1)
+        if int(s["launches"]) >= 6 and not s["rate_asked"] and self.cfg.get("update_repo"):
+            s.set("rate_asked", True)
+            QTimer.singleShot(20000, self._ask_rating)
         if not s["chime_off_v2"]:             # писк после обращения мешал — выключаем один раз
             s.set("chime_off_v2", True)
             s.set("chime", False)
@@ -4906,8 +4926,18 @@ class MainWindow(QWidget):
             QTimer.singleShot(500, self.home.maybe_check_update)   # развернули — нет ли обновления
         super().changeEvent(e)
 
+    def _ask_rating(self):
+        if self.stack.currentWidget() is not self.home or not self.isVisible():
+            return
+        dlg = ConfirmDialog(self, "Нравится SenioreM?",
+                            "Оцените проект звездой на GitHub — это честно и очень помогает его "
+                            "развивать. Займёт десять секунд.", yes="★  Оценить", no="Не сейчас",
+                            yes_role="primary")
+        if dlg.exec():
+            webbrowser.open(f"https://github.com/{self.cfg.get('update_repo')}")
+
     def joke_crash(self):
-        """Шутка: окно программы исчезает, на 5 секунд — «синий экран», потом SenioreM закрывается.
+        """Шутка: окно программы исчезает, на 20 секунд — «синий экран», потом SenioreM закрывается.
         Компьютеру ничего не делается."""
         ai.ENGINE.stop()
         if self.companion is not None:
@@ -4915,7 +4945,7 @@ class MainWindow(QWidget):
         self.hide()
         self._bsod = FakeBSOD()
         self._bsod.showFullScreen()
-        QTimer.singleShot(5200, lambda: os._exit(0))
+        QTimer.singleShot(20200, lambda: os._exit(0))
 
     def _on_escape(self):
         cur = self.stack.currentWidget()
