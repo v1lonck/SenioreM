@@ -42,9 +42,15 @@ jobs:
           cache: pip
 
       - name: Библиотеки
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt
+          # загрузчик PyInstaller собираем сами из исходников: у готового загрузчика «плохая
+          # репутация» у антивирусов (им пользуются и вирусы), свой — уникальный
+          $env:PYINSTALLER_COMPILE_BOOTLOADER = "1"
+          pip install --no-binary pyinstaller pyinstaller
+          if ($LASTEXITCODE -ne 0) { pip install pyinstaller }
 
       - name: Шрифты (Google Fonts, OFL)
         continue-on-error: true

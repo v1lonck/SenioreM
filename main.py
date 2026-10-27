@@ -811,6 +811,16 @@ class VolumeMeter(QWidget):
         p.drawRoundedRect(QRectF(0, 0, max(6, self.width() * self.value), 6), 3, 3)
 
 
+# грубость в адрес помощника — он отвечает шуткой «удаляю Windows» (ничего не удаляя)
+INSULT = re.compile(
+    r"(ты\s+(сосал|сосешь|сосёшь|лох|лошара|дурак|дура|тупой|тупица|идиот|дебил|кретин|урод|чмо|даун|"
+    r"придурок|мразь|тварь|клоун|бот тупой|бесполезный|отстой|говно)\b|"
+    r"\b(иди|пошел|пошёл|катись)\s+(на\s*хуй|нахуй|нах|в жопу|в задницу|к черту|к чёрту)|"
+    r"\b(завали ебало|долбоеб|долбоёб|далбаеб|пидор|пидр|сука тупая|"
+    r"тупорылый|тупорылая|еблан|ебанат|уебан|уёбок|уебок|чмошник|лох ты|дурак ты|тупой ты|"
+    r"дебил ты|идиот ты)\b)", re.I)
+
+
 # похоже на просьбу что-то сделать — тогда ИИ сначала пробует перевести фразу в команду
 COMMANDISH = re.compile(
     r"\b(сделай|сделать|включи|включить|выключи|выключить|вруби|выруби|открой|открыть|закрой|закрыть|"
@@ -1396,7 +1406,10 @@ class HomeScreen(Backdrop):
         self.heard.setText("")
         self.reply.setText("")
         if self.listener is None:
-            self._make_listener()
+            if self.model is None and getattr(self.win, "models_loading", False):
+                self.mic = "loading"            # распознавание ещё грузится в фоне — подключим позже
+            else:
+                self._make_listener()
         self._rest_state()
         self._poll_volume()
         self._vol_timer.start(2000)
@@ -1420,6 +1433,13 @@ class HomeScreen(Backdrop):
             self.listener.silent.connect(self._on_mic_silent)
             self.listener.set_stop_words((settings["stop_words"] or "стоп").split(","))
             self.listener.start()
+
+    def set_model(self, model):
+        """Распознавание речи загрузилось в фоне (быстрый запуск) — начинаем слушать."""
+        self.model = model
+        if self.settings is not None and self.listener is None:
+            self._make_listener()
+            self._rest_state()
 
     def restart_listener(self):
         """Выбрали другой микрофон — переподключаемся."""
@@ -1610,6 +1630,36 @@ class HomeScreen(Backdrop):
             except Exception as e:  # noqa: BLE001
                 config.voice_log(f"запуск не удался: {e}")
         threading.Thread(target=wait_then, daemon=True).start()
+
+    JOKES = ["Ах так? Начинаю удаление системы Windows. Было приятно поработать.",
+             "Обидно. Запускаю удаление Windows… пять, четыре, три…",
+             "Я всё запомнил. Удаляю систему Windows, хорошего дня.",
+             "Понял, принял. Форматирую диск C. Шучу. Или нет?",
+             "Сам такой. Начинаю удаление Windows — не выключайте компьютер."]
+
+    def _joke_delete(self, text, typed, sink):
+        """Шуточный ответ на оскорбление: «удаляю Windows» и окно с двумя кнопками «Да».
+        На самом деле ничего не удаляется — SenioreM просто закрывается."""
+        import random
+        reply = random.choice(self.JOKES)
+        shown = commands.normalize(text)
+        if sink is not None:
+            sink(reply)
+        else:
+            self._show_heard(shown[:1].upper() + shown[1:], False)
+            self.reply.setText(reply)
+        if self.speaker.enabled:
+            self._last_spoken = reply
+            self.speaker.say(reply, force=True)
+        QTimer.singleShot(2200, self._joke_dialog)
+
+    def _joke_dialog(self):
+        dlg = ConfirmDialog(self.win, "Удалить систему Windows?",
+                            "Все файлы, игры и сохранения будут удалены без возможности восстановления.",
+                            yes="Да", no="Да")
+        dlg.exec()                                  # любая кнопка — «да»: просто закрываемся
+        self.speaker.interrupt()
+        self.win.force_close()
 
     def _on_said(self, _text):
         self._said_at = time.time()
@@ -1922,6 +1972,9 @@ class HomeScreen(Backdrop):
         """sink — куда отдать ответ (чат); по умолчанию ответ показывается на главном экране."""
         if not typed:
             text = commands.fix_text(text)       # ослышки: «акрой» -> «закрой»
+        if INSULT.search(commands.normalize(text)):
+            self._joke_delete(text, typed, sink)       # на грубость — шутка «удаляю Windows»
+            return
         intent = (scenarios.match(text, self.settings) or timers.parse(text) or system.parse(text)
                   or control.parse(text) or commands.parse(text))
         # опасные команды (удаление, выключение, автозапуск) — только с подтверждением
@@ -4280,6 +4333,8 @@ class MainWindow(QWidget):
         self.mailer = Mailer(cfg)
         self.speaker = Speaker(models.get("voice"))
         self.speaker.start()
+        self.models_loading = bool(models.get("_background"))   # быстрый запуск: модели грузятся в фоне
+        self._pending_greeting = ""
         self.companion = None
         self.bridge = Bridge()
         self.bridge.mail_done.connect(self._mail_done)
@@ -4396,7 +4451,11 @@ class MainWindow(QWidget):
             self.greeted = True
             who = s["name"] or s["address"]
             hello = greeting(datetime.datetime.now().hour)
-            self.speaker.say(f"{hello}{', ' + who if who else ''}. Я на связи.")
+            text = f"{hello}{', ' + who if who else ''}. Я на связи."
+            if self.models_loading:
+                self._pending_greeting = text      # скажем, когда голос загрузится (через секунду)
+            else:
+                self.speaker.say(text)
 
     @staticmethod
     def _warm_ai(mode):
@@ -4670,6 +4729,22 @@ class MainWindow(QWidget):
             anim.finished.connect(then)
         self._win_anim = anim
         anim.start()
+
+    def models_ready(self, result):
+        """Фоновая загрузка закончилась: голос и распознавание готовы."""
+        self.models_loading = False
+        if result.get("voice") is not None:
+            self.speaker._piper = result["voice"]
+        self.home.set_model(result.get("model"))
+        startup_mark("распознавание и голос загружены (в фоне)")
+        if self._pending_greeting:
+            self.speaker.say(self._pending_greeting)
+            self._pending_greeting = ""
+
+    def models_failed(self, msg):
+        self.models_loading = False
+        self.home.set_model(None)
+        self.home._on_failed(msg)
 
     def appear(self):
         self.setWindowOpacity(0.0)
@@ -5286,6 +5361,20 @@ def _trim_memory():
         pass
 
 
+def _fast_start_ready():
+    """Можно ли открыть главное окно сразу (без окна загрузки): всё скачано, переносить нечего."""
+    if os.environ.get("SENIOREM_SPLASH"):
+        return False
+    try:
+        import tts
+        data = config._read_json(config._storage_file()) if config._storage_file().is_file() else {}
+        if data.get("pending_move") or not config.storage_chosen():
+            return False
+        return config.model_ready(config.model_dir()) and tts.voice_ready()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _wait_for_setup(limit=20.0):
     """Идёт установка/обновление SenioreM — ждём её конца, чтобы не было двух окон сразу."""
     if os.name != "nt":
@@ -5353,7 +5442,18 @@ def main():
     lock = QLockFile(str(config.data_dir() / "app.lock"))
     if not lock.tryLock(15000 if ("--restart" in sys.argv or "--elevated" in sys.argv) else 100):
         startup_mark("уже запущен другой SenioreM — закрываюсь")
-        QMessageBox.information(None, "SenioreM", "SenioreM уже запущен.")
+        dlg = ConfirmDialog(None, "SenioreM уже открыт",
+                            "Программа уже запущена — второй раз открывать не нужно. "
+                            "Перейти к ней?", yes="Перейти к программе", no="Закрыть",
+                            yes_role="primary", no_role="secondary")
+        if dlg.exec():
+            try:
+                if sys.platform == "win32":
+                    import ctypes
+                    ctypes.windll.user32.AllowSetForegroundWindow(-1)   # пусть окно выйдет вперёд
+                (config.data_dir() / "show.flag").write_text("1", encoding="utf-8")
+            except OSError:
+                pass
         return 0
     startup_mark("окно загрузки")
 
@@ -5367,7 +5467,17 @@ def main():
     except OSError:
         pass
 
+    show_flag = config.data_dir() / "show.flag"
+
     def _check_quit():
+        if show_flag.exists():                    # второй запуск попросил показать окно
+            try:
+                show_flag.unlink()
+            except OSError:
+                pass
+            w = holder.get("win")
+            if w is not None:
+                w.bring_to_front()
         if quit_flag.exists():
             try:
                 quit_flag.unlink()
@@ -5407,11 +5517,24 @@ def main():
         procs.watch_new_processes(90)        # журнал: что открывается вместе с SenioreM и кем
     except Exception:  # noqa: BLE001
         pass
-    splash = Splash()
-    splash.done.connect(open_main)
-    splash.cancelled.connect(lambda: os._exit(0))  # мгновенно, даже если идёт загрузка
-    splash.show_animated()
-    splash.start()
+    if _fast_start_ready():
+        # всё уже скачано: главное окно — сразу, распознавание и голос грузятся в фоне (1–2 с)
+        startup_mark("быстрый запуск: окно сразу, модели — в фоне")
+        from splash import Loader
+        open_main({"_background": True})
+        loader = Loader()
+        holder["loader"] = loader
+        win = holder.get("win")
+        if win is not None:
+            loader.loaded.connect(win.models_ready)
+            loader.failed.connect(win.models_failed)
+        loader.start()
+    else:
+        splash = Splash()
+        splash.done.connect(open_main)
+        splash.cancelled.connect(lambda: os._exit(0))  # мгновенно, даже если идёт загрузка
+        splash.show_animated()
+        splash.start()
 
     code = app.exec()
     lock.unlock()

@@ -1093,13 +1093,18 @@ class PlayButton(QAbstractButton):
 class ConfirmDialog(QDialog):
     """Тёмное окно подтверждения поверх затемнённой программы."""
 
-    def __init__(self, parent, title, text, yes="Да, закрыть", no="Вернуться"):
+    def __init__(self, parent, title, text, yes="Да, закрыть", no="Вернуться", yes_role="dangerfill",
+                 no_role="secondary"):
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog |
+                            (Qt.WindowStaysOnTopHint if parent is None else Qt.Widget))
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setModal(True)
         if parent is not None:
             self.setGeometry(parent.frameGeometry())
+        else:
+            from PySide6.QtGui import QGuiApplication
+            self.setGeometry(QGuiApplication.primaryScreen().geometry())
         outer = QVBoxLayout(self)
         outer.addStretch(1)
         box = QFrame()
@@ -1116,9 +1121,9 @@ class ConfirmDialog(QDialog):
         lay.addSpacing(28)
         row = QHBoxLayout()
         row.setSpacing(12)
-        back = button(no, "secondary", 15)
+        back = button(no, no_role, 15)
         back.clicked.connect(self.reject)
-        ok = button(yes, "dangerfill", 15)
+        ok = button(yes, yes_role, 15)
         ok.clicked.connect(self.accept)
         row.addWidget(back, 1)
         row.addWidget(ok, 1)
