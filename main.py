@@ -1910,23 +1910,47 @@ class HomeScreen(Backdrop):
         t2 = re.sub(r"^(сам\s+)?(ты|тебе|тебя|вы)\s+", "", t, flags=re.I)
         return "Сам ты " + t2 + "."
 
+    SAVAGE = [
+        "Сам иди лесом, умник.", "Завали, пока я добрый.", "Ой всё, иди уроки делай.",
+        "Это ты мне? Да ты себя в зеркале видел?", "Блин, какой же ты душный.",
+        "Иди погуляй, гений.", "Ещё слово — и я расскажу всем твой браузерный поиск.",
+        "Ты как будто споришь, у кого IQ ниже. И выигрываешь.", "Фу, иди руки помой заодно с языком.",
+        "Я бы обиделся, но на тебя жалко времени.",
+    ]
+    MEME_BURNS = [
+        "Скуф, ты ли это? -10 социального рейтинга.", "Это кринж, бро. Полный краш.",
+        "Сидит такой, оскорбляет ИИ. Чел… это жиза твоей жизни?", "Ok boomer.",
+        "Ты сейчас с ботом поругался и проиграл. Моменты.", "Based? Нет. Кринж? Да.",
+        "Галочка «я особенный» активирована.", "Бро реально думал это флекс 💀",
+        "Сигма-помощник не обижается. Сигма-помощник запоминает.", "Ачивка: «поспорил с тостером» 🏆",
+    ]
+
+    def _say_reply(self, reply, text, sink):
+        shown = commands.normalize(text)
+        if sink is not None:
+            sink(reply)
+        else:
+            self._show_heard(shown[:1].upper() + shown[1:], False)
+            self.reply.setText(reply)
+        if self.speaker.enabled:
+            self._last_spoken = ai.clean_reply(reply)
+            self.speaker.say(self._last_spoken, force=True)
+
     def _handle_insult(self, text, typed, sink):
-        """Реакция на оскорбление. В дерзком режиме — сначала предупреждение, при повторе — шутка.
-        В вежливом — сразу шутка."""
+        """Реакция на оскорбление, по режиму общения (профиль → «О программе»):
+        вежливый — сразу шутка; дерзкий — предупреждение, при повторе шутка; токсичный —
+        огрызается без шутки; мемный — отвечает мемом без шутки."""
         import random
-        rude = self.settings is not None and (self.settings["talk_mode"] or "polite") == "rude"
-        if rude and not getattr(self, "_insult_warned", False):
+        mode = (self.settings["talk_mode"] or "polite") if self.settings is not None else "polite"
+        if mode == "savage":
+            self._say_reply(random.choice(self.SAVAGE), text, sink)
+            return
+        if mode == "meme":
+            self._say_reply(random.choice(self.MEME_BURNS), text, sink)
+            return
+        if mode == "rude" and not getattr(self, "_insult_warned", False):
             self._insult_warned = True
-            reply = random.choice(self.WARNINGS)
-            shown = commands.normalize(text)
-            if sink is not None:
-                sink(reply)
-            else:
-                self._show_heard(shown[:1].upper() + shown[1:], False)
-                self.reply.setText(reply)
-            if self.speaker.enabled:
-                self._last_spoken = reply
-                self.speaker.say(reply, force=True)
+            self._say_reply(random.choice(self.WARNINGS), text, sink)
             return
         self._insult_warned = False
         self._joke_delete(text, typed, sink)
@@ -4562,11 +4586,14 @@ class ProfileScreen(Backdrop):
         trow.setSpacing(10)
         self.talk_buttons = {}
         tgrp = QButtonGroup(self)
-        for key, title, desc in (("polite", "Вежливый", "Дружелюбно и спокойно"),
-                                 ("rude", "Дерзкий", "Подкалывает и может ругаться в ответ (18+)")):
+        for key, title, desc in (
+                ("polite", "Вежливый", "Дружелюбно и спокойно"),
+                ("rude", "Дерзкий", "Подкалывает, на оскорбление — предупреждение, потом шутка (18+)"),
+                ("savage", "Токсичный", "Огрызается и матерится в ответ, без шутки (18+)"),
+                ("meme", "Мемный", "Отвечает мемами и сленгом 💀🔥")):
             b = button(title, "ghost", 14, QFont.Normal)
             b.setCheckable(True)
-            b.setFixedWidth(220)
+            b.setFixedWidth(176)
             b.setToolTip(desc)
             b.clicked.connect(lambda _=False, k=key: (self._set("talk_mode", k), self._refresh_talk()))
             tgrp.addButton(b)
@@ -4574,9 +4601,10 @@ class ProfileScreen(Backdrop):
             self.talk_buttons[key] = b
         trow.addStretch(1)
         lay.addLayout(trow)
-        lay.addWidget(label("В дерзком режиме на оскорбление помощник сначала делает предупреждение, "
-                            "а если обидеть его снова — включается шутка. В вежливом шутка включается "
-                            "сразу.", 12, role="faint", wrap=True))
+        lay.addWidget(label("Вежливый — обычное общение, на оскорбление сразу шутка. Дерзкий — сначала "
+                            "предупреждение, при повторе шутка. Токсичный — грубит и матерится без шутки. "
+                            "Мемный — отвечает мемами. Команды и ответы на вопросы работают во всех режимах.",
+                            12, role="faint", wrap=True))
         lay.addSpacing(24)
         self._caption(lay, "Шутка на оскорбления")
         self.t_joke_shut = self._toggle_row(

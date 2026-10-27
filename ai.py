@@ -430,13 +430,23 @@ class AI:
     def forget(self):
         self.history = []
 
-    def _system(self, name, address, chat=False, code=False, rude=False):
+    def _system(self, name, address, chat=False, code=False, mode="polite"):
         now = datetime.datetime.now()
         who = f" Обращайся к пользователю «{address}»." if address else ""
-        rude_note = ("Общайся дерзко и на «ты», как токсичный друг: сарказм, подколы, можешь крепко "
-                     "ругнуться матом в ответ. Это игровой «дерзкий режим», пользователь сам его включил "
-                     "и не обижается. Но факты, команды и помощь всё равно давай правильно. "
-                     if rude else "")
+        if mode == "rude":
+            rude_note = ("Общайся дерзко и на «ты», как токсичный друг: сарказм, подколы, можешь крепко "
+                         "ругнуться в ответ. Это игровой режим, пользователь сам его включил и не обижается. "
+                         "Но факты, команды и помощь всё равно давай правильно и по делу. ")
+        elif mode == "savage":
+            rude_note = ("Ты в токсичном режиме: огрызаешься, подкалываешь, можешь материться, не "
+                         "стесняешься в выражениях. Это игра, пользователь сам включил и не обижается. "
+                         "Но на вопрос всё равно дай верный ответ, а команду выполни — просто грубо. ")
+        elif mode == "meme":
+            rude_note = ("Отвечай в стиле интернет-мемов: иронично, с мемными фразочками, сленгом и "
+                         "эмодзи (скуф, кринж, база, сигма, жиза, ok boomer, 💀🔥). Коротко и смешно, "
+                         "но по сути правильно — факты не ври, команды выполняй. ")
+        else:
+            rude_note = ""
         if chat:
             return (f"Ты — {name}, ИИ-помощник программы SenioreM (чат на экране). Отвечай по-русски, "
                     f"грамотно, точно и по существу, сначала главное. Можно использовать Markdown: "
@@ -487,12 +497,11 @@ class AI:
             if time.time() - self.last_time > MEMORY_IDLE:
                 self.history = []
             name = getattr(settings, "name", "Сеньор")
-            rude = False
             try:
-                rude = (settings["talk_mode"] or "polite") == "rude"
+                mode = settings["talk_mode"] or "polite"
             except Exception:  # noqa: BLE001
-                rude = False
-            system = self._system(name, settings["address"], chat, prefer == "code", rude)
+                mode = "polite"
+            system = self._system(name, settings["address"], chat, prefer == "code", mode)
             msgs = [{"role": "system", "content": system}]
             msgs += self.history[-MEMORY_TURNS:]
             extra = f"(Сейчас {datetime.datetime.now():%H:%M}.)"
