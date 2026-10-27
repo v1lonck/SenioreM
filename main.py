@@ -850,6 +850,61 @@ SUB_STYLES = [
 ]
 
 
+class JokePopup(QWidget):
+    """Одна шуточная плашка «удаления Windows». Каждую можно закрыть (× или «Да»)."""
+
+    TEXTS = [
+        "Удаляю систему Windows…", "Поздно! Уже удаляю.", "Ещё немного и всё.",
+        "Стираю диск C:…", "Прощайте, сохранения в играх.", "Форматирую реестр…",
+        "Удаляю папку «Загрузки».", "Это было грубо, помните?", "Закрыл одну — открылось десять.",
+        "Не поможет 🙂", "Удаляю обои рабочего стола.", "Выключаю интернет навсегда.",
+        "Съедаю вашу оперативную память.", "Удаляю кнопку «Пуск».", "Готово на 146%.",
+        "Сеньор всё помнит.", "Шутка. Или нет.", "Удаляю само это окно… нет, ещё нет.",
+    ]
+
+    def __init__(self):
+        import random
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setFixedSize(320, 150)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._text = random.choice(self.TEXTS)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 14)
+        lay.setSpacing(0)
+        top = QHBoxLayout()
+        top.addWidget(label("⚠  SenioreM", 13, QFont.DemiBold))
+        top.addStretch(1)
+        x = QPushButton("✕")
+        x.setCursor(Qt.PointingHandCursor)
+        x.setFixedSize(26, 24)
+        x.setStyleSheet("QPushButton { border: none; color: #E8ECF4; background: transparent; "
+                        "font-size: 15px; } QPushButton:hover { background: #E5484D; color: #FFF; "
+                        "border-radius: 6px; }")
+        x.clicked.connect(self.close)
+        top.addWidget(x)
+        lay.addLayout(top)
+        lay.addSpacing(10)
+        lay.addWidget(label(self._text, 15, wrap=True), 1)
+        lay.addSpacing(10)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = button(random.choice(["Да", "ОК", "Ну давай"]), "dangerfill", 13)
+        ok.setFixedWidth(110)
+        ok.clicked.connect(self.close)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(T.rgba(T.ACCENT, 0.6)), 1.4))
+        bg = QColor(T.SURFACE)
+        bg.setAlphaF(0.98)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, 14, 14)
+
+
 class FakeBSOD(QWidget):
     """Шуточный «синий экран» на 20 секунд (ничего не ломает — это просто окно на весь экран).
     Закрыть его можно как любое окно (Alt+F4, Win, Esc) — блокировать систему программа не будет."""
@@ -871,6 +926,8 @@ class FakeBSOD(QWidget):
         "Можно не стараться, я пошутил. Или нет.",
     ]
 
+    finished = Signal()
+
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setCursor(Qt.BlankCursor)
@@ -878,9 +935,24 @@ class FakeBSOD(QWidget):
         self._poke = ""
         self._poke_until = 0.0
         self._glitch = 0.0
+        self._done = False
         tm = QTimer(self)
         tm.timeout.connect(self._tick)
         tm.start(70)
+        QTimer.singleShot(20000, self._finish)
+
+    def _finish(self):
+        if self._done:
+            return
+        self._done = True
+        self.finished.emit()
+        self.close()
+
+    def closeEvent(self, e):
+        if not self._done:                          # вышли раньше (Alt+F4, Win) — тоже запускаем плашки
+            self._done = True
+            self.finished.emit()
+        super().closeEvent(e)
 
     def _tick(self):
         import random
@@ -4986,15 +5058,53 @@ class MainWindow(QWidget):
             webbrowser.open(f"https://github.com/{self.cfg.get('update_repo')}")
 
     def joke_crash(self):
-        """Шутка: окно программы исчезает, на 20 секунд — «синий экран», потом SenioreM закрывается.
-        Компьютеру ничего не делается."""
+        """Шутка: окно исчезает, на 20 секунд — «синий экран», потом по экрану разлетаются
+        десятки плашек (каждую можно закрыть), ещё через 20 секунд SenioreM закрывается.
+        Компьютеру ничего не делается и управление всегда остаётся у человека."""
         ai.ENGINE.stop()
         if self.companion is not None:
             self.companion.hide()
         self.hide()
         self._bsod = FakeBSOD()
+        self._bsod.finished.connect(self._joke_swarm)   # вышли из синего экрана → полетели плашки
         self._bsod.showFullScreen()
-        QTimer.singleShot(20200, lambda: os._exit(0))
+
+    def _joke_swarm(self):
+        """Десятки шуточных плашек по всему экрану. Каждую можно закрыть, все сами исчезнут за 20 с."""
+        if getattr(self, "_swarm_started", False):
+            return
+        self._swarm_started = True
+        self._swarm = []
+        self._swarm_geo = QGuiApplication.primaryScreen().availableGeometry()
+        self._swarm_timer = QTimer(self)
+        self._swarm_timer.timeout.connect(self._spawn_popup)
+        self._swarm_timer.start(120)
+        QTimer.singleShot(20000, self._joke_end)
+
+    def _spawn_popup(self):
+        import random
+        self._swarm = [p for p in self._swarm if p.isVisible()]
+        if len(self._swarm) >= 40:
+            return
+        p = JokePopup()
+        g = self._swarm_geo
+        p.move(random.randint(g.left(), max(g.left(), g.right() - p.width())),
+               random.randint(g.top(), max(g.top(), g.bottom() - p.height())))
+        p.show()
+        p.raise_()
+        self._swarm.append(p)
+
+    def _joke_end(self):
+        try:
+            self._swarm_timer.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        for p in list(getattr(self, "_swarm", [])):
+            try:
+                p.close()
+            except Exception:  # noqa: BLE001
+                pass
+        os._exit(0)
 
     def _on_escape(self):
         cur = self.stack.currentWidget()
@@ -5363,6 +5473,14 @@ def run_uitest(out_dir):
         pump(300)
         bsod.grab().save(os.path.join(out_dir, "11-bsod.png"))
         bsod.close()
+        pops = [JokePopup() for _ in range(6)]
+        for i, pp in enumerate(pops):
+            pp.move(40 + (i % 3) * 340, 40 + (i // 3) * 170)
+            pp.show()
+        pump(400)
+        win.grab().save(os.path.join(out_dir, "11-swarm.png"))
+        for pp in pops:
+            pp.close()
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
