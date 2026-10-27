@@ -4465,6 +4465,14 @@ class ProfileScreen(Backdrop):
                             "Обновления проверяются при каждом запуске.", 15, role="muted",
                             wrap=True))
         lay.addSpacing(24)
+        self._caption(lay, "Шутка на оскорбления")
+        self.t_joke_shut = self._toggle_row(
+            lay, "Выключать компьютер после шутки",
+            "Если оскорбить помощника, он шутит про «удаление Windows» и показывает плашки. "
+            "С этой галочкой в конце компьютер мягко выключится — Windows даст время сохранить "
+            "работу, а выключение можно отменить командой shutdown /a. По умолчанию выключено.",
+            "joke_shutdown")
+        lay.addSpacing(24)
         repo = self.cfg.get("update_repo") or ""
         if repo:
             self._caption(lay, "Оценить SenioreM")
@@ -4512,6 +4520,8 @@ class ProfileScreen(Backdrop):
         self.t_speak.setChecked(bool(settings["speak_replies"]))
         self.t_chime.setChecked(bool(settings["chime"]))
         self.t_wake_reply.setChecked(bool(settings["speak_wake_reply"]))
+        if hasattr(self, "t_joke_shut"):
+            self.t_joke_shut.setChecked(bool(settings["joke_shutdown"]))
         self.t_autostart.setChecked(bool(settings["autostart"]))
         try:
             import elevate
@@ -5102,6 +5112,16 @@ class MainWindow(QWidget):
         for p in list(getattr(self, "_swarm", [])):
             try:
                 p.close()
+            except Exception:  # noqa: BLE001
+                pass
+        # по желанию (профиль → «О программе») — мягко выключить компьютер, с отменой
+        if self.settings is not None and self.settings["joke_shutdown"] and sys.platform == "win32":
+            try:
+                import subprocess
+                subprocess.Popen(["shutdown", "/s", "/t", "25", "/c",
+                                  "Сеньор обиделся и выключает компьютер. Передумали? Откройте "
+                                  "командную строку и введите: shutdown /a"],
+                                 creationflags=0x08000000)
             except Exception:  # noqa: BLE001
                 pass
         os._exit(0)
