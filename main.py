@@ -851,25 +851,64 @@ SUB_STYLES = [
 
 
 class FakeBSOD(QWidget):
-    """Шуточный «синий экран» на 20 секунд (ничего не ломает — это просто окно на весь экран)."""
+    """Шуточный «синий экран» на 20 секунд (ничего не ломает — это просто окно на весь экран).
+    Закрыть его можно как любое окно (Alt+F4, Win, Esc) — блокировать систему программа не будет."""
+
+    STAGES = [
+        "Собираем сведения об ошибке…",
+        "Удаляем папку «Загрузки»…",
+        "Прощаемся с сохранениями в играх…",
+        "Форматируем диск C:…",
+        "Удаляем систему Windows…",
+        "Удаляем то, что осталось…",
+        "Удаляем сообщение о том, что всё удалено…",
+    ]
+    POKES = [
+        "Поздно. Уже удаляется.",
+        "Esc не поможет. И Alt+F4 тоже.",
+        "Куда вы, самое интересное впереди.",
+        "Это было грубо, помните?",
+        "Можно не стараться, я пошутил. Или нет.",
+    ]
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setCursor(Qt.BlankCursor)
         self._t0 = time.monotonic()
+        self._poke = ""
+        self._poke_until = 0.0
+        self._glitch = 0.0
         tm = QTimer(self)
-        tm.timeout.connect(self.update)
-        tm.start(100)
+        tm.timeout.connect(self._tick)
+        tm.start(70)
+
+    def _tick(self):
+        import random
+        if random.random() < 0.05:                 # лёгкое «подёргивание» экрана
+            self._glitch = random.uniform(2, 10)
+        self._glitch *= 0.8
+        self.update()
+
+    def _poke_msg(self):
+        import random
+        self._poke = random.choice(self.POKES)
+        self._poke_until = time.monotonic() + 2.5
 
     def keyPressEvent(self, e):
-        e.accept()                                 # 20 секунд ничего не нажимается
+        self._poke_msg()                            # нажали клавишу — подкол (но выход работает)
+        super().keyPressEvent(e)
+
+    def mousePressEvent(self, e):
+        self._poke_msg()
 
     def paintEvent(self, _):
+        import random
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#0078D7"))
+        p.fillRect(self.rect(), QColor("#0A6CC4" if self._glitch > 4 else "#0078D7"))
         p.setPen(QColor("#FFFFFF"))
         W, H = self.width(), self.height()
-        x = int(W * 0.1)
+        gx = int(random.uniform(-self._glitch, self._glitch)) if self._glitch > 1 else 0
+        x = int(W * 0.1) + gx
         y = int(H * 0.16)
         f = QFont("Segoe UI Light")
         f.setPixelSize(int(H * 0.16))
@@ -884,15 +923,23 @@ class FakeBSOD(QWidget):
                      "автоматически выполнен перезапуск."):
             p.drawText(x, y, line)
             y += int(H * 0.045)
-        pct = min(100, int((time.monotonic() - self._t0) / 20 * 100))
+        el = time.monotonic() - self._t0
+        pct = min(100, int(el / 20 * 100))
+        stage = self.STAGES[min(len(self.STAGES) - 1, int(el / 20 * len(self.STAGES)))]
         y += int(H * 0.04)
-        p.drawText(x, y, f"{pct}% завершено")
+        p.drawText(x, y, f"{pct}% завершено   ·   {stage}")
         f3 = QFont("Segoe UI")
         f3.setPixelSize(max(13, int(H * 0.018)))
         p.setFont(f3)
         y += int(H * 0.09)
         p.drawText(x, y, "Если вы захотите узнать больше, позднее можете найти в Интернете код ошибки:")
         p.drawText(x, y + int(H * 0.03), "Код остановки: SENIOREM_OBIDELSYA")
+        if self._poke and time.monotonic() < self._poke_until:
+            f4 = QFont("Segoe UI")
+            f4.setPixelSize(max(16, int(H * 0.028)))
+            f4.setBold(True)
+            p.setFont(f4)
+            p.drawText(x, y + int(H * 0.12), "— " + self._poke)
 
 
 class Subtitles(QWidget):
@@ -1753,8 +1800,10 @@ class HomeScreen(Backdrop):
         import random
         dlg = ConfirmDialog(self.win, random.choice(self.JOKE_TITLES), random.choice(self.JOKE_TEXTS),
                             yes="Да", no=random.choice(["Да", "Конечно да", "Да, удаляй"]),
-                            yes_role="dangerfill", no_role="dangerfill")
-        dlg.unclosable = True                      # ни крестика, ни Esc — только «Да»
+                            yes_role="dangerfill", no_role="dangerfill",
+                            third=random.choice(["Да!", "Ну давай уже", "Да x3"]), third_role="dangerfill")
+        dlg.unclosable = True                      # внутри самой программы — только «Да» (но Alt+F4
+        #                                            и клавиша Win по-прежнему закроют: систему не блокируем
         dlg.exec()                                 # любая кнопка — «да»
         self.speaker.interrupt()
         self.win.joke_crash()
@@ -5306,6 +5355,14 @@ def run_uitest(out_dir):
             h.heard.grab().save(os.path.join(out_dir, f"03-subs-{_st}.png"))
         T.set_appearance(app, subs_style="glass")
         h._show_heard("Расскажи анекдот", False)
+        bsod = FakeBSOD()
+        bsod.resize(1280, 720)
+        bsod._t0 -= 11
+        bsod._poke = "Esc не поможет. И Alt+F4 тоже."
+        bsod._poke_until = 10 ** 12
+        pump(300)
+        bsod.grab().save(os.path.join(out_dir, "11-bsod.png"))
+        bsod.close()
         for i, (tname, acc, bg, clock, orb) in enumerate(T.THEMES):
             T.set_appearance(app, accent=acc, background=bg, clock_style=clock, orb_style=orb)
             h.apply_widgets()
