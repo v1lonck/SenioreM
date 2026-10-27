@@ -5194,20 +5194,27 @@ class MainWindow(QWidget):
         self._bsod.showFullScreen()
 
     def _joke_swarm(self):
-        """Десятки шуточных плашек по всему экрану. Каждую можно закрыть, все сами исчезнут за 20 с."""
+        """Десятки шуточных плашек по всему экрану. Каждую можно закрыть. Когда закроют все
+        (или через 40 секунд) — появляется чёрный экран «выключения»."""
         if getattr(self, "_swarm_started", False):
             return
         self._swarm_started = True
         self._swarm = []
+        self._swarm_t0 = time.monotonic()
         self._swarm_geo = QGuiApplication.primaryScreen().availableGeometry()
         self._swarm_timer = QTimer(self)
         self._swarm_timer.timeout.connect(self._spawn_popup)
-        self._swarm_timer.start(55)                 # быстрее плодятся
-        QTimer.singleShot(40000, self._joke_end)    # и держатся 40 секунд
+        self._swarm_timer.start(55)                 # быстро плодятся
+        config.voice_log("шутка: плашки пошли")
 
     def _spawn_popup(self):
         import random
+        el = time.monotonic() - getattr(self, "_swarm_t0", 0)
         self._swarm = [p for p in self._swarm if p.isVisible()]
+        # финал (чёрный экран) наступает: закрыли все плашки после 6 с, ИЛИ прошло 40 с
+        if (el > 6 and not self._swarm) or el > 40:
+            self._joke_end()
+            return
         if len(self._swarm) >= 120:                 # в 3 раза больше плашек
             return
         p = JokePopup()
@@ -5219,6 +5226,9 @@ class MainWindow(QWidget):
         self._swarm.append(p)
 
     def _joke_end(self):
+        if getattr(self, "_joke_ended", False):
+            return
+        self._joke_ended = True
         try:
             self._swarm_timer.stop()
         except Exception:  # noqa: BLE001
@@ -5228,9 +5238,14 @@ class MainWindow(QWidget):
                 p.close()
             except Exception:  # noqa: BLE001
                 pass
+        config.voice_log("шутка: чёрный экран «выключения»")
         # фейковое «выключение»: «Завершение работы…» ~8 с, затем чёрный экран ~10 с
         self._fake_off = FakeShutdown()
+        geo = QGuiApplication.primaryScreen().geometry()
+        self._fake_off.setGeometry(geo)
         self._fake_off.showFullScreen()
+        self._fake_off.raise_()
+        self._fake_off.activateWindow()
         QTimer.singleShot(18500, self._joke_after_off)
 
     def _joke_after_off(self):
