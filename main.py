@@ -2048,7 +2048,7 @@ class HomeScreen(Backdrop):
                     "yt_key", "press_key", "mouse_click", "scenario", "vpn", "vpn_off",
                     "startup_list", "sysinfo", "settings_page", "timer_add", "timer_cancel",
                     "timer_left", "timer_alarm_stop", "timer_snooze", "game_play", "game_accept",
-                    "game_move"}
+                    "game_move", "game_cancel"}
 
     def _quick_intent(self, text):
         t = commands.fix_text(text)
@@ -2254,7 +2254,7 @@ class HomeScreen(Backdrop):
                 use_ai = False     # пока ИИ скачивается — ответ по поиску в интернете
 
         defer = self._defer_launch if (self._voice_cmd and self.speaker.enabled) else None
-        if intent["action"] in ("game_play", "game_accept", "game_move") and self._voice_cmd and s is not None:
+        if intent["action"] in ("game_play", "game_accept", "game_move", "game_cancel") and self._voice_cmd and s is not None:
             addr = (s["address"] or "").strip()          # в игре — сразу короткое «Слушаю»
             self._last_spoken = f"Слушаю{', ' + addr if addr else ''}."
             self.speaker.say(self._last_spoken, force=True)
@@ -5078,13 +5078,13 @@ class MainWindow(QWidget):
         self._swarm_geo = QGuiApplication.primaryScreen().availableGeometry()
         self._swarm_timer = QTimer(self)
         self._swarm_timer.timeout.connect(self._spawn_popup)
-        self._swarm_timer.start(120)
-        QTimer.singleShot(20000, self._joke_end)
+        self._swarm_timer.start(55)                 # быстрее плодятся
+        QTimer.singleShot(40000, self._joke_end)    # и держатся 40 секунд
 
     def _spawn_popup(self):
         import random
         self._swarm = [p for p in self._swarm if p.isVisible()]
-        if len(self._swarm) >= 40:
+        if len(self._swarm) >= 120:                 # в 3 раза больше плашек
             return
         p = JokePopup()
         g = self._swarm_geo

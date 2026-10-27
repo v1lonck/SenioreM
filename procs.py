@@ -294,11 +294,26 @@ def _title_match(keys, title):
 
 
 def foreground():
-    """Окно программы, которое было активным до SenioreM (верхнее чужое окно)."""
+    """Окно программы, которое было активным до SenioreM (верхнее развёрнутое чужое окно).
+    Свёрнутые окна пропускаем — действуем только в том, что реально открыто на экране."""
     for w in windows():
-        if w.exe not in ("seniorem.exe",):
+        if w.exe not in ("seniorem.exe",) and not is_minimized(w.hwnd):
             return w
     return None
+
+
+def active_window():
+    """Окно, которым человек сейчас пользуется (переднее на экране). None — если это
+    сам SenioreM, рабочий стол или свёрнутое окно. Так команды «нажми …» выполняются именно
+    в открытой игре/программе, а не в случайной свёрнутой."""
+    u = ctypes.windll.user32
+    hwnd = u.GetForegroundWindow()
+    if not hwnd or is_minimized(hwnd):
+        return foreground()
+    for w in windows():
+        if w.hwnd == hwnd:
+            return w if w.exe not in ("seniorem.exe",) else foreground()
+    return foreground()
 
 
 def find(name="", target=None):

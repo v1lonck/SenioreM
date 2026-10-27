@@ -81,6 +81,33 @@ GAME_PLAY = ["Играть", "Play", "В бой", "Начать игру", "На
 GAME_GO = ["Найти", "Поиск", "Go", "Start", "Начать", "Find", "Принять", "Accept", "Готов", "Ready",
            "Подтвердить", "В бой"]
 GAME_ACCEPT = ["Принять", "Accept", "Готов", "Ready"]
+GAME_CANCEL = ["Отмена", "Отменить", "Cancel", "Остановить поиск", "Отменить поиск", "Stop Search",
+               "Cancel Search", "Прекратить поиск", "Выйти из очереди", "Leave Queue", "Stop",
+               "Прекратить", "Выйти из поиска"]
+
+
+def _wait_and_click(win, texts, timeout=3.0, min_score=0.8):
+    """Фокусируемся на окне один раз и опрашиваем экран, пока нужная кнопка не появится
+    (нажимаем сразу, как только видна). Быстрее фиксированных пауз и надёжнее."""
+    _focus(win)
+    try:
+        rect = _rect(win.hwnd)
+    except Exception:  # noqa: BLE001
+        return None
+    end = time.time() + timeout
+    while True:
+        try:
+            words = ocr_words(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+        except Exception:  # noqa: BLE001
+            words = []
+        for t in texts:
+            hit = find_ocr(rect, t, min_score=min_score, words=words)
+            if hit:
+                click_at(hit[0], hit[1])
+                return hit[2]
+        if time.time() >= end:
+            return None
+        time.sleep(0.15)
 
 
 # ------------------------------------------------------------------ движение в игре голосом
@@ -164,6 +191,9 @@ def game_move(intent):
 def parse_game(t):
     if re.match(r"^(прими|принять|прими игру|прими матч|прими катку|accept)$", t):
         return {"action": "game_accept"}
+    if re.match(r"^(отмен\w+|останов\w+|прекрат\w+|выйди из)\s+(подбор\w*\s*матч\w*|подбор\w*|"
+                r"поиск\w*\s*(матч\w*|игр\w*)?|матч\w*|катк\w*|очеред\w*)$", t):
+        return {"action": "game_cancel"}
     m = re.match(r"^(запусти|запустить|начни|найди|ищи|поищи|го|давай|кинь|ставь|поставь)\s+"
                  r"(поиск\s+)?(катку|катки|матч|игру в поиск|поиск игры|поиск матча|игру)?\s*(в\s+|на\s+)?(.*)$", t)
     if not m:
@@ -178,17 +208,17 @@ def parse_game(t):
 
 
 def game_play(mode):
-    """Меню открытой игры: «Играть» → режим → «Найти/Начать»."""
+    """Меню открытой игры: «Играть» → режим → «Найти/Начать». Нажимаем каждую кнопку сразу,
+    как только она появилась (не ждём фиксированных пауз)."""
     win = _target_window()
     if win is None:
-        return "Не вижу открытой игры."
+        return "Не вижу открытой игры — откройте окно игры."
     steps = []
-    hit = click_in(win, GAME_PLAY, min_score=0.8)
+    hit = _wait_and_click(win, GAME_PLAY, timeout=2.5)
     if hit:
         steps.append(hit)
-        time.sleep(1.2)
     if mode:
-        hit = click_in(win, mode, min_score=0.8)
+        hit = _wait_and_click(win, mode, timeout=3.5)
         if not hit:
             got = _ai_pick(win, "режим игры " + mode[0])
             if got:
@@ -198,13 +228,26 @@ def game_play(mode):
             return (f"Не нашёл в меню режим «{mode[0]}». Откройте главное меню игры и повторите."
                     if not steps else f"Нажал «{steps[0]}», но не нашёл режим «{mode[0]}».")
         steps.append(hit)
-        time.sleep(1.0)
-    hit = click_in(win, GAME_GO, min_score=0.8)
+    hit = _wait_and_click(win, GAME_GO, timeout=3.5)
     if hit:
         steps.append(hit)
     if not steps:
         return "Не нашёл в игре кнопку «Играть». Откройте главное меню игры и повторите."
     return "Готово: " + " → ".join(f"«{s}»" for s in steps) + "."
+
+
+def game_cancel():
+    """Отменить подбор/поиск матча в открытой игре."""
+    win = _target_window()
+    if win is None:
+        return "Не вижу открытой игры."
+    hit = _wait_and_click(win, GAME_CANCEL, timeout=2.5)
+    if not hit:
+        got = _ai_pick(win, "отменить поиск матча или выйти из очереди")
+        if got:
+            click_at(got[0], got[1])
+            hit = got[2]
+    return f"Отменил: «{hit}»." if hit else "Не нашёл кнопку отмены поиска в этом окне."
 
 
 def parse(text):
@@ -538,8 +581,10 @@ def key_for(name):
 
 # ------------------------------------------------------------------ ввод
 def _target_window():
+    """Окно, в котором выполняем команду: то, что человек сейчас видит на экране (активное),
+    и только не свёрнутое. В свёрнутых окнах ничего не нажимаем."""
     import procs
-    return procs.foreground()
+    return procs.active_window()
 
 
 def _focus(win):
@@ -1268,6 +1313,8 @@ def run(intent):
         return click_play()
     if a == "game_play":
         return game_play(intent.get("mode"))
+    if a == "game_cancel":
+        return game_cancel()
     if a == "game_move":
         return game_move(intent)
     if a == "game_accept":
@@ -1306,4 +1353,4 @@ def run(intent):
 
 ACTIONS = ("press_key", "mouse_click", "click_text", "yt_nth", "yt_play", "yt_find", "yt_key", "nth_item", "tabs",
            "app_search", "enter_item", "click_play", "game_play", "game_accept",
-           "game_move")
+           "game_move", "game_cancel")
