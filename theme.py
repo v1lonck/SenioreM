@@ -1138,9 +1138,20 @@ class ConfirmDialog(QDialog):
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self.reject()
+            if not getattr(self, "unclosable", False):
+                self.reject()
         else:
             super().keyPressEvent(e)
+
+    def closeEvent(self, e):
+        if getattr(self, "unclosable", False) and self.result() == 0 and not getattr(self, "_chosen", False):
+            e.ignore()
+            return
+        super().closeEvent(e)
+
+    def done(self, r):
+        self._chosen = True
+        super().done(r)
 
 
 def fade_in(widget, ms=220):
